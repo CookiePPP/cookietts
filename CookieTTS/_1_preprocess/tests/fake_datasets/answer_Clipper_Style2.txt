@@ -1,0 +1,4 @@
+;audio_path|transcript|speaker_name|emotion|noise_level
+Sliced Dialogue/00_00_00_Speaker 0_Neutral__Transcript 1..wav|Transcript 0.|Speaker 0|Neutral|Clean
+Sliced Dialogue/00_00_00_Speaker 1_Neutral__Transcript 2..wav|Transcript 1.|Speaker 1|Neutral|Clean
+Sliced Dialogue/00_00_00_Speaker 2_Neutral__Transcript 3..wav|Transcript 2.|Speaker 2|Neutral|Clean

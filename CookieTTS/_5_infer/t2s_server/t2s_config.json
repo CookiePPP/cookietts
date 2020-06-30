@@ -1,0 +1,140 @@
+{
+    "terminal": {
+        "show_inference_progress": true,
+        "show_inference_alignment_scores": true
+    },
+    "webpage": {
+        "max_input_len": "99999999",
+        "sort_speakers": true,
+        "localhost": false,
+        "defaults": {
+            "current_text": "",
+            "background_text": "Enter text.",
+            "speaker": ["(Show) My Little Pony_Twilight"],
+            "style_mode": "torchmoji_hidden",
+            "textseg_mode": "segment_by_sentencequote",
+            "batch_mode": "nochange",
+            "max_attempts": 96,
+            "max_duration_s": 20,
+            "batch_size": 96,
+            "dyna_max_duration_s": 0.125,
+            "use_arpabet": "on",
+            "target_score": 0.75,
+            "multispeaker_mode": "random",
+            "cat_silence_s": 0.1,
+            "textseg_len_target": 120
+        }
+    },
+    "workers": {
+        "devices": ["cpu","cuda:0"],
+        "n_workers": 2,
+        "sox_output_ext": "flac",
+        "working_directory": "server_infer",
+        "output_directory": "server_infer_done",
+        "output_maxsize_gb": 0.01,
+        "dict_path": "G:/TwiBot/tacotron2/filelists/merged.dict_.txt",
+        "TTM": {
+            "speaker_ids_file": "H:/ClipperDatasetV2/filelists/speaker_ids.txt",
+            "use_speaker_ids_file_override": true,
+            "default_model": "Tacotron2 Torchmoji v0.22.1 (Large Prenet 188K)",
+            "models": {
+                "Tacotron2 Torchmoji v0.2 (Baseline 178K)": {
+                    "modelpath": "../outdir_truncated1/checkpoint_178000_weights_baseline"
+                },
+                "Tacotron2 Torchmoji v0.21 (Large DecoderLSTM 71K)": {
+                    "modelpath": "../outdir_truncated1/checkpoint_71000_weights_largeDecoderLSTM"
+                },
+                "Tacotron2 Torchmoji v0.21 (Large DecoderLSTM 81K)": {
+                    "modelpath": "../outdir_truncated1/checkpoint_81000_largeDecoderLSTM_weights"
+                },
+                "Tacotron2 Torchmoji v0.22 (Large Prenet 45K)": {
+                    "modelpath": "../outdir_truncated1/checkpoint_45000_weights"
+                },
+                "Tacotron2 Torchmoji v0.22.1 (Large Prenet 80K)": {
+                    "modelpath": "../outdir_truncated1/checkpoint_80000_weights"
+                },
+                "Tacotron2 Torchmoji v0.22.1 (Large Prenet 110K)": {
+                    "modelpath": "../outdir_truncated1/checkpoint_110000_weights"
+                },
+                "Tacotron2 Torchmoji v0.22.1 (Large Prenet 130K)": {
+                    "modelpath": "../outdir_truncated1/checkpoint_130000_weights"
+                },
+                "Tacotron2 Torchmoji v0.22.1 (Large Prenet 160K)": {
+                    "modelpath": "../outdir_truncated1/checkpoint_160000_weights"
+                },
+                "Tacotron2 Torchmoji v0.22.1 (Large Prenet 174K)": {
+                    "modelpath": "../outdir_truncated1/checkpoint_174000_weights"
+                },
+                "Tacotron2 Torchmoji v0.22.1 (Large Prenet 184K)": {
+                    "modelpath": "../outdir_truncated1/checkpoint_184000_weights"
+                },
+                "Tacotron2 Torchmoji v0.22.1 (Large Prenet 186K)": {
+                    "modelpath": "../outdir_truncated1/checkpoint_186000_weights"
+                },
+                "Tacotron2 Torchmoji v0.22.1 (Large Prenet 188K)": {
+                    "modelpath": "../outdir_truncated1/checkpoint_188000_weights"
+                },
+                "Tacotron2 Torchmoji v0.22.2 (Dynamic Convolution Attention 188K+2K)": {
+                    "modelpath": "../outdir_DCA/preserve_fp32_initialized_tanh_add_bias_tanh_clamp1e-6/checkpoint_2000"
+                },
+                "Tacotron2 Torchmoji v0.22.2 (Dynamic Convolution Attention 188K+4K)": {
+                    "modelpath": "../outdir_DCA/preserve_fp32_initialized_tanh_add_bias_tanh_clamp1e-6/checkpoint_4000"
+                },
+                "Tacotron2 Torchmoji v0.22.2 (Dynamic Convolution Attention 188K+4.4K)": {
+                    "modelpath": "../outdir_DCA/preserve_fp32_initialized_tanh_add_bias_tanh_clamp1e-6/checkpoint_4445"
+                },
+                "Tacotron2 Torchmoji v0.22.3 (Dynamic Convolution Attention 188K+6K)": {
+                    "modelpath": "../outdir_DCA/matmul/preserve_fp32_initialized_tanh_add_bias_tanh_clamp1e-6/checkpoint_6000"
+                },
+                "Tacotron2 Torchmoji v0.22.3 (Dynamic Convolution Attention 188K+8K)": {
+                    "modelpath": "../outdir_DCA/matmul/preserve_fp32_initialized_tanh_add_bias_tanh_clamp1e-6/checkpoint_8000"
+                },
+                "Tacotron2 Torchmoji v0.22.3 (Dynamic Convolution Attention 188K+0.75K)": {
+                    "modelpath": "../outdir_DCA/matmul/preserve_fp32_large/checkpoint_752"
+                },
+                "Tacotron2 Torchmoji v0.22.3 (Dynamic Convolution Attention 188K+2K)": {
+                    "modelpath": "../outdir_DCA/matmul/preserve_fp32_large/checkpoint_2000"
+                }
+            }
+        },
+        "MTW": {
+            "speaker_ids_file": "H:/ClipperDatasetV2/filelists/speaker_ids.txt",
+            "use_speaker_ids_file_override": true,
+            "default_model": "MiniWaveGlow V2 (GT, 16 Flow, n_group 120 282K)",
+            "models": {
+                "MiniWaveGlow V2 (GT, 16 Flow, n_group 120 282K)": {
+                    "modelpath": "H:/TTCheckpoints/waveglow/outdir_EfficientSmallGlobalSpeakerEmbeddings/Testing2/best_val_model",
+                    "configpath": "H:/TTCheckpoints/waveglow/outdir_EfficientSmallGlobalSpeakerEmbeddings/Testing2/config.json"
+                },
+                "WaveGlow V5 (Postnet, 12 Flow, n_group 24 73K)": {
+                    "modelpath": "H:/TTCheckpoints/waveglow/outdir_EfficientSmallGlobalSpeakerEmbeddings/Testing5/best_val_model",
+                    "configpath": "H:/TTCheckpoints/waveglow/outdir_EfficientSmallGlobalSpeakerEmbeddings/Testing5/config.json"
+                },
+                "LargeWaveGlow V1 (GT, 24 Flow, n_group 10 206K)": {
+                    "modelpath": "H:/TTCheckpoints/waveglow/outdir_EfficientLarge/best_model",
+                    "configpath": "H:/TTCheckpoints/waveglow/outdir_EfficientLarge/config.json"
+                },
+                "LargeWaveGlow V3.5 (GT, 48 Flow, n_group 24 190K)": {
+                    "modelpath": "H:/TTCheckpoints/waveglow/outdir_EfficientLarge3.5/best_val_model",
+                    "configpath": "H:/TTCheckpoints/waveglow/outdir_EfficientLarge3.5/config.json"
+                },
+                "LargeWaveGlow V3.5 (GT[+Postnet], 48 Flow, n_group 24 190K[+7K])": {
+                    "modelpath": "H:/TTCheckpoints/waveglow/outdir_EfficientLarge3.5/Postnet/best_val_model",
+                    "configpath": "H:/TTCheckpoints/waveglow/outdir_EfficientLarge3.5/Postnet/config.json"
+                },
+                "LargeWaveGlow V3.6 (GT[+Postnet], 48 Flow, n_group 24 190K[+30K])": {
+                    "modelpath": "H:/TTCheckpoints/waveglow/outdir_EfficientLarge3.5/Postnetax/best_val_model",
+                    "configpath": "H:/TTCheckpoints/waveglow/outdir_EfficientLarge3.5/Postnetax/config.json"
+                },
+                "Small WaveFlow (20 Group, 6 Flow, 8 Layer, 128 Channel Separable)": {
+                    "modelpath": "H:/TTCheckpoints/waveflow/4thLargeKernels/AR_6_Flow/best_val_model",
+                    "configpath": "H:/TTCheckpoints/waveflow/4thLargeKernels/AR_6_Flow/config.json"
+                },
+                "WaveFlow 1.1 (50 Group, 6 Flow, 7 Layer, 512 Channel Separable)": {
+                    "modelpath": "H:/TTCheckpoints/waveflow/4thLargeKernels/AR_6_Flow_512C/best_val_model",
+                    "configpath": "H:/TTCheckpoints/waveflow/4thLargeKernels/AR_6_Flow_512C/config.json"
+                }
+            }
+        }
+    }
+}

@@ -1,0 +1,2 @@
+audio/out/audio_0.wav|Transcript 0.|Transcript zero.
+audio/out/audio_1.wav|Transcript 1.|Transcript one.

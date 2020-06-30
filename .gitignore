@@ -1,0 +1,38 @@
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Flask stuff:
+instance/
+.webassets-cache
+
+# IPython
+profile_default/
+ipynb_checkpoints/
+ipython_config.py
+
+# Datasets
+/CookieTTS/_0_download/downloads/
+/CookieTTS/_1_preprocess/datasets/*
+/CookieTTS/_1_preprocess/MFA_tmp/
+/CookieTTS/utils/dataset/_1_preprocess/tests/littlepip_sample/
+
+# megatools folders
+megatools-*-git-*-win64/
+megatools-*-git-*-win32/
+megatools-*-git-*-linux-x86_64/
+
+# megatools archives
+megatools-*-git-*-win64.zip
+megatools-*-git-*-win32.zip
+megatools-*-git-*-linux-x86_64.tar.gz
+
+# inference server
+/CookieTTS/_5_infer/t2s_server/server_infer/*
+/CookieTTS/_5_infer/t2s_server/server_infer_done/*
+
+# Montreal Forced Aligner
+/CookieTTS/utils/dataset/montreal-forced-aligner/
+/CookieTTS/utils/dataset/montreal-forced-aligner_win64.zip
+/CookieTTS/utils/dataset/montreal-forced-aligner_linux.tar.gz

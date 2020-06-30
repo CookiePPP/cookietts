@@ -1,0 +1,141 @@
+;dataset                |source                  |source_type         |speaker_name                    |speaker_id|duration_hrs
+;
+Blaze the Cat           |Sonic the Hedgehog      |Game                |Blaze                           |0         |  0.2703
+Clipper_MLP             |My Little Pony          |TV Show             |Pinkie                          |1         |  3.3202
+Clipper_MLP             |My Little Pony          |TV Show             |Rainbow                         |2         |  3.3229
+Clipper_MLP             |My Little Pony          |TV Show             |Rarity                          |3         |  3.7242
+Clipper_MLP             |My Little Pony          |TV Show             |Twilight                        |4         |  5.6303
+Clipper_MLP             |My Little Pony          |TV Show             |Sunset Shimmer                  |5         |  0.4290
+Clipper_MLP             |My Little Pony          |TV Show             |Applejack                       |6         |  2.8685
+Clipper_MLP             |My Little Pony          |TV Show             |Spike                           |7         |  2.2096
+Clipper_MLP             |My Little Pony          |TV Show             |Sour Sweet                      |8         |  0.0239
+Clipper_MLP             |My Little Pony          |TV Show             |Fluttershy                      |12        |  2.4286
+Clipper_MLP             |My Little Pony          |TV Show             |Wallflower                      |13        |  0.0362
+Clipper_MLP             |My Little Pony          |TV Show             |Trixie                          |14        |  0.6219
+Clipper_MLP             |My Little Pony          |TV Show             |Celestia                        |15        |  0.6521
+Clipper_MLP             |My Little Pony          |TV Show             |Luna                            |16        |  0.3610
+Clipper_MLP             |My Little Pony          |TV Show             |Maud                            |18        |  0.1815
+Clipper_MLP             |My Little Pony          |TV Show             |Flash Sentry                    |19        |  0.0192
+Clipper_MLP             |My Little Pony          |TV Show             |Cadance                         |20        |  0.2395
+Clipper_MLP             |My Little Pony          |TV Show             |Cinch                           |21        |  0.0807
+Clipper_MLP             |My Little Pony          |TV Show             |Shining Armor                   |22        |  0.1931
+Clipper_MLP             |My Little Pony          |TV Show             |Gloriosa Daisy                  |25        |  0.0885
+Clipper_MLP             |My Little Pony          |TV Show             |Timber Spruce                   |26        |  0.0767
+Clipper_MLP             |My Little Pony          |TV Show             |Filthy Rich                     |28        |  0.0615
+Clipper_MLP             |My Little Pony          |TV Show             |Juniper Montage                 |31        |  0.0616
+Clipper_MLP             |My Little Pony          |TV Show             |Starlight                       |32        |  1.4712
+Clipper_MLP             |My Little Pony          |TV Show             |Canter Zoom                     |33        |  0.0322
+Clipper_MLP             |My Little Pony          |TV Show             |Vignette                        |35        |  0.1049
+Clipper_MLP             |My Little Pony          |TV Show             |Granny Smith                    |36        |  0.4676
+Clipper_MLP             |My Little Pony          |TV Show             |Flim                            |37        |  0.0973
+Clipper_MLP             |My Little Pony          |TV Show             |Flam                            |38        |  0.1153
+Clipper_MLP             |My Little Pony          |TV Show             |Apple Bloom                     |39        |  1.1728
+Clipper_MLP             |My Little Pony          |TV Show             |Mayor Mare                      |40        |  0.0585
+Clipper_MLP             |My Little Pony          |TV Show             |Nightmare Moon                  |41        |  0.0363
+Clipper_MLP             |My Little Pony          |TV Show             |Zecora                          |42        |  0.2236
+Clipper_MLP             |My Little Pony          |TV Show             |Big Mac                         |43        |  0.1529
+Clipper_MLP             |My Little Pony          |TV Show             |Cheerilee                       |44        |  0.1681
+Clipper_MLP             |My Little Pony          |TV Show             |Diamond Tiara                   |45        |  0.1570
+Clipper_MLP             |My Little Pony          |TV Show             |Silver Spoon                    |47        |  0.0336
+Clipper_MLP             |My Little Pony          |TV Show             |Scootaloo                       |49        |  0.8352
+Clipper_MLP             |My Little Pony          |TV Show             |Sweetie Belle                   |50        |  0.7670
+Clipper_MLP             |My Little Pony          |TV Show             |Spitfire                        |51        |  0.1492
+Clipper_MLP             |My Little Pony          |TV Show             |Sapphire Shores                 |52        |  0.0239
+Clipper_MLP             |My Little Pony          |TV Show             |Photo Finish                    |54        |  0.0350
+Clipper_MLP             |My Little Pony          |TV Show             |Braeburn                        |55        |  0.0260
+Clipper_MLP             |My Little Pony          |TV Show             |Soarin                          |56        |  0.0388
+Clipper_MLP             |My Little Pony          |TV Show             |Gilda                           |58        |  0.0791
+Clipper_MLP             |My Little Pony          |TV Show             |Discord                         |59        |  1.0107
+Clipper_MLP             |My Little Pony          |TV Show             |A. K. Yearling                  |60        |  0.1239
+Clipper_MLP             |My Little Pony          |TV Show             |Ahuizotl                        |61        |  0.0401
+Clipper_MLP             |My Little Pony          |TV Show             |Cranky                          |63        |  0.0536
+Clipper_MLP             |My Little Pony          |TV Show             |Iron Will                       |64        |  0.0903
+Clipper_MLP             |My Little Pony          |TV Show             |Mrs. Cake                       |65        |  0.0190
+Clipper_MLP             |My Little Pony          |TV Show             |Chrysalis                       |70        |  0.1469
+Clipper_MLP             |My Little Pony          |TV Show             |Pipsqueak                       |71        |  0.0335
+Clipper_MLP             |My Little Pony          |TV Show             |Fancy Pants                     |72        |  0.0557
+Clipper_MLP             |My Little Pony          |TV Show             |Miss Harshwhinny                |73        |  0.0528
+Clipper_MLP             |My Little Pony          |TV Show             |Sombra                          |74        |  0.0495
+Clipper_MLP             |My Little Pony          |TV Show             |Babs Seed                       |75        |  0.0295
+Clipper_MLP             |My Little Pony          |TV Show             |Snips                           |76        |  0.0428
+Clipper_MLP             |My Little Pony          |TV Show             |Lightning Dust                  |78        |  0.0646
+Clipper_MLP             |My Little Pony          |TV Show             |Fleetfoot                       |79        |  0.0191
+Clipper_MLP             |My Little Pony          |TV Show             |Cheese Sandwich                 |80        |  0.0626
+Clipper_MLP             |My Little Pony          |TV Show             |Tirek                           |81        |  0.1548
+Clipper_MLP             |My Little Pony          |TV Show             |Mane-Iac                        |82        |  0.0345
+Clipper_MLP             |My Little Pony          |TV Show             |Party Favor                     |83        |  0.0308
+Clipper_MLP             |My Little Pony          |TV Show             |Double Diamond                  |84        |  0.0299
+Clipper_MLP             |My Little Pony          |TV Show             |Sugar Belle                     |85        |  0.0508
+Clipper_MLP             |My Little Pony          |TV Show             |Prince Rutherford               |87        |  0.0924
+Clipper_MLP             |My Little Pony          |TV Show             |Minuette                        |89        |  0.0410
+Clipper_MLP             |My Little Pony          |TV Show             |Moon Dancer                     |92        |  0.0422
+Clipper_MLP             |My Little Pony          |TV Show             |Sassy Saddles                   |93        |  0.0868
+Clipper_MLP             |My Little Pony          |TV Show             |Coco Pommel                     |97        |  0.0320
+Clipper_MLP             |My Little Pony          |TV Show             |Spoiled Rich                    |98        |  0.0232
+Clipper_MLP             |My Little Pony          |TV Show             |Limestone                       |102       |  0.0233
+Clipper_MLP             |My Little Pony          |TV Show             |Ma Hooffield                    |103       |  0.0378
+Clipper_MLP             |My Little Pony          |TV Show             |Big Daddy Mccolt                |104       |  0.0299
+Clipper_MLP             |My Little Pony          |TV Show             |Svengallop                      |105       |  0.0534
+Clipper_MLP             |My Little Pony          |TV Show             |Countess Coloratura             |106       |  0.0446
+Clipper_MLP             |My Little Pony          |TV Show             |Tree Hugger                     |107       |  0.0251
+Clipper_MLP             |My Little Pony          |TV Show             |Sunburst                        |108       |  0.1927
+Clipper_MLP             |My Little Pony          |TV Show             |Zephyr                          |111       |  0.1144
+Clipper_MLP             |My Little Pony          |TV Show             |Saffron Masala                  |112       |  0.0284
+Clipper_MLP             |My Little Pony          |TV Show             |Coriander Cumin                 |113       |  0.0258
+Clipper_MLP             |My Little Pony          |TV Show             |Zesty Gourmand                  |114       |  0.0231
+Clipper_MLP             |My Little Pony          |TV Show             |Quibble Pants                   |115       |  0.2055
+Clipper_MLP             |My Little Pony          |TV Show             |Dr. Caballeron                  |116       |  0.0255
+Clipper_MLP             |My Little Pony          |TV Show             |Thorax                          |117       |  0.1872
+Clipper_MLP             |My Little Pony          |TV Show             |Gabby                           |118       |  0.1194
+Clipper_MLP             |My Little Pony          |TV Show             |Night Light                     |119       |  0.0230
+Clipper_MLP             |My Little Pony          |TV Show             |Twilight Velvet                 |120       |  0.0203
+Clipper_MLP             |My Little Pony          |TV Show             |Gladmane                        |121       |  0.0683
+Clipper_MLP             |My Little Pony          |TV Show             |Dragon Lord Torch               |122       |  0.0387
+Clipper_MLP             |My Little Pony          |TV Show             |Ember                           |123       |  0.1257
+Clipper_MLP             |My Little Pony          |TV Show             |Pharynx                         |129       |  0.0329
+Clipper_MLP             |My Little Pony          |TV Show             |Caballeron                      |130       |  0.0891
+Clipper_MLP             |My Little Pony          |TV Show             |Rumble                          |132       |  0.0368
+Clipper_MLP             |My Little Pony          |TV Show             |Thunderlane                     |133       |  0.0228
+Clipper_MLP             |My Little Pony          |TV Show             |Star Swirl                      |134       |  0.1167
+Clipper_MLP             |My Little Pony          |TV Show             |Pony Of Shadows                 |135       |  0.0250
+Clipper_MLP             |My Little Pony          |TV Show             |Rockhoof                        |139       |  0.1010
+Clipper_MLP             |My Little Pony          |TV Show             |Bow Hothoof                     |143       |  0.0333
+Clipper_MLP             |My Little Pony          |TV Show             |Windy Whistles                  |144       |  0.0399
+Clipper_MLP             |My Little Pony          |TV Show             |Neighsay                        |146       |  0.1104
+Clipper_MLP             |My Little Pony          |TV Show             |Sandbar                         |147       |  0.1202
+Clipper_MLP             |My Little Pony          |TV Show             |Gallus                          |148       |  0.1350
+Clipper_MLP             |My Little Pony          |TV Show             |Yona                            |150       |  0.1564
+Clipper_MLP             |My Little Pony          |TV Show             |Smolder                         |151       |  0.2027
+Clipper_MLP             |My Little Pony          |TV Show             |Silverstream                    |152       |  0.1564
+Clipper_MLP             |My Little Pony          |TV Show             |Seaspray                        |153       |  0.0226
+Clipper_MLP             |My Little Pony          |TV Show             |Ocellus                         |154       |  0.1029
+Clipper_MLP             |My Little Pony          |TV Show             |Cozy Glow                       |155       |  0.2635
+Clipper_MLP             |My Little Pony          |TV Show             |Sludge                          |159       |  0.0647
+Clipper_MLP             |My Little Pony          |TV Show             |Mudbriar                        |160       |  0.0440
+Clipper_MLP             |My Little Pony          |TV Show             |Grogar                          |163       |  0.0769
+Clipper_MLP             |My Little Pony          |TV Show             |Goldie Delicious                |165       |  0.0402
+Clipper_MLP             |My Little Pony          |TV Show             |Terramar                        |166       |  0.0209
+Clipper_MLP             |My Little Pony          |TV Show             |Snap Shutter                    |170       |  0.0246
+Clipper_MLP             |My Little Pony          |TV Show             |Mane Allgood                    |171       |  0.0234
+Clipper_MLP             |My Little Pony          |TV Show             |Sans Smirk                      |172       |  0.0509
+Clipper_MLP             |My Little Pony          |TV Show             |Dr. Fauna                       |175       |  0.0285
+Clipper_MLP             |My Little Pony          |TV Show             |Clear Sky                       |179       |  0.0217
+Clipper_MLP             |My Little Pony          |TV Show             |Wind Sprint                     |180       |  0.0187
+Clipper_MLP             |My Little Pony          |TV Show             |Garble                          |181       |  0.0302
+Clipper_MLP             |My Little Pony          |TV Show             |Songbird Serenade               |189       |  0.0594
+Clipper_MLP             |My Little Pony          |TV Show             |Grubber                         |192       |  0.0298
+Clipper_MLP             |My Little Pony          |TV Show             |Tempest Shadow                  |193       |  0.0993
+Clipper_MLP             |My Little Pony          |TV Show             |The Storm King                  |194       |  0.0457
+Clipper_MLP             |My Little Pony          |TV Show             |Capper                          |199       |  0.0827
+Clipper_MLP             |My Little Pony          |TV Show             |Captain Celaeno                 |208       |  0.0200
+Clipper_MLP             |My Little Pony          |TV Show             |Princess Skystar                |209       |  0.0475
+Clipper_MLP             |My Little Pony          |TV Show             |Queen Novo                      |210       |  0.0228
+Clipper_MLP             |A Little Bit Wicked     |Audiobook           |Skystar                         |212       |  0.9553
+Clipper_MLP             |Aqua Teen Hunger Force  |Show                |Carl                            |213       |  1.3244
+Clipper_MLP             |CGP Grey                |Show                |Grey                            |214       |  0.5706
+Clipper_MLP             |Dan vs                  |Show                |Dan                             |215       |  2.6203
+Clipper_MLP             |Dr. Who                 |Audiobook           |Doctor                          |216       |  2.3862
+Clipper_MLP             |Elite Dangerous         |Game                |Eli                             |217       |  2.1563
+Combine_overwatch       |Half Life 2             |Game                |Soldier                         |218       |  0.1400
+Littlepip               |Equestrian Broadcasting Company|Audiodrama          |Littlepip                       |219       |  0.1571
+LJSpeech                |LibriVox project        |Audiobook           |LJSpeech                        |220       | 10.9906

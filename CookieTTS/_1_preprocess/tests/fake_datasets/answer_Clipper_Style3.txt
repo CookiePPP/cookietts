@@ -1,0 +1,5 @@
+;audio_path|transcript|speaker_name|emotion|noise_level
+Sliced Dialogue/00_00_00_Mrs. Cake_Sad_Noisy_Transcript 3_.wav|Transcript 3?|Mrs. Cake|Sad|Noisy
+Sliced Dialogue/00_00_00_Rainbow Dash_Happy_Very Noisy_Transcript 2!.wav|Transcript 2!|Rainbow Dash|Happy|Very Noisy
+Sliced Dialogue/00_00_00_Twilight_Neutral__Transcript 1..wav|Transcript 1.|Twilight|Neutral|Clean
+Sliced Dialogue/00_00_00_Princess Luna_Canterlot Voice Angry_Very Noisy_Transcript 4_!.wav|Transcript 4?!|Princess Luna|Canterlot Voice#Angry|Very Noisy

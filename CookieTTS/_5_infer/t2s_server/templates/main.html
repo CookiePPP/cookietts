@@ -1,0 +1,259 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+    <link rel="stylesheet" href="https://stackpath.bootstrapcdn.com/bootstrap/4.3.1/css/bootstrap.min.css"
+        integrity="sha384-ggOyR0iXCbMQv3Xipma34MD+dH/1fQ784/j6cY/iJTQUOhcWr7x9JvoRxT2MZw1T" crossorigin="anonymous">
+    <title>The Text to Speech App</title>
+    <link rel="shortcut icon" href="{{ url_for('static', filename='favicon.ico') }}">
+    <style>
+    .collapsible {
+      background-color: #777;
+      color: white;
+      cursor: pointer;
+      padding: 10px;
+      width: 100%;
+      border: none;
+      text-align: left;
+      outline: none;
+      font-size: 15px;
+    }
+
+    .active, .collapsible:hover {
+      background-color: #555;
+    }
+
+    .collapsible:after {
+      content: '\002B';
+      color: white;
+      font-weight: bold;
+      float: right;
+      margin-left: 5px;
+    }
+
+    .active:after {
+      content: "\2212";
+    }
+
+    .content {
+      padding: 0 18px;
+      max-height: 0;
+      overflow: hidden;
+      transition: max-height 0.2s ease-out;
+      background-color: #f1f1f1;
+    }
+    </style>
+</head>
+
+<body>
+    <div class="w-50 p-3 ml-3" style="margin: auto auto!important;">
+        <a href="/">Home/Reset</a>
+        <div style="float: right;">Send Feedback to <a href="mailto:cookietriplep@gmail.com" title="You can send whatever to this email, I reply to about 50% of what comes in.">cookietriplep@gmail.com</a></div>
+        
+        <div id="content" class="jumbotron">
+            <h1 class="display-4">Text To Speech </h1>
+            <p class="lead">Based on NVIDIA Tacotron2 and WaveGlow TTS models.</p>
+            <hr class="my-4">
+            <form id="input_form" name="input_form" method="POST" action="/tts">
+                <div class="form-group">
+                    <label for="select">Spectrogram --> Waveform Model</label>
+                    <select name="input_MTW_current" class="form-control">
+                        {%for i in range(0, MTW_len)%}
+                        <option value='{{waveglow_conf[i][0][9:] if "[MISSING]" in waveglow_conf[i][0] else waveglow_conf[i][0]}}' {{ 'selected' if MTW_current == waveglow_conf[i][0] else '' }} {{'disabled' if '[MISSING]' in waveglow_conf[i][0] else ''}}>{{waveglow_conf[i][0]}}</option>
+                        {%endfor%}
+                    </select></div>
+                <div class="form-group">
+                    <label for="select">Text --> Spectogram Model</label>
+                    <select name="input_ttm_current" class="form-control">
+                        {%for i in range(0, ttm_len)%}
+                        <option value='{{tacotron_conf[i][0][9:] if "[MISSING]" in tacotron_conf[i][0] else tacotron_conf[i][0]}}' {{ 'selected' if ttm_current == tacotron_conf[i][0] else '' }} {{'disabled' if '[MISSING]' in tacotron_conf[i][0] else ''}}>{{tacotron_conf[i][0]}}</option>
+                        {%endfor%}
+                    </select></div>
+                <button class="collapsible" type="button">Advanced Options</button>
+                    <div class="form-group content" style="box-shadow: #777777 0px 0px 0px 3px inset;">
+                        <div class="form-group" style="margin-top: 1em;">
+                            <label for="select">Use Pronounciation Dictionary (ARPAbet)</label>
+                            <input style="width: 3em;" class="form-control" type="checkbox" {{"checked" if use_arpabet else ""}} name="input_use_arpabet" >
+                        </div>
+                        <div class="form-group">
+                            <label for="select">Multispeaker Mode</label>
+                            <select name="input_multispeaker_mode" class="form-control">
+                                <option value="random" {{ 'selected' if multispeaker_mode == 'random' else '' }}>Random (randomly select the speaker)</option>
+                                <option value="cycle_next" {{ 'selected' if multispeaker_mode == 'cycle_next' else '' }}>Cycle Next (go down the list, use the next speaker for each text then loop back to the top)</option>
+                                <option value="interleaved" {{ 'selected' if multispeaker_mode == 'interleaved' else '' }}>Interleaved (seperate speaker for each text segment, going from top to bottom)</option>
+                                <option value="not_interleaved" {{ 'selected' if multispeaker_mode == 'not_interleaved' else '' }}>Non-Interleaved (speaker going from top to bottom per clip attempt)</option>
+                            </select></div>
+                        <div class="form-group">
+                            <label for="select">Silence between clips (Seconds)</label>
+                            <input style="width: -webkit-fill-available;" class="form-control" value="{{cat_silence_s}}" type="number" min="0.0" step="0.01" name="input_cat_silence_s">
+                        </div>
+                        <div class="form-group">
+                            <label for="select">Batch Size</label>
+                            <input style="width: -webkit-fill-available;" class="form-control" value="{{batch_size}}" type="number" min="1" step="1" name="input_batch_size">
+                        </div>
+                        <div class="form-group">
+                            <label for="select">Max Duration per Input (Seconds)</label>
+                            <label style="zoom: 0.7;">(This will control the maximum amount of VRAM used. Decrease 'Input Segmentation Target Length' or Increase this if you notice longer text inputs getting cut off before they can finish.)</label>
+                            <input style="width: -webkit-fill-available;" class="form-control" value="{{max_duration_s}}" type="number" min="0.1" step="0.1" name="input_max_duration_s">
+                        </div>
+                        <div class="form-group">
+                            <label for="select">Dynamic Max Duration Scaler</label>
+                            <label style="zoom: 0.7;">(Decrease max duration for small inputs. e.g: 0.2 gives 200 milliseconds per letter you input till it hits the <i>other</i> Max Duration which is the upper upper limit.)</label>
+                            <input style="width: -webkit-fill-available;" class="form-control" value="{{dyna_max_duration_s}}" type="number" min="0.05" step="0.0125" name="input_dyna_max_duration_s">
+                        </div>
+                        <div class="form-group">
+                            <label for="select">Max Attempts</label>
+                            <label style="zoom: 0.7;">(This is the maximum number of times the same clip can be attempted - in case one of them fails. If batch size and max attempts are equal, then it will take 1 pass to generate the clip.)</label>
+                            <input style="width: -webkit-fill-available;" class="form-control" value="{{max_attempts}}" type="number" min="1" step="1" name="input_max_attempts">
+                        </div>
+                        <div class="form-group">
+                            <label for="select">Target Alignment Score</label>
+                            <label style="zoom: 0.7;">(Model will stop making attempts once Target Alignment Score is reached. This is quite hard to describe so it's probably best to just max it out and pick the best of "Max Attempts" instead of early stopping.)</label>
+                            <input style="width: -webkit-fill-available;padding-right: 0px;padding-left: 0px;margin-right: 2em;margin-left: 2em;" class="form-control" value={{target_score}} type="range" name="input_target_score" min="-0.2" max="0.8" step="0.01">
+                        </div>
+                        <div class="form-group">
+                            <label for="select">Batch Mode</label>
+                            <select name="input_batch_mode" class="form-control">
+                                <option value="scaleup" {{ 'selected' if batch_mode == 'scaleup' else '' }}>Scale (increase) batch size for multiple inputs. (Run each input at the same time, but potentially hit VRAM limits.)</option>
+                                <option value="nochange" {{ 'selected' if batch_mode == 'nochange' else '' }}>Same batch size for multiple inputs. (Run each input one after the other if more inputs than batch size/max attempts.)</option>
+                                <option value="scaledown" {{ 'selected' if batch_mode == 'scaledown' else '' }}>Decrease batch size for multiple inputs. (Run each input at the same time, but decrease stability if over batch size/max attempts.)</option>
+                            </select></div>
+                        <div class="form-group">
+                            <label for="select">Input Segmentation Mode</label>
+                            <select name="input_textseg_mode" class="form-control">
+                                <option value="no_segmentation" {{ 'selected' if textseg_mode == 'no_segmentation' else '' }}>Feed entire text into model</option>
+                                <option value="segment_by_line" {{ 'selected' if textseg_mode == 'segment_by_line' else '' }}>Split text by lines</option>
+                                <option value="segment_by_sentence" {{ 'selected' if textseg_mode == 'segment_by_sentence' else '' }}>Split text by sentences</option>
+                                <option value="segment_by_sentencequote" {{ 'selected' if textseg_mode == 'segment_by_sentencequote' else '' }}>Split text by sentences and quotes</option>
+                            </select></div>
+                        <div class="form-group">
+                            <label for="select">Input Segmentation Target Length</label>
+                            <label style="zoom: 0.7;">(Applies to 'Split text by sentence' and similar. Will merge neighbouring sentences to get as close to Target Length as possible without going over.)</label>
+                            <input style="width: -webkit-fill-available;" class="form-control" value="{{textseg_len_target}}" type="number" max="9999" min="50" step="1" name="input_textseg_len_target">
+                            </select></div>
+                        <div class="form-group">
+                            <label for="select">Style Mode</label>
+                            <select name="input_style_mode" class="form-control">
+                                <option value="torchmoji_hidden" {{ 'selected' if style_mode == 'torchmoji_hidden' else '' }}>Infer emotion from text via TorchMoji</option>
+                                <option disabled value="mel" {{ 'selected' if style_mode == 'mel' else '' }}>Reference Audio Style</option>
+                                <option disabled value="token" {{ 'selected' if style_mode == 'token' else '' }}>Manual Style Tokens</option>
+                                <option disabled value="zeros" {{ 'selected' if style_mode == 'zeros' else '' }}>Neutral/None</option>
+                            </select></div>
+                    </div>
+                <div class="form-group">
+                    <label for="select">Speaker(s)</label>
+                    <label style="zoom: 0.6;">(You can select more than one)</label>
+                    <select name="input_speaker" class="form-control" style="height: 15em; resize: vertical;" multiple>
+                        {%for i in range(0, sp_len)%}
+                        <option value='{{speakers_available[i]}}' {{ 'selected' if speakers_available[i] in speaker else '' }}>{{speakers_available_short[i]}}</option>
+                        {%endfor%}
+                    </select></div>
+                <div class="form-group">
+                    <label for="select">Text</label>
+                    <textarea class="form-control" id="text_area" name="input_text" placeholder="{{sample_text}}"
+                        cols="40" rows="8" {{"maxlength="+max_input_length if max_input_length else ""}} onload="textCounter(this,'text_count');" oninput="textCounter(this,'text_count');">{{current_text}}</textarea>
+                    <input class="form-control" disabled maxlength="9" size="6" value={{max_input_length}} id="text_count" style="border: 0px; height: auto; width: auto; padding-top: 0px; float: right; background: transparent;" title="Remaining Characters">
+                </div>
+                <div id="btns" class="form-group">
+                    <input id="btn" type="submit" class="btn btn-primary mb-2" value="Generate" />
+                </div>
+            </form>
+            <div id="warning" class="alert alert-warning" role="alert" style="display: none">
+                No Text Input
+              </div>
+            <hr class="my-4">
+            {% if voice %}
+            <div class="media">
+                <div class="media-body pull-right">
+                    <p class="lead"> Result </p>
+                    {% if use_localhost %}
+                    <audio controls preload="auto" autoplay>
+                        <source src="http://localhost:5000/{{voice}}" type="audio/wav">
+                    </audio>
+                    {% else %}
+                    <audio controls preload="auto" autoplay>
+                        <source src="/{{voice}}" type="audio/wav">
+                    </audio>
+                    {% endif %}
+                    <p style="zoom: 0.7;">Took {{gen_time}} seconds to generate {{gen_dur}} seconds of audio (generated {{total_specs}} total spectrograms from {{n_passes}} passes)</p>
+                    <p style="zoom: 0.7;">Average score was {{avg_score}}</p>
+                </div>
+                {% endif %}
+            </div>
+            <button class="collapsible active" type="button" style="background-color: #e9ecef;color: #212529;border: 1px solid #d1d4d7;">Credits</button>
+            <div class="form-group content">
+                <ul style="margin-top: 0.5em;">
+                    <li style=""><a href="https://github.com/NVIDIA/tacotron2">Tacotron2</a> and <a href="https://github.com/yoyololicon/constant-memory-waveglow">WaveGlow</a> models trained and modified by <b>Cookie</b></li>
+                    <li style="">Website written/adapted from <a href="https://github.com/Verssae/flask-tacotron2-tts-web-app">Verssae</a> by <b>Cookie</b></li>
+                    <li style="">Initial <a href="https://github.com/Twibot-ai/audio_proj_utils">Dataset Processing</a> and technical help from <b>Twibot</b></li>
+                    <li style=""><b>Clipper</b> (and <b>many</b> anons) who labeled, cleaned, sourced and curated the amazing My Little Pony Dataset used.</li>
+                    <li style=""><b>Synthbot</b> who is much better at maths than me.</li>
+                    <li style=""><b>Synthbot</b> who hosts phonetically aligned and cleaned up copies of the Dataset for anyone to use.</li>
+                </ul>
+            </div>
+        </div>
+        <script>
+        function textCounter(field, field2) {
+          var countfield = document.getElementById(field2);
+          countfield.value = field.maxLength - field.value.length;
+        }
+        </script>
+        <script>
+        // https://www.w3schools.com/howto/tryit.asp?filename=tryhow_js_collapsible_symbol
+        let coll = document.getElementsByClassName("collapsible");
+        
+        for (let i = 0; i < coll.length; i++) {
+          coll[i].addEventListener("click", function() {
+            this.classList.toggle("active");
+            var content = this.nextElementSibling;
+            if (content.style.maxHeight){
+              content.style.maxHeight = null;
+            } else {
+              content.style.maxHeight = content.scrollHeight + "px";
+            } 
+          });
+        }
+        </script>
+        <script type="text/javascript" src="http://ajax.googleapis.com/ajax/libs/jquery/1.6.2/jquery.min.js"></script>
+        <script type="text/javascript">
+            $(document).ready(() => {
+                $("#btns").prepend('<div id="loading" style="display : none;" ><button class="btn btn-primary" type="button" disabled><span class="spinner-grow spinner-grow-sm" role="status" aria-hidden="true"></span>Loading...</button></div>')
+            });
+
+            $("#input_form").submit(() => {
+                var pass = true;
+                if (pass == false) {
+                    return true
+                }
+                
+                if (!$("#text_area").val()) {
+                    $('#warning').show();
+                    return false;
+                } else {
+                    $("#loading").show();
+                    $("#btn").hide()
+                    $('#warning').hide();
+                    return true;
+                }
+
+            });
+
+
+        </script>
+        <script src="https://code.jquery.com/jquery-3.3.1.slim.min.js"
+            integrity="sha384-q8i/X+965DzO0rT7abK41JStQIAqVgRVzpbzo5smXKp4YfRvH+8abtTE1Pi6jizo"
+            crossorigin="anonymous"></script>
+        <script src="https://cdnjs.cloudflare.com/ajax/libs/popper.js/1.14.7/umd/popper.min.js"
+            integrity="sha384-UO2eT0CpHqdSJQ6hJty5KVphtPhzWj9WO1clHTMGa3JDZwrnQq4sF86dIHNDz0W1"
+            crossorigin="anonymous"></script>
+        <script src="https://stackpath.bootstrapcdn.com/bootstrap/4.3.1/js/bootstrap.min.js"
+            integrity="sha384-JjSmVgyd0p3pXB1rRibZUAYoIIy6OrQ6VrjIEaFf/nJGzIxFDsf4x0xIM+B07jRM"
+            crossorigin="anonymous"></script>
+
+
+</body>
+
+</html>

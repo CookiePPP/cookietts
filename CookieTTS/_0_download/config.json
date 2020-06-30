@@ -1,0 +1,194 @@
+{
+    "downloads_folder": "downloads",
+    "LJSpeech": {
+        "url": "https://data.keithito.com/data/speech/LJSpeech-1.1.tar.bz2",
+        "filenames": [
+            "LJSpeech-1.1.tar.bz2"
+        ],
+        "download": 1,
+        "force_dl": 0
+    },
+    "VCTK": {
+        "urls": [
+            "https://datashare.is.ed.ac.uk/bitstream/handle/10283/2774/wav-1.zip?sequence=1&isAllowed=y",
+            "https://datashare.is.ed.ac.uk/bitstream/handle/10283/2774/wav-2_and_wav-3.zip?sequence=2&isAllowed=y"
+        ],
+        "download": 0,
+        "force_dl": 0
+    },
+    "Clipper_MLP": {
+        "url": "https://mega.nz/folder/L952DI4Q#nibaVrvxbwgCgXMlPHVnVw",
+        "download": 1,
+        "force_dl": 0,
+        "delete_non_voice_data": 1,
+        "delete_songs": 0,
+        "delete_noisy": 0,
+        "delete_very_noisy": 1,
+        "removable_folders": ["Noise samples"],
+        "removable_emotions": ["CANTERLOT VOICE"]
+    },
+    "Blizzard2011": {
+        "urls": [
+            "http://data.cstr.ed.ac.uk/blizzard2011/lessac/96k_wav_part_1.tar.bz2",
+            "http://data.cstr.ed.ac.uk/blizzard2011/lessac/96k_wav_part_2.tar.bz2",
+            "http://data.cstr.ed.ac.uk/blizzard2011/lessac/96k_wav_part_3.tar.bz2",
+            "http://data.cstr.ed.ac.uk/blizzard2011/lessac/96k_wav_part_4.tar.bz2"
+        ],
+        "filenames": [
+            "96k_wav_part_1.tar.bz2",
+            "96k_wav_part_2.tar.bz2",
+            "96k_wav_part_3.tar.bz2",
+            "96k_wav_part_4.tar.bz2"
+        ],
+        "labels_url": null,
+        "username": "",
+        "password": "",
+        "download": 0,
+        "force_dl": 0
+    },
+    "Blizzard2013": {
+        "urls": [
+            "http://data.cstr.ed.ac.uk/blizzard2013/lessac/BlackBeauty.zip",
+            "http://data.cstr.ed.ac.uk/blizzard2013/lessac/Lessac_Blizzard2013_CatherineByers_train.tar.bz2",
+            "http://data.cstr.ed.ac.uk/blizzard2013/lessac/README",
+            "http://data.cstr.ed.ac.uk/blizzard2013/lessac/training_inventory.xls",
+            "http://data.cstr.ed.ac.uk/blizzard2013/lessac/BlackBeauty.zip",
+            "http://data.cstr.ed.ac.uk/blizzard2013/lessac/mansfield1.zip",
+            "http://data.cstr.ed.ac.uk/blizzard2013/lessac/mansfield2.zip",
+            "http://data.cstr.ed.ac.uk/blizzard2013/lessac/mansfield3.zip",
+            "http://data.cstr.ed.ac.uk/blizzard2013/lessac/pride_and_prejudice1.zip",
+            "http://data.cstr.ed.ac.uk/blizzard2013/lessac/pride_and_prejudice2.zip",
+            "http://data.cstr.ed.ac.uk/blizzard2013/lessac/pride_and_prejudice3.zip"
+        ],
+        "labels_url": null,
+        "username": "",
+        "password": "",
+        "download": 0,
+        "force_dl": 0
+    },
+    "LibriTTS": {
+        "urls_clean": [
+            "http://www.openslr.org/resources/60/dev-clean.tar.gz",
+            "http://www.openslr.org/resources/60/test-clean.tar.gz",
+            "http://www.openslr.org/resources/60/train-clean-100.tar.gz",
+            "http://www.openslr.org/resources/60/train-clean-360.tar.gz"
+        ],
+        "urls_other": [
+            "http://www.openslr.org/resources/60/dev-other.tar.gz",
+            "http://www.openslr.org/resources/60/test-other.tar.gz",
+            "http://www.openslr.org/resources/60/train-other-500.tar.gz"
+        ],
+        "download_clean": 1,
+        "download_other": 1
+    },
+    "Littlepip": {
+        "urls": [
+            "https://drive.google.com/uc?id=1CNCPD7x7mpL00TvbpMKlSQW6-zazHB0b",
+            "https://drive.google.com/uc?id=1N9ijecH-6whCTM4TNplQspqvmrPfOcmH"
+        ],
+        "filenames": [
+            "FoE s1e01 Radioplay-20200310T045308Z-001.zip",
+            "FoE S1e02 Radio Play 1.1.zip"
+        ],
+        "download": 1,
+        "force_dl": 0
+    },
+    "Blaze the Cat": {
+        "url": "https://drive.google.com/uc?id=1eLg2YkDRVo54ZUPoxC8gOWDCmUN51Sfs",
+        "filenames": [
+            "Blaze 2-20200311T084002Z-001.zip"
+        ],
+        "download": 1,
+        "force_dl": 0
+    },
+    "Persona 4 Golden": {
+        "urls": [
+            "https://file.house/fdZG.7z",
+            "https://file.house/rHQ6.7z",
+            "https://file.house/2CMJ.7z",
+            "https://file.house/Te3P.7z",
+            "https://file.house/FTym.7z",
+            "https://file.house/_hZD.7z",
+            "https://drive.google.com/uc?id=1eQAnaoDBGQZldPVk-nzgYzRbcPSmnpv6",
+            "https://file.house/PDsx.7z",
+            "https://file.house/KglG.7z",
+            "https://file.house/2XLM.7z",
+            "https://file.house/iscg.7z",
+            "https://file.house/hGEU.7z",
+            "https://file.house/4r1w.7z",
+            "https://file.house/Sxzu.7z",
+            "https://file.house/T5Nb.7z",
+            "https://file.house/W2C5.7z",
+            "https://file.house/y0H7.7z"
+        ],
+        "filenames": [
+            "Chie Satonaka.7z",
+            "Naoto Shirogane.7z",
+            "Kanji Tatsumi.7z",
+            "Rise Kujikawa.7z",
+            "Teddie.7z",
+            "Yukiko Amagi.7z",
+            "Yosuke Hanamura.7z",
+            "Adachi Tohru.7z",
+            "Ai Ebihara.7z",
+            "Miss Kashiwagi.7z",
+            "Ayane Matsunaga.7z",
+            "Yumi Ozawa.7z",
+            "Mister Morooka.7z",
+            "Taro Namatame.7z",
+            "Ryotaro Dojima.7z",
+            "Nanako Dojima.7z",
+            "Margaret.7z"
+        ],
+        "download": 1,
+        "force_dl": 0
+    },
+    "TF2": {
+        "urls": [
+            "https://drive.google.com/uc?id=189jdwU7FCCvl9Y3uBdgITXTwLAg3tvLN"
+        ],
+        "download": 0
+    },
+    "TF2_announcer": {
+        "url": "[MISSING]",
+        "download": 0
+    },
+    "TF2_administrator": {
+        "url": "https://drive.google.com/uc?id=1tW_i4NgoVLZO2jux43XgNwnN8Jk1Rs-i",
+        "filenames": [
+            "tf2_administrator_dataset.7z"
+        ],
+        "download": 0
+    },
+    "Doofenshmirtz": {
+        "download": 0
+    },
+    "Caleb": {
+        "download": 0
+    },
+    "Wang": {
+        "download": 0
+    },
+    "Brock_Fucking_Samson": {
+        "download": 0
+    },
+    "Combine_soldiers": {
+        "url": "https://file.house/D4S-.7z",
+        "filenames": [
+            "combine_soldiers.7z"
+        ],
+        "download": 1,
+        "force_dl": 0
+    },
+    "Combine_overwatch": {
+        "url": "https://file.house/UWKJ.7z",
+        "filenames": [
+            "combine_overwatch.7z"
+        ],
+        "download": 1,
+        "force_dl": 0
+    },
+    "Josh": {
+        "download": 0
+    }
+}

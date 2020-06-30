@@ -1,0 +1,5 @@
+;audio_path|transcript|speaker_name|emotion|noise_level
+wav-1/0/audio_0.wav|Transcript 0.|0|unknown_emotion|unknown_noise_level
+wav-1/1/audio_1.wav|Transcript 1.|1|unknown_emotion|unknown_noise_level
+wav-2_and_wav-3/wav-2/2/audio_2.wav|Transcript 2.|2|unknown_emotion|unknown_noise_level
+wav-2_and_wav-3/wav-3/3/audio_3.wav|Transcript 3.|3|unknown_emotion|unknown_noise_level

@@ -1,0 +1,11 @@
+torch==1.4.1
+numpy
+scipy
+librosa
+tensorboardX==1.1
+Unidecode
+nltk
+tqdm
+gdown
+soundfile
+py7zr
