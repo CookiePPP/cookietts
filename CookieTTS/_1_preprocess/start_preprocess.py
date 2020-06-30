@@ -408,8 +408,10 @@ if True:
         
         # run aligner over every audio file (one speaker at a time)
         path_data_pairs = {}
+        MISSING_VOCAB_PATH = os.path.join(DATASET_FOLDER, 'missing_vocab.txt')
+        open(MISSING_VOCAB_PATH, 'w').close()
         for speaker, path_quotes in speaker_paths.items():
-            data = MFA.force_align_path_quote_pairs(path_quotes, working_directory, DICT_PATH)
+            data, *_ = MFA.force_align_path_quote_pairs(path_quotes, working_directory, DICT_PATH, dump_missing_vocab=MISSING_VOCAB_PATH)
             paths = [x[0] for x in path_quotes]
             for path, data in zip(paths, data):
                 path_data_pairs[path] = data

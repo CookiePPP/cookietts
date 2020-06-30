@@ -229,7 +229,7 @@ def load_TextGrid(path, quote=None):
     return _dict
 
 
-def force_align_path_quote_pairs(path_quotes, working_directory, dictionary_path, ignore_exceptions=False, model_path="../pretrained_models/english.zip"):
+def force_align_path_quote_pairs(path_quotes, working_directory, dictionary_path, dump_missing_vocab=False, ignore_exceptions=False, model_path="../pretrained_models/english.zip"):
     """
     Run Montreal Forced Aligner over an array of audio-text pairs and return phonetic/timing information.
     
@@ -243,10 +243,12 @@ def force_align_path_quote_pairs(path_quotes, working_directory, dictionary_path
         working_directory: THIS DIRECTORY/PATH MAY BE DELETED. This will temporarilly hold a renamed copy of the audio files since Montreal Forced Aligner (in my testing) crashes on filenames with spaces (and considers each new folder to be new speaker).
         dictionary_path: must contain a text file pronouncation dictionary.
         ignore_exceptions: (optional) use 'ignore exceptions' flag on Montreal Forced Aligner.
+        dump_missing_vocab: (optional) text file to dump (append) missing vocab.
         model_path: (optional) the Montreal Forced Aligner model used for aligning.
     
     RETURNS:
         mfa_data: 
+        missing_vocab: 
     """
     ignore_exceptions = ' -t' if ignore_exceptions else ''
     
@@ -297,6 +299,13 @@ def force_align_path_quote_pairs(path_quotes, working_directory, dictionary_path
         print('\n'.join( [f'WORD: "{x.split(" ")[-1]}"\nPATH: "{inv_basename_lookup[x.split(" ")[0]]}"\n' for x in open(os.path.join(output_directory, 'utterance_oovs.txt'), 'r').read().split("\n") if len(x)] ))
         print(' ---- ############# ---- ')
     
+    missing_vocab = [x for x in open(os.path.join(output_directory, 'oovs_found.txt'), 'r').read() if len(x)]
+     
+    # dump vocab to file
+    if dump_missing_vocab:
+        with open(dump_missing_vocab, 'a') as outfile:
+                outfile.write( '\n'.join( [f'MISSING WORD: "{x.split(" ")[-1]}"\nPATH: "{inv_basename_lookup[x.split(" ")[0]]}"\n' for x in open(os.path.join(output_directory, 'utterance_oovs.txt'), 'r').read().split("\n") if len(x)] ) )
+    
     # collect together all the new data
     mfa_data = []
     for i, ((path, new_path), (_, quote)) in enumerate(zip(list(path_lookup.items()), path_quotes)):
@@ -316,7 +325,7 @@ def force_align_path_quote_pairs(path_quotes, working_directory, dictionary_path
     import shutil
     shutil.rmtree(working_directory)
     
-    return mfa_data
+    return mfa_data, missing_vocab
 
 
 if __name__ == "__main__":
