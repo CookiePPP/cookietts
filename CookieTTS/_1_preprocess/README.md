@@ -39,16 +39,17 @@ This will:
 
 The preprocessing script is intended to be flexible enough for new datasets.
 
-1. Make a folder inside the datasets folder. The name of this folder will be the name of the dataset.
-	- e.g: go into datasets folder and create a folder called `Red vs Blue`. `Red vs Blue` is now the name of that dataset.
+1. Make a folder inside the downloads folder. The name of this folder will be the name of the dataset.
+	- e.g: go into downloads folder and create a folder called `Red vs Blue`. `Red vs Blue` is now the name of that dataset.
+	- note: Having a separate dataset folder for each speaker is recommended if you do not follow the Clipper or LibriTTS naming schemes.
 2. Place **a copy** of your custom datasets files inside the newly created folder.
 	- e.g: inside the `Red vs Blue` folder, place a **copy** of any audio files and text files you have.
 	- Any `.zip` and `.tar` files will be automatically extracted so those can be used to package your custom data.
 	- This is tested on `.flac` and `.wav` files. Other audio file-types are unlikely to work.
-	- If using stereo audio, note only the left channel will be included/used.
+	- If using stereo audio, only the left channel will be included/used.
 
 3. Run `python start_preprocess.py`
-	- it will prompt you with basic questions, then process your dataset the same as the others.
+	- it will copy/extract, then prompt you with basic questions, then process your dataset the same as the others.
 
 4. Fix skipped clips because of missing vocab or typos.
 	- Montreal Forced Aligner cannot align to words that do not have a pronunciation in the dictionary.
@@ -57,5 +58,5 @@ The preprocessing script is intended to be flexible enough for new datasets.
 		- If the word is a typo, fix it.
 		- If there is no typo then the word likely does not exist in the pronunciation dictionary. Post the word and relevant audio file somewhere and they can be added to the dictionary by me or another person!
 		- e.g: The word `Sangheili` is not in our dict, a pronunciation would need to be figured out and added to the dictionary in order to use a clip with that word in it.
-5. Once you have your new dictionary file, delete the datasets folder and start from step 1.
+5. Once you have your new dictionary file, delete the datasets folder and start from step 3.
 	- If `missing_vocab.txt` is empty or close enough, you're good to start training models.

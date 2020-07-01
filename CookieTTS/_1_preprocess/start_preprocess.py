@@ -483,7 +483,7 @@ if True:
     
     
     # (if using FastSpeech or PAG-Tacotron) Generate and save phoneme timing information and/or ground truth alignment graphs
-    
+    # DONE
     
     # (if using FastPitch or FastSpeech2) Generate and save pitch information for every clip
     

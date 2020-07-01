@@ -41,3 +41,7 @@ megatools-*-git-*-linux-x86_64.tar.gz
 # WADA Signal-to-Noise Ratio tool
 /CookieTTS/scripts/WadaSNR/
 /CookieTTS/scripts/WadaSNR.tar.gz
+
+# setup.py files
+/CookiePPP.egg-info/
+/CookieTTS.egg-info/

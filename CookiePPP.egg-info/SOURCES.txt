@@ -1,6 +1,0 @@
-README.md
-setup.py
-CookiePPP.egg-info/PKG-INFO
-CookiePPP.egg-info/SOURCES.txt
-CookiePPP.egg-info/dependency_links.txt
-CookiePPP.egg-info/top_level.txt

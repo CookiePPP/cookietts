@@ -44,13 +44,13 @@ if not os.path.exists(binary_folder):
 binary_folder = os.path.abspath(binary_folder)
 os.chdir(prev_wd)
 
-def megadown(download_link, filename='.'):
+def megadown(download_link, filename='.', verbose=False):
     """Use megatools binary executable to download files and folders from MEGA.nz ."""
     filename = ' --path "'+os.path.abspath(filename)+'"' if filename else ""
     wd_old = os.getcwd()
     os.chdir(binary_folder)
     if platform == "linux" or platform == "linux2":
-        subprocess.call(f'./megatools dl{filename} --debug http {download_link}', shell=True)
+        subprocess.call(f'./megatools dl{filename}{" --debug http" if verbose else ""} {download_link}', shell=True)
     elif platform == "win32":
-        subprocess.call(f'megatools.exe dl{filename} --debug http {download_link}', shell=True)
+        subprocess.call(f'megatools.exe dl{filename}{" --debug http" if verbose else ""} {download_link}', shell=True)
     os.chdir(wd_old)

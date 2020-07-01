@@ -21,7 +21,7 @@ def rmdir(directory, white_list=[], ignore_strs=[]):
 
 def download(conf):
     # Download the master file
-    print("Downloading Clippers Master Folder\nthis has many small files so patience is appreciated.")
+    print("Downloading Clippers Master Folder\nthis takes multiple days to download. An alternative download will be figured out later.")
     from time import sleep; sleep(2)
     import os
     
