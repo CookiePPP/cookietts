@@ -35,5 +35,4 @@ Here is a summary of the datasets available for easy downloading and sorting.
 | Josh                   | 1        | TODO               | TODO                                       | TODO                   | TODO          | Male      |                                                                                 |                                                                      |
 
 - Datasets with sample rates below the f_max of the TTM models can still be used when combined with masked mel bands.
-- Datasets are volume normalized, however they will still have differences that make training more challenging for the models.
-
+- Datasets are volume normalized, however they will still have differences that make training more challenging for the models. **Quality over Quantity** in this case.

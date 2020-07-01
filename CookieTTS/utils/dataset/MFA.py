@@ -45,40 +45,6 @@ if not os.path.exists('montreal-forced-aligner'):
 binary_folder = os.path.abspath(os.path.join('montreal-forced-aligner','bin'))
 os.chdir(prev_wd)
 
-def force_align(corpus_directory, dictionary_path, output_directory=None, working_directory=None, ignore_exceptions=False):
-    """
-    Run Montreal Forced Aligner over a directory.
-    """
-    if output_directory is None:
-        output_directory = os.path.join(corpus_directory, 'MFA_output')
-    if working_directory is None:
-        working_directory = os.path.join(corpus_directory, 'MFA_temp')
-    if ignore_exceptions:
-        ignore_exceptions = ' -t'
-    else:
-        ignore_exceptions = ''
-    
-    # get absolute paths
-    abp = os.path.abspath; corpus_directory, dictionary_path, output_directory = abp(corpus_directory), abp(dictionary_path), abp(output_directory)
-    
-    # run the aligner
-    wd_old = os.getcwd()
-    os.chdir(binary_folder)
-    model_path = "../pretrained_models/english.zip"
-    if platform == "linux" or platform == "linux2":
-        subprocess.call(f'"{binary_folder}/mfa_align" -v -d -t{ignore_exceptions} "{working_directory}" "{corpus_directory}" "{dictionary_path}" "{model_path}" "{output_directory}"', shell=True)
-    elif platform == "win32":
-        subprocess.call(f'"{binary_folder}/mfa_align.exe" -v -d -t{ignore_exceptions} "{working_directory}" "{corpus_directory}" "{dictionary_path}" "{model_path}" "{output_directory}"', shell=True)
-    os.chdir(wd_old)
-    
-    # load the outputs and sort into dicts
-    if len(open(os.path.join(output_directory, 'utterance_oovs.txt'), 'r').read().split("\n")) > 1:
-        print(' ---- MISSING VOCAB ---- ')
-        print('\n'.join( [f'MISSING WORD: "{word}"' for word in open(os.path.join(output_directory, 'oovs_found.txt'), 'r').read().split("\n") if len(word)] ))
-        print('')
-        print('\n'.join( [f'BAD PATH: "{path}"' for path in open(os.path.join(output_directory, 'utterance_oovs.txt'), 'r').read().split("\n") if len(path)] ))
-        print(' ---- ############# ---- ')
-
 
 def get(text, word_phones, punc="!?,.;:␤#-_'\"()[]\n"):
     """Convert block of text into ARPAbet."""
@@ -269,7 +235,7 @@ def force_align_path_quote_pairs(path_quotes, working_directory, dictionary_path
     # assert working_directory is empty (don't want to delete any important files)
     from glob import glob
     if os.path.exists(working_directory) and glob(f'{working_directory}/*'):
-        print(f'"{working_directory}" is not Empty!')
+        print(f'"{working_directory}" (working directory) is not Empty!')
         if quiet or input('Delete? (y/n)\n> ').lower() in ('y','yes'):
             import shutil
             shutil.rmtree(working_directory)
