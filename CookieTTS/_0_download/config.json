@@ -101,43 +101,171 @@
         "download": 1,
         "force_dl": 0
     },
-    "Persona 4 Golden": {
+    "P4G_Chie_Satonaka": {
         "urls": [
-            "https://file.house/fdZG.7z",
-            "https://file.house/rHQ6.7z",
-            "https://file.house/2CMJ.7z",
-            "https://file.house/Te3P.7z",
-            "https://file.house/FTym.7z",
-            "https://file.house/_hZD.7z",
-            "https://drive.google.com/uc?id=1eQAnaoDBGQZldPVk-nzgYzRbcPSmnpv6",
-            "https://file.house/PDsx.7z",
-            "https://file.house/KglG.7z",
-            "https://file.house/2XLM.7z",
-            "https://file.house/iscg.7z",
-            "https://file.house/hGEU.7z",
-            "https://file.house/4r1w.7z",
-            "https://file.house/Sxzu.7z",
-            "https://file.house/T5Nb.7z",
-            "https://file.house/W2C5.7z",
+            "https://file.house/fdZG.7z"
+        ],
+        "filenames": [
+            "Chie Satonaka.7z"
+        ],
+        "download": 1,
+        "force_dl": 0
+    },
+    "P4G_Naoto_Shirogane": {
+        "urls": [
+            "https://file.house/rHQ6.7z"
+        ],
+        "filenames": [
+            "Naoto Shirogane.7z"
+        ],
+        "download": 1,
+        "force_dl": 0
+    },
+    "P4G_Kanji_Tatsumi": {
+        "urls": [
+            "https://file.house/2CMJ.7z"
+        ],
+        "filenames": [
+            "Kanji Tatsumi.7z"
+        ],
+        "download": 1,
+        "force_dl": 0
+    },
+    "P4G_Rise_Kujikawa": {
+        "urls": [
+            "https://file.house/Te3P.7z"
+        ],
+        "filenames": [
+            "Rise Kujikawa.7z"
+        ],
+        "download": 1,
+        "force_dl": 0
+    },
+    "P4G_Teddie": {
+        "urls": [
+            "https://file.house/FTym.7z"
+        ],
+        "filenames": [
+            "Teddie.7z"
+        ],
+        "download": 1,
+        "force_dl": 0
+    },
+    "P4G_Yukiko_Amagi": {
+        "urls": [
+            "https://file.house/_hZD.7z"
+        ],
+        "filenames": [
+            "Yukiko Amagi.7z"
+        ],
+        "download": 1,
+        "force_dl": 0
+    },
+    "P4G_Yosuke_Hanamura": {
+        "urls": [
+            "https://drive.google.com/uc?id=1eQAnaoDBGQZldPVk-nzgYzRbcPSmnpv6"
+        ],
+        "filenames": [
+            "Yosuke Hanamura.7z"
+        ],
+        "download": 1,
+        "force_dl": 0
+    },
+    "P4G_Adachi_Tohru": {
+        "urls": [
+            "https://file.house/PDsx.7z"
+        ],
+        "filenames": [
+            "Adachi Tohru.7z"
+        ],
+        "download": 1,
+        "force_dl": 0
+    },
+    "P4G_Ai_Ebihara": {
+        "urls": [
+            "https://file.house/KglG.7z"
+        ],
+        "filenames": [
+            "Ai Ebihara.7z"
+        ],
+        "download": 1,
+        "force_dl": 0
+    },
+    "P4G_Miss_Kashiwagi": {
+        "urls": [
+            "https://file.house/2XLM.7z"
+        ],
+        "filenames": [
+            "Miss Kashiwagi.7z"
+        ],
+        "download": 1,
+        "force_dl": 0
+    },
+    "P4G_Ayane_Matsunaga": {
+        "urls": [
+            "https://file.house/iscg.7z"
+        ],
+        "filenames": [
+            "Ayane Matsunaga.7z"
+        ],
+        "download": 1,
+        "force_dl": 0
+    },
+    "P4G_Yumi_Ozawa": {
+        "urls": [
+            "https://file.house/hGEU.7z"
+        ],
+        "filenames": [
+            "Yumi Ozawa.7z"
+        ],
+        "download": 1,
+        "force_dl": 0
+    },
+    "P4G_Mister_Morooka": {
+        "urls": [
+            "https://file.house/4r1w.7z"
+        ],
+        "filenames": [
+            "Mister Morooka.7z"
+        ],
+        "download": 1,
+        "force_dl": 0
+    },
+    "P4G_Tar_Namatame": {
+        "urls": [
+            "https://file.house/Sxzu.7z"
+        ],
+        "filenames": [
+            "Taro Namatame.7z"
+        ],
+        "download": 1,
+        "force_dl": 0
+    },
+    "P4G_Ryotaro_Dojima": {
+        "urls": [
+            "https://file.house/T5Nb.7z"
+        ],
+        "filenames": [
+            "Ryotaro Dojima.7z"
+        ],
+        "download": 1,
+        "force_dl": 0
+    },
+    "P4G_Nanako_Dojima": {
+        "urls": [
+            "https://file.house/W2C5.7z"
+        ],
+        "filenames": [
+            "Nanako Dojima.7z"
+        ],
+        "download": 1,
+        "force_dl": 0
+    },
+    "P4G_Margaret": {
+        "urls": [
             "https://file.house/y0H7.7z"
         ],
         "filenames": [
-            "Chie Satonaka.7z",
-            "Naoto Shirogane.7z",
-            "Kanji Tatsumi.7z",
-            "Rise Kujikawa.7z",
-            "Teddie.7z",
-            "Yukiko Amagi.7z",
-            "Yosuke Hanamura.7z",
-            "Adachi Tohru.7z",
-            "Ai Ebihara.7z",
-            "Miss Kashiwagi.7z",
-            "Ayane Matsunaga.7z",
-            "Yumi Ozawa.7z",
-            "Mister Morooka.7z",
-            "Taro Namatame.7z",
-            "Ryotaro Dojima.7z",
-            "Nanako Dojima.7z",
             "Margaret.7z"
         ],
         "download": 1,
@@ -177,7 +305,7 @@
         "filenames": [
             "combine_soldiers.7z"
         ],
-        "download": 1,
+        "download": 0,
         "force_dl": 0
     },
     "Combine_overwatch": {
@@ -185,7 +313,7 @@
         "filenames": [
             "combine_overwatch.7z"
         ],
-        "download": 1,
+        "download": 0,
         "force_dl": 0
     },
     "Josh": {

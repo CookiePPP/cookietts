@@ -1,7 +1,10 @@
 import json
 import os
 import sys
-os.chdir(os.path.split(__file__)[0])
+try:
+    os.chdir(os.path.split(__file__)[0])
+except:
+    pass
 sys.path.append(os.path.abspath('..'))
 
 from scripts import download_urls, download_clipper
@@ -33,26 +36,8 @@ def dl_dataset(conf, dataset, urls, filenames=None, force_dl=None):
             download_urls.download(urls, dataset, filenames=filenames, force_dl=force_dl)
         os.chdir('..')
 
-# Download Easy Datasets
-simple_datasets = [
-    'LJSpeech',
-    'VCTK',
-    'Blizzard2011',
-    'Blizzard2013',
-    'Littlepip',
-    "Blaze the Cat",
-    "Persona 4 Golden",
-    "TF2",
-    "TF2_announcer",
-    "TF2_administrator",
-    "Doofenshmirtz",
-    "Caleb",
-    "Wang",
-    "Brock_Fucking_Samson",
-    "Combine_soldiers",
-    "Combine_overwatch",
-    "Josh",
-]
+# Download Normal Datasets
+simple_datasets = [x for x in conf.keys() if x not in ('Clipper_MLP', 'LibriTTS')]
 
 total_to_dl = len([conf[x]['download'] for x in conf.keys() if 'download' in conf[x].keys() and conf[x]['download']])
 dls_position = 1
@@ -65,6 +50,8 @@ for dataset in [x for x in simple_datasets if conf[x]['download']]:
     dl_dataset(conf, dataset, urls)
     del urls
     dls_position+=1
+
+# download Unique datasets
 
 # Clipper_MLP <- Master File Hosted by Clipper
 print(f"On Dataset {dls_position}/{total_to_dl}")

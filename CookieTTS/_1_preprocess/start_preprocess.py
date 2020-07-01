@@ -19,9 +19,8 @@ DICT_PATH = conf['DICT_PATH']
 MIN_SPEAKER_DURATION_SECONDS = conf['MIN_SPEAKER_DURATION_SECONDS']
 REGENERATE_EMOTION_INFO = conf['REGENERATE_EMOTION_INFO']
 TRAIN_PERCENT = conf['TRAIN_PERCENT']
-
-from CookieTTS.utils.text.ARPA import ARPA
-arpa = ARPA(DICT_PATH)
+DELETE_NOISY = conf["DELETE_NOISY"]
+DELETE_VERY_NOISY = conf["DELETE_VERY_NOISY"]
 
 # load downloads config file
 with open("../_0_download/config.json") as f:
@@ -30,7 +29,7 @@ with open("../_0_download/config.json") as f:
 # define recursive blob, this is just searches a path recursively for files.
 from glob import glob
 def globr(*args, **kwargs):
-    """recurive glob"""
+    """recursive glob"""
     return glob(*args, recursive=True, **kwargs)
 
 def step_2_1():
@@ -118,8 +117,27 @@ if 0:
     step_2_2()
 
 #################################################################################
+### for Clipper/MLP                                                           ###
+###  - Delete Noisy and/or Very Noisy audio files (based on config file)       ###
+#################################################################################
+dataset = 'Clipper_MLP'
+dataset_dir = os.path.join(DATASET_FOLDER, dataset)
+from glob import glob
+DELETE_NOISY = conf["DELETE_NOISY"]
+DELETE_VERY_NOISY = conf["DELETE_VERY_NOISY"]
+if DELETE_NOISY:
+    for file in glob(os.path.join(dataset_dir, '**', '*_Noisy_*'), recursive=True):
+        os.unlink(file)
+if DELETE_VERY_NOISY:
+    for file in glob(os.path.join(dataset_dir, '**', '*_Very Noisy_*'), recursive=True):
+        os.unlink(file)
+del dataset, dataset_dir
+
+
+
+#################################################################################
 ### for Blizzard2011                                                          ###
-###   Slice clips from original Studio files                                  ###
+###  - Slice clips from original Studio files                                  ###
 #################################################################################
 dataset = 'Blizzard2011'
 if dconf['Blizzard2011']['download']:
@@ -134,12 +152,12 @@ del dataset
 
 #################################################################################
 ### for VCTK                                                                  ###
-###   delete/ignore microphone not in use.                                    ###
-###   High-pass filter                                                        ###
-###   Low-Pass filter                                                         ###
-###   Resample to target sample rate. # note, need to save sr info somewhere. ###
-###   Aggressive Trimming                                                     ###
-###   Save the ['path','sample_rate'] pairs                                   ###
+###  - delete/ignore microphone not in use.                                    ###
+###  - High-pass filter                                                        ###
+###  - Low-Pass filter                                                         ###
+###  - Resample to target sample rate. # note, need to save sr info somewhere. ###
+###  - Aggressive Trimming                                                     ###
+###  - Save the ['path','sample_rate'] pairs                                   ###
 #################################################################################
 path_sample_rates = {}
 
@@ -187,10 +205,10 @@ del dataset
 
 ##################################################################################
 ### for all audio                                                              ###
-###   High-pass filter                                                         ###
-###   Low-Pass filter                                                          ###
-###   Resample to target sample rate. # note, need to save sr info somewhere.  ###
-###   Trim                                                                     ###
+###  - High-pass filter                                                         ###
+###  - Low-Pass filter                                                          ###
+###  - Resample to target sample rate. # note, need to save sr info somewhere.  ###
+###  - Trim                                                                     ###
 ##################################################################################
 if 0:
     import numpy as np
@@ -405,38 +423,46 @@ if True:
                 if speaker not in speaker_paths.keys():
                     speaker_paths[speaker] = []
                 speaker_paths[speaker].append( [clip['path'], clip['quote']] )
+                del speaker
         
         # run aligner over every audio file (one speaker at a time)
         path_data_pairs = {}
         MISSING_VOCAB_PATH = os.path.join(DATASET_FOLDER, 'missing_vocab.txt')
         open(MISSING_VOCAB_PATH, 'w').close()
         for speaker, path_quotes in speaker_paths.items():
-            data, *_ = MFA.force_align_path_quote_pairs(path_quotes, working_directory, DICT_PATH, dump_missing_vocab=MISSING_VOCAB_PATH)
-            paths = [x[0] for x in path_quotes]
+            data, *_ = MFA.force_align_path_quote_pairs(path_quotes, working_directory, DICT_PATH, beam_width=300, n_jobs=-((-THREADS)//2), dump_missing_vocab=MISSING_VOCAB_PATH, quiet=True)
+            paths = [x[0] if x else None for x in path_quotes]
             for path, data in zip(paths, data):
-                path_data_pairs[path] = data
+                if path is not None:
+                    path_data_pairs[path] = data
             del data, paths
         
         # merge info back into meta
         for dataset in meta.keys():
             for i, clip in enumerate(meta[dataset]):
-                data = path_data_pairs[clip['path']]
-                meta[dataset][i]['phoneme_transcript'] = data['arpabet_quote']
-                meta[dataset][i]['clip_start'] = data['clip_start']
-                meta[dataset][i]['clip_end'] = data['clip_end']
-                meta[dataset][i]['words_start'] = data['words_start']
-                meta[dataset][i]['words_end'] = data['words_end']
-                meta[dataset][i]['phone_start'] = data['phone_start']
-                meta[dataset][i]['phone_end'] = data['phone_end']
-                meta[dataset][i]['words'] = data['words']
-                meta[dataset][i]['phones'] = data['phones']
+                try:
+                    data = path_data_pairs[clip['path']]
+                    meta[dataset][i]['phoneme_transcript'] = data['arpabet_quote']
+                    meta[dataset][i]['clip_start'] = data['clip_start']
+                    meta[dataset][i]['clip_end'] = data['clip_end']
+                    meta[dataset][i]['words_start'] = data['words_start']
+                    meta[dataset][i]['words_end'] = data['words_end']
+                    meta[dataset][i]['phone_start'] = data['phone_start']
+                    meta[dataset][i]['phone_end'] = data['phone_end']
+                    meta[dataset][i]['words'] = data['words']
+                    meta[dataset][i]['phones'] = data['phones']
+                except KeyError:
+                    print(f'"{clip["path"]}" did not align. Skipping.')
                 del data
         # Montreal Force Aligner done.
     else:
         if use_g2p:
             from g2p_en import G2p
             g2p = G2p()
-    
+        else:
+            from CookieTTS.utils.text.ARPA import ARPA
+            arpa = ARPA(DICT_PATH)
+        
         use_forced_aligner = False
         for dataset in meta.keys():
             prev_wd = os.getcwd()
@@ -494,8 +520,9 @@ if True:
                 emotions = clip["emotions"]
                 emotion_ids = [emotions.index(x) for x in clip["emotions"]]
                 sample_rate = clip["sample_rate"] if "sample_rate" in clip.keys() else ''
+                phoneme_transcript = clip["phoneme_transcript"] if "phoneme_transcript" in clip.keys() else ''
                 
-                write_line = f'{clip["path"]}|{clip["quote"]}|{clip["phoneme_transcript"]}|{speaker_id}|{emotions}|{sample_rate}|{emotion_ids}|{clip["noise"]}'
+                write_line = f'{clip["path"]}|{clip["quote"]}|{phoneme_transcript}|{speaker_id}|{emotions}|{sample_rate}|{emotion_ids}|{clip["noise"]}'
                 if random.Random(i).random() < TRAIN_PERCENT:
                     train_lines.append(write_line)
                 else:

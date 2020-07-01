@@ -162,7 +162,7 @@ def remove_ending_periods(directory):
         os.rename(src, dst)
 
 
-def get_dataset_meta(directory, meta=None, default_speaker=None, default_emotion=None, default_noise_level=None, default_source=None, default_source_type='audiobook', audio_ext = ".wav"):
+def get_dataset_meta(directory, meta=None, default_speaker=None, default_emotion=None, default_noise_level=None, default_source=None, default_source_type='audiobook', audio_ext=".wav", naming_system=None):
     """
     Looks for
      - audio paths
@@ -183,6 +183,19 @@ def get_dataset_meta(directory, meta=None, default_speaker=None, default_emotion
         default_noise_level: noise_level to use if none can be identified
         default_source: e.g: "My Little Pony", "Dan vs", "Them's Fightin' Herds"
         default_source_type: e.g: "game","music","audiobook","tv show"
+        naming_system: (TODO)
+            options:
+                "clipper": get names from string between 3rd and 4th underscore
+                      e.g: "audio_folder/00_00_00_Mrs. Cake_Sad_Noisy_Transcript 3_.wav" -> "Mrs. Cake"
+                      e.g: 'audio_0.wav' -> default_speaker
+                "vctk": get names from the name of the parent folder
+                      e.g: "p234/audio_0.wav" -> "p234"
+                "p4g": get names from the name of the filelist
+                      e.g: audio files from "Twilight.txt" have the speaker of "Twilight"
+                      e.g: audio files from "train.txt" have the speaker of "train"
+                None: use default_speaker. (clipper filenames can still override)
+                      e.g: 'audio_0.wav' -> default_speaker
+                      e.g: '00_00_00_Mrs. Cake_Sad_Noisy_Transcript 3_.wav' -> 'Mrs. Cake'
     
     RETURNS:
         meta: an array of metadata dicts
@@ -203,7 +216,6 @@ def get_dataset_meta(directory, meta=None, default_speaker=None, default_emotion
     assert len(audio_files), f'no audio files found for "{directory}" dataset.'
     print(f'Found {len(audio_files)} audio files.')
     audio_basename_lookup = {os.path.splitext(os.path.split(x)[1])[0]: os.path.abspath(x) for x in audio_files}
-    #txt_files = sorted([os.path.abspath(x) for x in [*glob("**/*.txt", recursive=True), *glob("**/*.csv", recursive=True)]])
     txt_files = sorted([os.path.abspath(x) for x in [*glob("**/*.txt", recursive=True), *glob("**/*.csv", recursive=True)] if os.path.exists(x)])
     assert all([os.path.exists(x) for x in txt_files])
     assert len(txt_files), f'no text files found for "{directory}" dataset.'

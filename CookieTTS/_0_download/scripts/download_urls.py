@@ -2,7 +2,7 @@ import urllib.request
 from tqdm import tqdm
 import gdown
 from os.path import exists
-from CookieTTS.0_download.scripts.download_mega import megadown
+from CookieTTS._0_download.scripts.download_mega import megadown
 
 def request_url_with_progress_bar(url, filename):
     class DownloadProgressBar(tqdm):

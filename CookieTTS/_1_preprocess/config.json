@@ -6,6 +6,8 @@
     "OUTPUT_BIT_DEPTH": 2,
     "DICT_PATH": "../dict/merged.dict.txt",
     "REGENERATE_EMOTION_INFO": false,
-    "MIN_SPEAKER_DURATION_SECONDS": 60,
-    "TRAIN_PERCENT": 0.95
+    "MIN_SPEAKER_DURATION_SECONDS": 15,
+    "TRAIN_PERCENT": 0.95,
+    "DELETE_NOISY": false,
+    "DELETE_VERY_NOISY": true
 }

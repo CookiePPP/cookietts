@@ -1,5 +1,5 @@
 import urllib.request
-from download_mega import megadown
+from CookieTTS._0_download.scripts.download_mega import megadown
 
 
 from pathlib import Path

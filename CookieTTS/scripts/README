@@ -1,0 +1,34 @@
+###################################################################################
+#
+# WADA SNR Usage
+#
+# Chanwoo Kim
+#
+# IMPORTANT !!!!
+#
+#  The input data should be at "16 kHz" "2 bytes per sample" "mono"
+#  The program does not check the header format, so you should be very careful
+#  about selecting "ifmt" option
+#
+##################################################################################
+
+1) Compilation
+	* Goto the build directory
+	* make
+
+2) Running
+	* Goto the Exe directory
+        * The input needs to be at 16 kHz and mono-channel and 2 bytes per sample (uncompressed)
+        * Please be careful in selecting the input file format option (mswav, nist, raw)
+	* The following is an example how to run this program:
+
+./WADASNR -i ../SampleCorrupt/sb01_10dB_Music.sph -t Alpha0.400000.txt -ifmt nist
+
+ The -t option should be specified and please use this one Alpha0.400000.txt, which is obtained by assuming that the clean speech has the alpha of 0.4
+
+3) There are sample examples in SampleCorrupt directories. File format is in NIST SPH format
+
+ Thanks so much,
+
+ Sincerley, Chanwoo Kim
+

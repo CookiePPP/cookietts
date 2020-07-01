@@ -36,3 +36,6 @@ megatools-*-git-*-linux-x86_64.tar.gz
 /CookieTTS/utils/dataset/montreal-forced-aligner/
 /CookieTTS/utils/dataset/montreal-forced-aligner_win64.zip
 /CookieTTS/utils/dataset/montreal-forced-aligner_linux.tar.gz
+
+# WADA Signal-to-Noise Ratio tool
+/CookieTTS/scripts/WadaSNR/
