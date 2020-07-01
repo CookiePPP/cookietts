@@ -14,7 +14,7 @@ Inside here you will see two architectures.
  - **TorchMoji Style Tokens**
 	 - Use torchMoji to provde Style Tokens taken entirely from text.
 	 - This is supported by most inference options since torchMoji uses text as the only input.
- - **DynamicConvolutionAttention** from [LOCATION-RELATIVE ATTENTION MECHANISMS FOR ROBUST LONG-FORM
+ - **Dynamic Convolution Attention** from [LOCATION-RELATIVE ATTENTION MECHANISMS FOR ROBUST LONG-FORM
 SPEECH SYNTHESIS](https://arxiv.org/pdf/1910.10288.pdf)
 	 - This implementation *works* (it allows long inputs) however stability is worse than Content-Location Hybrid Attention.
  - **GMM based Attention** from [LOCATION-RELATIVE ATTENTION MECHANISMS FOR ROBUST LONG-FORM
