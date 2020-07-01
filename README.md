@@ -2,6 +2,15 @@
 
 Check back in a week. Thanks.
 
+Missing stuff;
+
+- Pitch preprocessing
+- Energy preprocessing
+- Normalize transcripts before running Montreal Forced Aligner 
+- Tacotron2 and WaveGlow support for `.json` filelists.
+- Flow-TTS (the entire thing)
+- WaveFlow (the entire thing)
+
 ---
 
 ### Install/Setup:
