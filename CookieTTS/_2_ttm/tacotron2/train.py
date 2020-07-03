@@ -24,7 +24,7 @@ from math import e
 
 from tqdm import tqdm
 import CookieTTS.utils.audio.stft as STFT
-from CookieTTS.utils.dataset.utils import load_wav_to_torch
+from CookieTTS.utils.dataset.utils import load_wav_to_torch, load_filepaths_and_text
 from scipy.io.wavfile import read
 
 import os.path
@@ -34,14 +34,14 @@ from metric import alignment_metric
 save_file_check_path = "save"
 num_workers_ = 1 # DO NOT CHANGE WHEN USING TRUNCATION
 start_from_checkpoints_from_zero = 0
-gen_new_mels = 0
 
-def create_mels():
+
+def create_mels(hparams):
     stft = STFT.TacotronSTFT(
                 hparams.filter_length, hparams.hop_length, hparams.win_length,
                 hparams.n_mel_channels, hparams.sampling_rate, hparams.mel_fmin,
                 hparams.mel_fmax)
-
+    
     def save_mel(file):
         audio, sampling_rate = load_wav_to_torch(file)
         if sampling_rate != stft.sampling_rate:
@@ -52,15 +52,18 @@ def create_mels():
         audio_norm = torch.autograd.Variable(audio_norm, requires_grad=False)
         melspec = stft.mel_spectrogram(audio_norm)
         melspec = torch.squeeze(melspec, 0).cpu().numpy()
-        np.save(file.replace('.wav', ''), melspec)
-
-    import glob
-    wavs = glob.glob('/media/cookie/Samsung 860 QVO/ClipperDatasetV2/**/*.wav',recursive=True)
+        np.save(file.replace('.wav', '.npy'), melspec)
+    
+    # Get the filepath for training and validation files
+    wavs = [x[0] for x in load_filepaths_and_text(hparams.training_files) + load_filepaths_and_text(hparams.validation_files)]
+    
     print(str(len(wavs))+" files being converted to mels")
-    for index, i in tqdm(enumerate(wavs), smoothing=0, total=len(wavs)):
-        if index < 0: continue
-        try: save_mel(i)
-        except Exception as ex: tqdm.write(i, " failed to process\n",ex,"\n")
+    for audiopath in tqdm(wavs):
+        try:
+            save_mel(audiopath)
+        except Exception as ex:
+            tqdm.write(audiopath, " failed to process\n",ex,"\n")
+
     assert 0
 
 
@@ -551,6 +554,8 @@ if __name__ == '__main__':
                         help='load model weights only, ignore specified layers')
     parser.add_argument('--warm_start_force', action='store_true',
                         help='load model weights only, ignore all missing/non-matching layers')
+    parser.add_argument('--gen_mels', action='store_true',
+                        help='Generate mel spectrograms. This will help reduce the memory required.')
     parser.add_argument('--n_gpus', type=int, default=1,
                         required=False, help='number of gpus')
     parser.add_argument('--rank', type=int, default=0,
@@ -572,8 +577,10 @@ if __name__ == '__main__':
     print("cuDNN Enabled:", hparams.cudnn_enabled)
     print("cuDNN Benchmark:", hparams.cudnn_benchmark)
 
-    if gen_new_mels:
-        print("Generating Mels"); create_mels(); print("Finished Generating Mels")
+    if args.gen_mels:
+        print("Generating Mels...")
+        create_mels(hparams)
+        print("Finished Generating Mels")
     
     # these are needed for fp16 training, not inference
     if hparams.fp16_run:
