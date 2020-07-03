@@ -1,11 +1,14 @@
 import os
 
+step_total = '??'
+
 # save preprocessing directory for later
 preprocess_dir = os.path.abspath(os.path.split(__file__)[0])
 os.chdir(preprocess_dir)
 print(f"preprocess_dir = '{preprocess_dir}'")
 
 # load preprocessing config file
+print(f'{step_complete:>3}/{step_total:<3} Loading config file...')
 import json
 with open("config.json") as f:
     conf = json.loads(f.read())
@@ -15,12 +18,15 @@ DATASET_CONF_FOLDER = os.path.abspath(conf['DATASET_CONF_FOLDER'])
 THREADS = conf['THREADS']
 OUTPUT_SAMPLE_RATE = conf['OUTPUT_SAMPLE_RATE']
 OUTPUT_BIT_DEPTH = conf['OUTPUT_BIT_DEPTH']
+LEFT_MARGIN_SECONDS = conf['LEFT_MARGIN_SECONDS']
+RIGHT_MARGIN_SECONDS = conf['RIGHT_MARGIN_SECONDS']
 DICT_PATH = conf['DICT_PATH']
 MIN_SPEAKER_DURATION_SECONDS = conf['MIN_SPEAKER_DURATION_SECONDS']
 REGENERATE_EMOTION_INFO = conf['REGENERATE_EMOTION_INFO']
 TRAIN_PERCENT = conf['TRAIN_PERCENT']
 DELETE_NOISY = conf["DELETE_NOISY"]
 DELETE_VERY_NOISY = conf["DELETE_VERY_NOISY"]
+print('Done!'); step_complete+=1
 
 # load downloads config file
 with open("../_0_download/config.json") as f:
@@ -110,44 +116,94 @@ def step_2_2():
 
 # extract compressed files from downloads into preprocessed folder for processing.
 if 0:
+    print(f'{step_complete:>3}/{step_total:<3} Extracting files into Datasets folder...')
     step_2_1()
+    print('Done!'); step_complete+=1
 
 # move remaining folders/files to preprocessed datasets folder
 if 0:
+    print(f'{step_complete:>3}/{step_total:<3} Moving remaining files to Datasets folder...')
     step_2_2()
+    print('Done!'); step_complete+=1
+
+#################################################################################
+### for ALL                                                                   ###
+###  - Remove ending periods not part of extension.                           ###
+#################################################################################
+print(f'{step_complete:>3}/{step_total:<3} Removing ending periods from basenames...')
+def remove_ending_periods(directory, ext='.wav'):
+    """
+    Remove ending periods not part of extension.
+    e.g:
+    "00_00_49_Celestia_Neutral_Very Noisy_girls, thank you so much for coming..wav"
+     to
+    "00_00_49_Celestia_Neutral_Very Noisy_girls, thank you so much for coming.wav"
+    """
+    files_arr = sorted([os.path.abspath(x) for x in glob(os.path.join(directory,f"**/*{ext}"), recursive=True)])
+    assert len(files_arr), f'no audio files found for {directory} dataset.'
+    
+    file_dict = {x: (os.path.splitext(x)[0].rstrip('.')+os.path.splitext(x)[-1]) for x in files_arr if x != (os.path.splitext(x)[0].rstrip('.')+os.path.splitext(x)[-1])}
+    for src, dst in file_dict.items():
+        os.rename(src, dst)
+remove_ending_periods(DATASET_FOLDER, ext='.flac')
+remove_ending_periods(DATASET_FOLDER, ext='.wav')
+remove_ending_periods(DATASET_FOLDER, ext='.txt')
+print('Done!'); step_complete+=1
+
 
 #################################################################################
 ### for Clipper/MLP                                                           ###
-###  - Delete Noisy and/or Very Noisy audio files (based on config file)       ###
+###  - Delete Noisy and/or Very Noisy audio files (based on config file)      ###
 #################################################################################
 dataset = 'Clipper_MLP'
 dataset_dir = os.path.join(DATASET_FOLDER, dataset)
-from glob import glob
-DELETE_NOISY = conf["DELETE_NOISY"]
-DELETE_VERY_NOISY = conf["DELETE_VERY_NOISY"]
-if DELETE_NOISY:
-    for file in glob(os.path.join(dataset_dir, '**', '*_Noisy_*'), recursive=True):
-        os.unlink(file)
-if DELETE_VERY_NOISY:
-    for file in glob(os.path.join(dataset_dir, '**', '*_Very Noisy_*'), recursive=True):
-        os.unlink(file)
+if os.path.exists(dataset_dir):
+    from glob import glob
+    DELETE_NOISY = conf["DELETE_NOISY"]
+    DELETE_VERY_NOISY = conf["DELETE_VERY_NOISY"]
+    if DELETE_NOISY:
+        print(f'{step_complete:>3}/{step_total:<3} Deleting Noisy data from Clipper_MLP Dataset...')
+        for file in glob(os.path.join(dataset_dir, '**', '*_Noisy_*'), recursive=True):
+            os.unlink(file)
+    if DELETE_VERY_NOISY:
+        print(f'{step_complete:>3}/{step_total:<3} Deleting Very Noisy data from Clipper_MLP Dataset...')
+        for file in glob(os.path.join(dataset_dir, '**', '*_Very Noisy_*'), recursive=True):
+            os.unlink(file)
+    print('Done!'); step_complete+=1
 del dataset, dataset_dir
 
+
+#################################################################################
+### for VCTK                                                                  ###
+###  - Rename cases of "_mic1.wav" or "_mic2.wav" to ".wav"                   ###
+#################################################################################
+dataset = 'VCTK'
+dataset_dir = os.path.join(DATASET_FOLDER, dataset)
+if os.path.exists(dataset_dir):
+    print(f'{step_complete:>3}/{step_total:<3} Choosing mic for VCTK dataset...\n("VCTK_USE_AUX_MIC" = {conf["VCTK_USE_AUX_MIC"]})')
+    from glob import glob
+    replacename = "_mic2.wav" if conf["VCTK_USE_AUX_MIC"] else "_mic1.wav"
+    for file in glob(os.path.join(dataset_dir, '**', f'*{replacename}'), recursive=True):
+        os.rename(file, file.replace(replacename, '.wav'))
+    del replacename
+    print('Done!'); step_complete+=1
+del dataset, dataset_dir
 
 
 #################################################################################
 ### for Blizzard2011                                                          ###
-###  - Slice clips from original Studio files                                  ###
+###  - Slice clips from original Studio files                                 ###
 #################################################################################
 dataset = 'Blizzard2011'
-if dconf['Blizzard2011']['download']:
-    dataset_dir = os.path.join(DATASET_FOLDER, dataset)
+dataset_dir = os.path.join(DATASET_FOLDER, dataset)
+if dconf['Blizzard2011']['download'] and os.path.exists(dataset_dir):
+    print('Slicing Blizzard2011 Raw Studio files into clips...')
     #os.chdir(dataset_dir)
     from slice_bliazzard2011 import NancySplitRawIntoClips, NancyWriteTranscripts
     NancySplitRawIntoClips(dataset_dir)
     NancyWriteTranscripts(dataset_dir)
-    del dataset_dir
-del dataset
+    print('Done!'); step_complete+=1
+del dataset, dataset_dir
 
 
 #################################################################################
@@ -160,13 +216,12 @@ del dataset
 ###  - Save the ['path','sample_rate'] pairs                                   ###
 #################################################################################
 path_sample_rates = {}
-
 dataset = 'VCTK'
 if dconf['VCTK']['download']:
     import numpy as np
     from scripts.audio_preprocessing import multiprocess_directory, process_audio_multiprocess
     dataset_dir = os.path.join(DATASET_FOLDER, dataset)
-    print("Filtering and Trimming VCTK Dataset")
+    print(f"{step_complete:>3}/{step_total:<3} Filtering and Trimming VCTK Dataset")
     #        Pass |  1  |  2  |  3  |
     type        = ['hp' ,'hp' ,'lp' ]
     cutoff_freq = [150  ,40   ,18000]
@@ -178,8 +233,8 @@ if dconf['VCTK']['download']:
     hop_len  =[1800 ,1200 ,600  ,300  ,150  ,150  ]
     ref_f    =[np.amax]*6
     empth    =[0.0  ,0.0  ,0.0  ,0.0  ,0.0  ,0.0  ]
-    margin_l =[0    ,0    ,0    ,0    ,0    ,0    ]
-    margin_r =[0    ,0    ,0    ,0    ,0    ,0    ]
+    margin_l =[LEFT_MARGIN_SECONDS,]*6
+    margin_r =[RIGHT_MARGIN_SECONDS,]*6
     def func(array):
         return process_audio_multiprocess(array,
             filt_type=type,
@@ -199,16 +254,17 @@ if dconf['VCTK']['download']:
     multiproc_path_srs = multiprocess_directory(func, dataset_dir, threads=THREADS)
     merged_path_srs = {k:v for list_item in multiproc_path_srs for (k,v) in list_item.items()}
     path_sample_rates = {**path_sample_rates, **merged_path_srs}
-    print('Done!')
+    print('Done!'); step_complete+=1
     del dataset_dir, type, cutoff_freq, order, ref_db, win_len, hop_len, ref_f, empth, margin_l, margin_r, multiproc_path_srs, merged_path_srs
 del dataset
 
+
 ##################################################################################
 ### for all audio                                                              ###
-###  - High-pass filter                                                         ###
-###  - Low-Pass filter                                                          ###
-###  - Resample to target sample rate. # note, need to save sr info somewhere.  ###
-###  - Trim                                                                     ###
+###  - High-pass filter                                                        ###
+###  - Low-Pass filter                                                         ###
+###  - Resample to target sample rate. # note, need to save sr info somewhere. ###
+###  - Trim                                                                    ###
 ##################################################################################
 if 0:
     import numpy as np
@@ -225,9 +281,9 @@ if 0:
     hop_len  = [1200,600 ,300 ,150 ,150 ]
     ref_f    = [np.amax]*5
     empth    = [0.0 ,0.0 ,0.0 ,0.0 ,0.0 ]
-    margin_l = [0   ,0   ,0   ,0   ,0   ]
-    margin_r = [0   ,0   ,0   ,0   ,0   ]
-    print("Filtering and Trimming All Datasets (other than VCTK)")
+    margin_l =[LEFT_MARGIN_SECONDS,]*5
+    margin_r =[RIGHT_MARGIN_SECONDS,]*5
+    print(f"{step_complete:>3}/{step_total:<3} Filtering and Trimming All Datasets (other than VCTK)")
     for i in range(len(type)):
         print(f"Filter Pass {i+1}, Global {cutoff_freq[i]}Hz {'highpass' if type[i]=='hp' else 'lowpass'} filter.")
     for i in range(len(win_len)):
@@ -252,16 +308,19 @@ if 0:
     multiproc_path_srs = multiprocess_directory(func, DATASET_FOLDER, threads=THREADS)
     merged_path_srs = {k:v for list_item in multiproc_path_srs for (k,v) in list_item.items()}
     path_sample_rates = {**path_sample_rates, **merged_path_srs}
-    print('Done!')
+    print('Done!'); step_complete+=1
     del type, cutoff_freq, order, ref_db, win_len, hop_len, ref_f, empth, margin_l, margin_r, multiproc_path_srs, merged_path_srs
+
 
 ##################################################################################
 ### for all audio                                                              ###
 ###   Equalize volumes/amplitudes                                              ###
 ##################################################################################
 if 0:
+    print(f"{step_complete:>3}/{step_total:<3} Normalizing Volume of ALL Datasets")
     from scripts.audio_preprocessing import normalize_volumes_mixmode
     normalize_volumes_mixmode(DATASET_FOLDER, amplitude=0.08, ext='.wav')
+    print("Done!"); step_complete+=1
 
 
 ##################################################
@@ -283,6 +342,7 @@ if True:
     datasets = [x for x in os.listdir(DATASET_FOLDER) if os.path.isdir(os.path.join(DATASET_FOLDER, x))]
     
     # check default configs exist (and prompt user for datasets without premade configs)
+    print(f'{step_complete:>3}/{step_total:<3} Checking Defaults for Datasets...')
     for dataset in datasets:
         dataset_conf_dir = os.path.join(DATASET_CONF_FOLDER, dataset)
         if not os.path.exists(dataset_conf_dir):
@@ -308,8 +368,10 @@ if True:
                 f.write( input(f'default source type for "{dataset}" dataset is missing.\nPlease enter the default source type\nExamples: "TV Show", "Audiobook", "Audiodrama", "Newspaper Extracts", "Game"\n> ') )
                 print('')
         del dataset_conf_dir
+    print('Done!'); step_complete+=1
     
     # add paths, transcripts, speaker names, emotions, noise levels to meta object
+    print(f'{step_complete:>3}/{step_total:<3} Adding paths, transcripts, speaker names, emotions, noise levels from Datasets to meta...')
     from scripts.metadata import get_dataset_meta
     
     for dataset in datasets:
@@ -328,17 +390,21 @@ if True:
         meta_local = get_dataset_meta(dataset_dir, default_speaker=default_speaker, default_emotion=default_emotion, default_noise_level=default_noise_level, default_source=default_source, default_source_type=default_source_type)
         meta[dataset] = meta_local
         del dataset_dir, dataset_conf_dir, default_speaker, default_emotion, default_noise_level, default_source, default_source_type
+    print('Done!'); step_complete+=1
     
     # add native sample rates to the meta object
+    print(f'{step_complete:>3}/{step_total:<3} Adding native sample rates from datasets to meta...')
     for dataset in datasets:
         for clip in meta[dataset]:
             try:
                 meta[dataset][clip]['sample_rate'] = path_sample_rates[os.path.abspath(clip['path'])]
             except KeyError:
                 pass
+    print('Done!'); step_complete+=1
     
     # Assign speaker ids to speaker names
     # Write 'speaker_dataset|speaker_name|speaker_id|speaker_audio_duration' lookup table to txt file
+    print(f'{step_complete:>3}/{step_total:<3} Loading speaker information + durations and assigning IDs...')
     import soundfile as sf
     speaker_durations = {}
     dataset_lookup = {}
@@ -385,6 +451,7 @@ if True:
                 continue
             lines.append(f'{dataset:<24}|{source:<24}|{source_type:<20}|{speaker_name:<32}|{speaker_id:<10}|{duration/3600:>8.4f}')
         f.write('\n'.join(lines))
+    print('Done!'); step_complete+=1
     
     
     # ( because of SEMI-SUPERVISED... CONTROLLABLE SPEECH SYNTHESIS https://arxiv.org/pdf/1910.01709.pdf )
@@ -406,12 +473,14 @@ if True:
     ## this is being skipped for now.
     
     # get phoneme_transcript for every clip.
+    # (if using FastSpeech or PAG-Tacotron) Generate and save phoneme timing information and/or ground truth alignment graphs # Requires (use_forced_aligner == True)
     # I normally use a lookup table and simply ignore any words not in the file, however there's now 2 more options I can see.
     # additional option 1: g2p neural network for predicting phonemes from graphemes.
     # additional option 2: force aligner system that uses the audio file and grapheme_transcript to produce the phoneme_transcript.
     use_g2p = False
     use_forced_aligner = True
     if use_forced_aligner: # MFA has unique needs in that it will need to be ran seperately for each speaker.
+        print(f'{step_complete:>3}/{step_total:<3} Getting phonetic transcripts, timing information and missing vocab from Montreal Forced Aligner...')
         from CookieTTS.utils.dataset import MFA
         working_directory = os.path.abspath(os.path.join(os.path.dirname(DATASET_FOLDER), 'MFA_tmp')) # something safe that can be deleted
         
@@ -456,14 +525,13 @@ if True:
                 del data
         # Montreal Force Aligner done.
     else:
+        print(f'{step_complete:>3}/{step_total:<3} Getting phonetic transcripts...')
         if use_g2p:
             from g2p_en import G2p
             g2p = G2p()
         else:
             from CookieTTS.utils.text.ARPA import ARPA
             arpa = ARPA(DICT_PATH)
-        
-        use_forced_aligner = False
         for dataset in meta.keys():
             prev_wd = os.getcwd()
             os.chdir(os.path.join(DATASET_FOLDER, dataset))
@@ -480,10 +548,8 @@ if True:
                     phoneme_transcript = arpa.get(grapheme_transcript)
                 meta[dataset][i]['phoneme_transcript'] = phoneme_transcript
             os.chdir(prev_wd)
+    print('Done!'); step_complete+=1
     
-    
-    # (if using FastSpeech or PAG-Tacotron) Generate and save phoneme timing information and/or ground truth alignment graphs
-    # DONE
     
     # (if using FastPitch or FastSpeech2) Generate and save pitch information for every clip
     
@@ -492,6 +558,13 @@ if True:
     
     
     # (if using torchMoji) Generate and save torchMoji hidden states for every clip
+    print(f'{step_complete:>3}/{step_total:<3} Running TorchMoji on Dataset')
+    from scripts.text_embeddings import write_hidden_states
+    path_quote_pairs = [[y['path'],y['quote']] for z in meta.values() for y in z]
+    print(f'Found {len(path_quote_pairs)} path-quote pairs.')
+    write_hidden_states(path_quote_pairs)
+    del path_quote_pairs
+    print('TorchMoji Done!'); step_complete+=1
     
     
     # (if using SV2TTS) Generate and save speaker embeddings for every clip.
@@ -504,6 +577,7 @@ if True:
     #     VCTK/filelist_validation.txt
     #     Clipper_MLP/filelist_train.txt
     #     Clipper_MLP/filelist_validation.txt
+    print(f'{step_complete:>3}/{step_total:<3} Writing filelists for each Dataset...')
     import random
     for dataset, clips in meta.items():
         train_path = os.path.join(DATASET_FOLDER, dataset, 'filelist_train.txt')
@@ -531,9 +605,14 @@ if True:
             
             ft.write('\n'.join(train_lines))
             fv.write('\n'.join(val_lines))
+    print('Done!'); step_complete+=1
     
     # and a full meta dump of everything
     import json
-    meta_dump_path = os.path.join(DATASET_FOLDER, 'meta_dump.txt')
+    meta_dump_path = os.path.join(DATASET_FOLDER, 'meta_dump.json')
+    print(f'{step_complete:>3}/{step_total:<3} Writing full dump of ALL metadata (to "{meta_dump_path}")...')
     with open(meta_dump_path, 'w') as outfile:
         json.dump(meta, outfile)
+    print('Done!'); step_complete+=1
+
+print('Preprocessing Finished!')

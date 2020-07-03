@@ -10,10 +10,12 @@
     },
     "VCTK": {
         "urls": [
-            "https://datashare.is.ed.ac.uk/bitstream/handle/10283/2774/wav-1.zip?sequence=1&isAllowed=y",
-            "https://datashare.is.ed.ac.uk/bitstream/handle/10283/2774/wav-2_and_wav-3.zip?sequence=2&isAllowed=y"
+            "https://datashare.is.ed.ac.uk/bitstream/handle/10283/3443/VCTK-Corpus-0.92.zip?sequence=2&isAllowed=y"
         ],
-        "download": 0,
+        "filenames": [
+            "VCTK-Corpus-0.92.zip"
+        ],
+        "download": 1,
         "force_dl": 0
     },
     "Clipper_MLP": {
@@ -73,10 +75,22 @@
             "http://www.openslr.org/resources/60/train-clean-100.tar.gz",
             "http://www.openslr.org/resources/60/train-clean-360.tar.gz"
         ],
+        "filenames_clean": [
+            "dev-clean.tar.gz",
+            "test-clean.tar.gz",
+            "train-clean-100.tar.gz",
+            "train-clean-360.tar.gz"
+        ],
         "urls_other": [
             "http://www.openslr.org/resources/60/dev-other.tar.gz",
             "http://www.openslr.org/resources/60/test-other.tar.gz",
             "http://www.openslr.org/resources/60/train-other-500.tar.gz"
+        ],
+        "filenames_other": [
+            "dev-other.tar.gz",
+            "test-other.tar.gz",
+            "train-other-500.tar.gz"
+            
         ],
         "download_clean": 1,
         "download_other": 1

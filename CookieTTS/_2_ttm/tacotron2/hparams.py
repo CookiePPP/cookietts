@@ -1,5 +1,5 @@
 import tensorflow as tf
-from text.symbols import symbols
+from CookieTTS.utils.text.symbols import symbols
 
 
 def create_hparams(hparams_string=None, verbose=False):

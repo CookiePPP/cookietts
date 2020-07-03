@@ -34,7 +34,7 @@ then metadata is collected;
 - aligned phonemes
 - inferred emotion embeddings (from text with pretrained torchMoji)
 
-This info is dumped as `filelist_train.txt` and `filelist_validation.txt` inside each dataset, as well as a `meta_dump.txt` with **everything** in one file.
+This info is dumped as `filelist_train.txt` and `filelist_validation.txt` inside each dataset, as well as a `meta_dump.json` with **everything** in one file.
 
 ---
 

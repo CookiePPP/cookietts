@@ -7,7 +7,7 @@ def load_wav_to_torch(full_path):
     else:
         data, sampling_rate = sf.read(full_path, always_2d=True)[:,0] # than soundfile.
     
-    if np.issubdtype(data.dtype, np.integer): # if audio dat is type int
+    if np.issubdtype(data.dtype, np.integer): # if audio data is type int
         max_mag = -np.iinfo(data.dtype).min # maximum magnitude = min possible value of intXX
     else: # if audio data is type fp32
         max_mag = max(np.amax(data), -np.amin(data))

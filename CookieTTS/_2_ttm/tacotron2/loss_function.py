@@ -1,6 +1,6 @@
 import torch
 from torch import nn
-from utils import get_mask_from_lengths
+from CookieTTS.utils.model.utils import get_mask_from_lengths
 
 
 class Tacotron2Loss(nn.Module):
