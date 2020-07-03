@@ -5,12 +5,11 @@ import torch
 from torch.autograd import Variable
 from torch import nn
 from torch.nn import functional as F
-from layers import ConvNorm, LinearNorm
-from utils import to_gpu, get_mask_from_lengths, dropout_frame
+from CookieTTS.utils.model.layers import ConvNorm, ConvNorm2D, LinearNorm
+from CookieTTS.utils.model.GPU import to_gpu
+from CookieTTS.utils.model.utils import get_mask_from_lengths, dropout_frame
 #from modules import GST # mellotron GST implementation
 from TPGST import GST # Other GST implementation
-
-#from kornia.filters import GaussianBlur2d
 
 drop_rate = 0.5
 

@@ -36,7 +36,8 @@ import torch.nn.functional as F
 from torch.autograd import Variable
 from scipy.signal import get_window
 from librosa.util import pad_center, tiny
-from audio_processing import window_sumsquare
+from librosa.filters import mel as librosa_mel_fn
+from CookieTTS.utils.audio.audio_processing import window_sumsquare
 
 
 class STFT(torch.nn.Module):

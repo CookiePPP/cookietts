@@ -13,7 +13,7 @@ from torch.utils.data import DataLoader
 from torch.optim.lr_scheduler import ReduceLROnPlateau
 
 from model import load_model
-from model import Tacotron2
+from model import FlowTTS
 from data_utils import TextMelLoader, TextMelCollate
 from loss_function import Tacotron2Loss
 from logger import Tacotron2Logger
@@ -28,8 +28,6 @@ from CookieTTS.utils.dataset.utils import load_wav_to_torch
 from scipy.io.wavfile import read
 
 import os.path
-
-from metric import alignment_metric
 
 save_file_check_path = "save"
 num_workers_ = 1 # DO NOT CHANGE WHEN USING TRUNCATION
@@ -107,7 +105,7 @@ def prepare_dataloaders(hparams, saved_lookup):
                            speaker_ids=speaker_ids)
     valset = TextMelLoader(hparams.validation_files, hparams, check_files=hparams.check_files, shuffle=False,
                            speaker_ids=trainset.speaker_ids)
-    collate_fn = TextMelCollate(hparams.n_frames_per_step)
+    collate_fn = TextMelCollate()
 
     if hparams.distributed_run:
         train_sampler = DistributedSampler(trainset,shuffle=False)#True)
@@ -222,7 +220,7 @@ def save_checkpoint(model, optimizer, learning_rate, iteration, hparams, best_va
 
 
 def validate(model, criterion, valset, iteration, batch_size, n_gpus,
-             collate_fn, logger, distributed_run, rank, val_teacher_force_till, val_p_teacher_forcing, teacher_force=1):
+             collate_fn, logger, distributed_run, rank):
     """Handles all the validation scoring and printing"""
     model.eval()
     with torch.no_grad():
@@ -230,22 +228,11 @@ def validate(model, criterion, valset, iteration, batch_size, n_gpus,
         val_loader = DataLoader(valset, sampler=val_sampler, num_workers=num_workers_,
                                 shuffle=False, batch_size=batch_size,
                                 pin_memory=False, drop_last=True, collate_fn=collate_fn)
-        if teacher_force == 1:
-            val_teacher_force_till = 0
-            val_p_teacher_forcing = 1.0
-        elif teacher_force == 2:
-            val_teacher_force_till = 0
-            val_p_teacher_forcing = 0.0
         val_loss = 0.0
-        diagonality = torch.zeros(1)
-        avg_prob = torch.zeros(1)
         for i, batch in tqdm(enumerate(val_loader), desc="Validation", total=len(val_loader), smoothing=0): # i = index, batch = stuff in array[i]
             x, y = model.parse_batch(batch)
-            y_pred = model(x, teacher_force_till=val_teacher_force_till, p_teacher_forcing=val_p_teacher_forcing)
-            rate, prob = alignment_metric(x, y_pred)
-            diagonality += rate
-            avg_prob += prob
-            loss, gate_loss = criterion(y_pred, y)
+            y_pred = model(x)
+            loss, len_loss, loss_z, loss_w, loss_s = criterion(y_pred, y)
             if distributed_run:
                 reduced_val_loss = reduce_tensor(loss.data, n_gpus).item()
             else:
@@ -253,20 +240,11 @@ def validate(model, criterion, valset, iteration, batch_size, n_gpus,
             val_loss += reduced_val_loss
             # end forloop
         val_loss = val_loss / (i + 1)
-        diagonality = (diagonality / (i + 1)).item()
-        avg_prob = (avg_prob / (i + 1)).item()
         # end torch.no_grad()
     model.train()
     if rank == 0:
-        tqdm.write("Validation loss {}: {:9f}  Average Max Attention: {:9f}".format(iteration, val_loss, avg_prob))
-        #logger.log_validation(val_loss, model, y, y_pred, iteration)
-        if True:#iteration != 0:
-            if teacher_force == 1:
-                logger.log_teacher_forced_validation(val_loss, model, y, y_pred, iteration, val_teacher_force_till, val_p_teacher_forcing, diagonality, avg_prob)
-            elif teacher_force == 2:
-                logger.log_infer(val_loss, model, y, y_pred, iteration, val_teacher_force_till, val_p_teacher_forcing, diagonality, avg_prob)
-            else:
-                logger.log_validation(val_loss, model, y, y_pred, iteration, val_teacher_force_till, val_p_teacher_forcing, diagonality, avg_prob)
+        tqdm.write("Validation loss {}: {:9f}".format(iteration, val_loss))
+        logger.log_validation(val_loss, model, y, y_pred, iteration)
     return val_loss
 
 
@@ -370,14 +348,6 @@ def train(output_directory, log_directory, checkpoint_path, warm_start, warm_sta
     epoch_offset = max(0, int(iteration / len(train_loader)))
     speaker_lookup = trainset.speaker_ids
     
-    # load and/or generate global_mean
-    if hparams.drop_frame_rate > 0.:
-        if rank != 0: # if global_mean not yet calcuated, wait for main thread to do it
-            while not os.path.exists(hparams.global_mean_npy): time.sleep(1)
-        global_mean = calculate_global_mean(train_loader, hparams.global_mean_npy, hparams)
-        hparams.global_mean = global_mean
-        model.global_mean = global_mean
-    
     # define scheduler
     use_scheduler = 0
     if use_scheduler:
@@ -405,61 +375,62 @@ def train(output_directory, log_directory, checkpoint_path, warm_start, warm_sta
         start_time = time.time()
         # start iterating through the epoch
         for i, batch in tqdm(enumerate(train_loader), desc="Iter:  ", smoothing=0, total=len(train_loader), position=0, unit="iter"):
-            # run external code every epoch, allows the run to be adjusting without restarts
-            if (iteration % 1000 == 0 or i==0):
+            # run external code every iter, allows the run to be adjusted without restarts
+            if (i==0 or iteration % param_interval == 0):
                 try:
                     with open("run_every_epoch.py") as f:
                         internal_text = str(f.read())
                         if len(internal_text) > 0:
-                            print(internal_text)
                             #code = compile(internal_text, "run_every_epoch.py", 'exec')
                             ldict = {'iteration': iteration}
                             exec(internal_text, globals(), ldict)
-                            print("Custom code excecuted\nPlease remove code if it was intended to be ran once.")
                         else:
                             print("No Custom code found, continuing without changes.")
                 except Exception as ex:
                     print(f"Custom code FAILED to run!\n{ex}")
                 globals().update(ldict)
                 locals().update(ldict)
-                print("decay_start is ",decay_start)
-                print("A_ is ",A_)
-                print("B_ is ",B_)
-                print("C_ is ",C_)
-                print("min_learning_rate is ",min_learning_rate)
-                print("epochs_between_updates is ",epochs_between_updates)
-                print("drop_frame_rate is ",drop_frame_rate)
-                print("p_teacher_forcing is ",p_teacher_forcing)
-                print("teacher_force_till is ",teacher_force_till)
-                print("val_p_teacher_forcing is ",val_p_teacher_forcing)
-                print("val_teacher_force_till is ",val_teacher_force_till)
-                print("grad_clip_thresh is ",grad_clip_thresh)
-                if epoch % epochs_between_updates == 0 or epoch_offset == epoch:
-                #if None:
-                    tqdm.write("Old learning rate [{:.6f}]".format(learning_rate))
+                if show_live_params:
+                    print(internal_text)
+            if not iteration % 50: # check actual learning rate every 20 iters (because I sometimes see learning_rate variable go out-of-sync with real LR)
+                learning_rate = optimizer.param_groups[0]['lr']
+            # Learning Rate Schedule
+            if custom_lr:
+                old_lr = learning_rate
+                if iteration < warmup_start:
+                    learning_rate = warmup_start_lr
+                elif iteration < warmup_end:
+                    learning_rate = (iteration-warmup_start)*((A_+C_)-warmup_start_lr)/(warmup_end-warmup_start) + warmup_start_lr # learning rate increases from warmup_start_lr to A_ linearly over (warmup_end-warmup_start) iterations.
+                else:
                     if iteration < decay_start:
                         learning_rate = A_ + C_
                     else:
                         iteration_adjusted = iteration - decay_start
                         learning_rate = (A_*(e**(-iteration_adjusted/B_))) + C_
-                    learning_rate = max(min_learning_rate, learning_rate) # output the largest number
-                    tqdm.write("Changing Learning Rate to [{:.6f}]".format(learning_rate))
+                assert learning_rate > -1e-8, "Negative Learning Rate."
+                if old_lr != learning_rate:
                     for param_group in optimizer.param_groups:
                         param_group['lr'] = learning_rate
             # /run external code every epoch, allows the run to be adjusting without restarts/
             
             model.zero_grad()
-            x, y = model.parse_batch(batch) # move batch to GPU (async)
-            y_pred = model(x, teacher_force_till=teacher_force_till, p_teacher_forcing=p_teacher_forcing, drop_frame_rate=drop_frame_rate)
+            x, y = model.parse_batch(batch)
+            y_pred = model(x)
             
-            loss, gate_loss = criterion(y_pred, y)
+            loss, len_loss, loss_z, loss_w, loss_s = criterion(y_pred, y)
             
             if hparams.distributed_run:
                 reduced_loss = reduce_tensor(loss.data, n_gpus).item()
-                reduced_gate_loss = reduce_tensor(gate_loss.data, n_gpus).item()
+                reduced_len_loss = reduce_tensor(len_loss.data, n_gpus).item()
+                reduced_loss_z = reduce_tensor(loss_z.data, n_gpus).item()
+                reduced_loss_w = reduce_tensor(loss_w.data, n_gpus).item()
+                reduced_loss_s = reduce_tensor(loss_s.data, n_gpus).item()
             else:
                 reduced_loss = loss.item()
-                reduced_gate_loss = gate_loss.item()
+                reduced_len_loss = len_loss.item()
+                reduced_loss_z = loss_z.item()
+                reduced_loss_w = loss_w.item()
+                reduced_loss_s = loss_s.item()
             
             if hparams.fp16_run:
                 with amp.scale_loss(loss, optimizer) as scaled_loss:
@@ -477,32 +448,18 @@ def train(output_directory, log_directory, checkpoint_path, warm_start, warm_sta
             
             optimizer.step()
             
-            for j, param_group in enumerate(optimizer.param_groups):
-                learning_rate = (float(param_group['lr'])); break
-            
-            if iteration < decay_start:
-                learning_rate = A_ + C_
-            else:
-                iteration_adjusted = iteration - decay_start
-                learning_rate = (A_*(e**(-iteration_adjusted/B_))) + C_
-            learning_rate = max(min_learning_rate, learning_rate) # output the largest number
-            for param_group in optimizer.param_groups:
-                param_group['lr'] = learning_rate
-            
             if not is_overflow and rank == 0:
                 duration = time.time() - start_time
                 average_loss = rolling_loss.process(reduced_loss)
-                tqdm.write("{} [Train_loss {:.4f} Avg {:.4f}] [Gate_loss {:.4f}] [Grad Norm {:.4f}] "
+                tqdm.write("{} [Train_loss {:.4f} Avg {:.4f}] [Len_loss {:.4f}] [z {:.4f}] [w {:.4f}] [s {:.4f}] [Grad Norm {:.4f}] "
                       "[{:.2f}s/it] [{:.3f}s/file] [{:.7f} LR]".format(
-                    iteration, reduced_loss, average_loss, reduced_gate_loss, grad_norm, duration, (duration/(hparams.batch_size*n_gpus)), learning_rate))
-                if iteration % 20 == 0:
-                    diagonality, avg_prob = alignment_metric(x, y_pred)
-                    logger.log_training(
-                        reduced_loss, grad_norm, learning_rate, duration, iteration, teacher_force_till, p_teacher_forcing, diagonality=diagonality, avg_prob=avg_prob)
-                else:
-                    logger.log_training(
-                        reduced_loss, grad_norm, learning_rate, duration, iteration, teacher_force_till, p_teacher_forcing)
+                    iteration, reduced_loss, average_loss, reduced_len_loss, reduced_loss_z, reduced_loss_w, reduced_loss_s, grad_norm, duration, (duration/(hparams.batch_size*n_gpus)), learning_rate))
+                logger.log_training(reduced_loss, grad_norm, learning_rate, duration, iteration)
                 start_time = time.time()
+            
+            #from time import sleep
+            #sleep(2.5)
+            
             if is_overflow and rank == 0:
                 tqdm.write("Gradient Overflow, Skipping Step")
             
@@ -519,13 +476,7 @@ def train(output_directory, log_directory, checkpoint_path, warm_start, warm_sta
                 # perform validation and save "best_model" depending on validation loss
                 val_loss = validate(model, criterion, valset, iteration,
                          hparams.val_batch_size, n_gpus, collate_fn, logger,
-                         hparams.distributed_run, rank, val_teacher_force_till, val_p_teacher_forcing, teacher_force=1) #teacher_force
-                val_loss = validate(model, criterion, valset, iteration,
-                         hparams.val_batch_size, n_gpus, collate_fn, logger,
-                         hparams.distributed_run, rank, val_teacher_force_till, val_p_teacher_forcing, teacher_force=2) #infer
-                val_loss = validate(model, criterion, valset, iteration,
-                         hparams.val_batch_size, n_gpus, collate_fn, logger,
-                         hparams.distributed_run, rank, val_teacher_force_till, val_p_teacher_forcing, teacher_force=0) #validate (0.8 forcing)
+                         hparams.distributed_run, rank) #validate (0.8 forcing)
                 if use_scheduler:
                     scheduler.step(val_loss)
                 if (val_loss < best_validation_loss):

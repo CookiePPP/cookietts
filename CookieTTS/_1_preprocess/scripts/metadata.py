@@ -170,7 +170,7 @@ def get_dataset_meta(directory, meta=None, default_speaker=None, default_emotion
      - speaker names
      - emotions
      - noise levels
-     - source 
+     - source
      - source_type
     inside dataset folder and returns all info found as array.
     

@@ -19,6 +19,11 @@ ipython_config.py
 /CookieTTS/_1_preprocess/MFA_tmp/
 /CookieTTS/utils/dataset/_1_preprocess/tests/littlepip_sample/
 
+# Model Checkpoints
+/CookieTTS/_2_ttm/flowtts/outdir/
+/CookieTTS/_2_ttm/tacotron2/outdir/
+/CookieTTS/_4_mtw/waveglow/outdir/
+
 # megatools folders
 megatools-*-git-*-win64/
 megatools-*-git-*-win32/

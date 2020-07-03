@@ -13,8 +13,8 @@ This will:
 1. extract/copy files downloaded from `_0_download`
 2. (optional) slice Blizzard2011 dataset into chunks
 3. (optional) delete Noisy/Very Noisy clips from Clipper_MLP dataset 
-4. High-passed to remove frequencies under 40Hz
-5. Low-passed to remove frequencies over 18000Hz
+4. High-pass to remove frequencies under 40Hz
+5. Low-pass to remove frequencies over 18000Hz
 6. Resample audio to target sample rate
 7. Trim all audio files to remove silence
 8. RMS Normalise volume to `0.08`
@@ -31,7 +31,7 @@ This will:
 	10. inferred emotion embeddings (from text with pretrained torchMoji)
 10. Write a `speaker_info.txt` and `emotion_info.txt` inside the `_1_preprocess` directory.
 10. Dump dataset filelists as `filelist_train.txt` and `filelist_validation.txt` inside each dataset. (this contains **most** of the important info, but not all of it)
-11. Dump **everything** as `meta_dump.txt` in datasets directory.
+11. Dump **everything** as `meta_dump.json` in datasets directory.
 
 ---
 

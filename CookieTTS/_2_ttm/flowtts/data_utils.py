@@ -71,6 +71,7 @@ class TextMelLoader(torch.utils.data.Dataset):
         
         # -------------- PREDICT LENGTH (TBPTT) --------------
         if hparams.use_TBPTT and TBPTT:
+            print('Calculating audio lengths of all files')
             self.audio_lengths = torch.tensor([self.get_mel(x[0]).shape[1] for x in self.audiopaths_and_text]) # get the length of every file (the long way)
         else:
             self.audio_lengths = torch.tensor([self.truncated_length-1 for x in self.audiopaths_and_text]) # use dummy lengths
@@ -232,6 +233,7 @@ class TextMelLoader(torch.utils.data.Dataset):
         
         audiopath, text, speaker = self.audiopaths_and_text[filelist_index]
         text = self.get_text(text) # convert text into tensor representation
+        assert not torch.isnan(text).any(), 'text has NaN values.'
         
         mel = self.get_mel(audiopath) # get mel-spec as tensor from audiofile.
         mel = mel[..., int(spectrogram_offset):int(spectrogram_offset+self.truncated_length)] # get a segment
@@ -269,9 +271,9 @@ class TextMelLoader(torch.utils.data.Dataset):
 class TextMelCollate():
     """ Zero-pads model inputs and targets based on number of frames per setep
     """
-    def __init__(self, n_frames_per_step):
-        self.n_frames_per_step = n_frames_per_step
-
+    def __init__(self):
+        pass
+        
     def __call__(self, batch):
         """Collate's training batch from normalized text and mel-spectrogram
         PARAMS
@@ -293,9 +295,6 @@ class TextMelCollate():
         # Right zero-pad mel-spec
         num_mels = batch[0][1].size(0)
         max_target_len = max([x[1].size(1) for x in batch])
-        if max_target_len % self.n_frames_per_step != 0:
-            max_target_len += self.n_frames_per_step - max_target_len % self.n_frames_per_step
-            assert max_target_len % self.n_frames_per_step == 0
         
         # include mel padded, gate padded and speaker ids
         mel_padded = torch.FloatTensor(len(batch), num_mels, max_target_len)
@@ -320,7 +319,6 @@ class TextMelCollate():
                 torchmoji_hidden[i] = batch[ids_sorted_decreasing[i]][3]
             preserve_decoder_states[i] = batch[ids_sorted_decreasing[i]][4]
         
-        #print("text_padded.shape =", text_padded.shape, "mel_padded.shape =", mel_padded.shape, "output_lengths =", output_lengths, "preserve_decoder_states =", preserve_decoder_states, sep="\n") # debug for TBPTT
         model_inputs = (text_padded, input_lengths, mel_padded, gate_padded,
                         output_lengths, speaker_ids, torchmoji_hidden, preserve_decoder_states)
         return model_inputs
