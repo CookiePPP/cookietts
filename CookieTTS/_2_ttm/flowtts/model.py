@@ -19,7 +19,11 @@ class ScaledDotProductAttention(nn.Module):
         scores = query.matmul(key.transpose(-2, -1)) / sqrt(dk)
         if mask is not None:
             scores = scores.masked_fill(mask == 0, -1e9)
+        print("mask.shape =", mask.shape)
+        print("scores.shape =", scores.shape)
         attention = F.softmax(scores, dim=-1)
+        print("attention.shape =", attention.shape)
+        print("value.shape =", value.shape)
         return attention.matmul(value)
 
 # https://github.com/CyberZHG/torch-multi-head-attention/blob/master/torch_multi_head_attention/multi_head_attention.py
@@ -108,13 +112,17 @@ class PositionalAttention(nn.Module):
         pos_emb = self.positional_embedding(pos_emb)
         if output_lengths is not None: # masking for batches
             mask = get_mask_from_lengths(output_lengths).unsqueeze(2)
+            assert (mask[:,0]>0).all()
             pos_emb = pos_emb * mask
         q = pos_emb
         
         # which takes the output hidden states of the encoder as the key vector and value vector, and takes the positional encoding of spectrogram length as query vector.
         # Note that the spectrogram length is taken from the ground truth spectrogram during training, and predicted by the length predictor during inference.
         k = v = cond_inp
-        output = self.multi_head_attention(q, k, v, mask=None)
+        if cond_lens is not None: # masking for batches
+            mask = get_mask_from_lengths(cond_lens).unsqueeze(1).repeat(1, q.size(1), 1)
+            print('0 mask.shape =', mask.shape)
+        output = self.multi_head_attention(q, k, v, mask=mask)
         return output
 
 

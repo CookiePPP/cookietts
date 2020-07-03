@@ -53,7 +53,6 @@ class Tacotron2Loss(nn.Module):
         loss = loss_z+loss_w+loss_s
         assert not torch.isnan(loss).any(), 'loss has NaN values.'
         
-        assert not torch.isnan(loss).any(), 'loss has NaN values.'
         loss = loss + len_pred_loss
         assert not torch.isnan(loss).any(), 'loss has NaN values.'
         return loss, len_pred_loss, loss_z, loss_w, loss_s

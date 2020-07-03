@@ -89,7 +89,7 @@ def create_hparams(hparams_string=None, verbose=False):
         n_group=160,
         n_early_every=4,
         n_early_size=2,
-        mix_first=False,#True = WaveGlow style, False = WaveFlow style
+        mix_first=True,#True = WaveGlow style, False = WaveFlow style
         
         # (Decoder) Cond parameters
         cond_residual=False,

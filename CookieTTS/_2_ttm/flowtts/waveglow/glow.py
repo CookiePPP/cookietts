@@ -282,7 +282,7 @@ class FlowDecoder(nn.Module):
         ##print('0 spect.shape =', spect.shape)
         batch_dim, n_mel_channels, group_steps = spect.shape
         spect = spect.view(batch_dim, self.n_group, -1) # [B, n_mel, T] -> [B, n_mel/8, T*8]
-        cond = F.interpolate(cond, size=spect.shape[-1]) # [B, enc_dim, T] -> [B, enc_dim/8, T*8]
+        #cond = F.interpolate(cond, size=spect.shape[-1]) # [B, enc_dim, T] -> [B, enc_dim/8, T*8]
         ##print('1 cond.shape =', cond.shape)
         ##print('1 spect.shape =', spect.shape)
         
@@ -298,14 +298,17 @@ class FlowDecoder(nn.Module):
             
             if self.mix_first:
                 spect, log_det_W = convinv(spect)
-            assert not torch.isnan(spect).any(), 'spect has NaN values.'
+                assert not torch.isnan(spect).any(), f'flow {k} spect has NaN values.'
+                assert not torch.isnan(log_det_W).any(), f'flow {k} spect has NaN values.'
             
             spect, log_s = affine_coup(spect, cond)
-            assert not torch.isnan(spect).any(), 'spect has NaN values.'
+            assert not torch.isnan(spect).any(), f'flow {k} spect has NaN values.'
+            assert not torch.isnan(log_s).any(), f'flow {k} spect has NaN values.'
             
             if not self.mix_first:
                 spect, log_det_W = convinv(spect)
-            assert not torch.isnan(spect).any(), 'spect has NaN values.'
+                assert not torch.isnan(spect).any(), f'flow {k} spect has NaN values.'
+                assert not torch.isnan(log_det_W).any(), f'flow {k} spect has NaN values.'
             
             if k:
                 logdet_w_sum += log_det_W
@@ -353,14 +356,14 @@ class FlowDecoder(nn.Module):
             
             if not self.mix_first:
                 z, _ = invconv.inverse(z)
-            assert not torch.isnan(z).any(), f'flow {k} z has NaN values.'
+                assert not torch.isnan(z).any(), f'flow {k} z has NaN values.'
             
             z, _ = affine_coup.inverse(z, cond, speaker_ids=speaker_ids)
             assert not torch.isnan(z).any(), f'flow {k} z has NaN values.'
             
             if self.mix_first:
                 z, _ = invconv.inverse(z)
-            assert not torch.isnan(z).any(), f'flow {k} z has NaN values.'
+                assert not torch.isnan(z).any(), f'flow {k} z has NaN values.'
             
             if k % self.n_early_every == 0 and k:
                 z = torch.cat((remained_z.pop(), z), 1)
