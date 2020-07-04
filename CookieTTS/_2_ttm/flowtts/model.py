@@ -12,6 +12,15 @@ from CookieTTS._2_ttm.flowtts.fastpitch.length_predictor import TemporalPredicto
 from CookieTTS._2_ttm.flowtts.fastpitch.transformer import PositionalEmbedding
 from CookieTTS._2_ttm.flowtts.waveglow.glow import FlowDecoder
 
+drop_rate = 0.5
+
+def load_model(hparams):
+    model = FlowTTS(hparams)
+    if torch.cuda.is_available():
+        model = model.cuda()
+    return model
+
+
 # https://github.com/CyberZHG/torch-multi-head-attention/blob/master/torch_multi_head_attention/multi_head_attention.py
 class ScaledDotProductAttention(nn.Module):
     def forward(self, query, key, value, mask=None):
@@ -135,22 +144,6 @@ class PositionalAttention(nn.Module):
         if output_lengths is not None:
             output = output * dec_mask# [B, dec_T, enc_dim] * [B, dec_T, 1]
         return output, attention_scores
-
-
-drop_rate = 0.5
-
-def load_model(hparams):
-    model = FlowTTS(hparams)
-    if torch.cuda.is_available(): model = model.cuda()
-    if hparams.fp16_run:
-        if hparams.attention_type in [0,2]:
-            model.decoder.attention_layer.score_mask_value = finfo('float16').min
-        elif hparams.attention_type == 1:
-            model.decoder.attention_layer.score_mask_value = 0
-        else:
-            print(f'mask value not found for attention_type {hparams.attention_type}')
-            raise
-    return model
 
 
 class LSTMCellWithZoneout(nn.LSTMCell):
