@@ -16,11 +16,11 @@ from CookieTTS._2_ttm.flowtts.waveglow.glow import FlowDecoder
 class ScaledDotProductAttention(nn.Module):
     def forward(self, query, key, value, mask=None):
         dk = query.size()[-1]
-        scores = query.matmul(key.transpose(-2, -1)) / sqrt(dk)
+        scores = query.matmul(key.transpose(-2, -1)) / sqrt(dk)# [B*n_head, dec_T, enc_dim//n_head] @ [B*n_head, enc_T, enc_dim//n_head].t() -> [B*n_head, dec_T, enc_T]
         if mask is not None:
-            scores = scores.masked_fill(mask == 0, -1e9)
-        attention = F.softmax(scores, dim=-1)
-        return attention.matmul(value)
+            scores = scores.masked_fill(mask == 0, -1e9)# [B*n_head, dec_T, enc_T]
+        attention = F.softmax(scores, dim=-1) # softmax along enc dim
+        return attention.matmul(value), attention# [B*n_head, dec_T, enc_T] @ [B*n_head, enc_T, enc_dim//n_head] -> [B*n_head, dec_T, enc_dim//n_head]
 
 # https://github.com/CyberZHG/torch-multi-head-attention/blob/master/torch_multi_head_attention/multi_head_attention.py
 class MultiHeadAttention(nn.Module):
@@ -48,24 +48,28 @@ class MultiHeadAttention(nn.Module):
         self.linear_o = nn.Linear(in_features, in_features, bias)
     
     def forward(self, q, k, v, mask=None):
-        q, k, v = self.linear_q(q), self.linear_k(k), self.linear_v(v)
+        q, k, v = self.linear_q(q), self.linear_k(k), self.linear_v(v)# [B, dec_T, enc_dim], [B, enc_T, enc_dim], [B, enc_T, enc_dim]
         if self.activation is not None:
             q = self.activation(q)
             k = self.activation(k)
             v = self.activation(v)
         
-        q = self._reshape_to_batches(q)
-        k = self._reshape_to_batches(k)
-        v = self._reshape_to_batches(v)
+        q = self._reshape_to_batches(q)# [B, dec_T, enc_dim] -> [B*n_head, dec_T, enc_dim//n_head]
+        k = self._reshape_to_batches(k)# [B, enc_T, enc_dim] -> [B*n_head, enc_T, enc_dim//n_head]
+        v = self._reshape_to_batches(v)# [B, enc_T, enc_dim] -> [B*n_head, enc_T, enc_dim//n_head]
         if mask is not None:
-            mask = mask.repeat(self.head_num, 1, 1)
-        y = ScaledDotProductAttention()(q, k, v, mask)
-        y = self._reshape_from_batches(y)
+            mask = mask.repeat(self.head_num, 1, 1)# [B*n_head, dec_T, enc_T]
+        y, attention_scores = ScaledDotProductAttention()(q, k, v, mask)
+        y = self._reshape_from_batches(y)# [B*n_head, dec_T, enc_dim//n_head] -> [B, dec_T, enc_dim]
         
-        y = self.linear_o(y)
+        att_shape = attention_scores.shape
+        attention_scores = attention_scores.view(att_shape[0]//self.head_num, self.head_num, *att_shape[1:])
+        # [B*n_head, dec_T, enc_T] -> [B, n_head, dec_T, enc_T]
+        
+        y = self.linear_o(y)# [B, dec_T, enc_dim]
         if self.activation is not None:
             y = self.activation(y)
-        return y
+        return y, attention_scores# [B, dec_T, enc_dim], [B, n_head, dec_T, enc_T]
     
     @staticmethod
     def gen_history_mask(x):
@@ -76,14 +80,14 @@ class MultiHeadAttention(nn.Module):
         batch_size, seq_len, _ = x.size()
         return torch.tril(torch.ones(seq_len, seq_len)).view(1, seq_len, seq_len).repeat(batch_size, 1, 1)
     
-    def _reshape_to_batches(self, x):
+    def _reshape_to_batches(self, x):# [B, enc_T, enc_dim] -> [B*n_head, enc_T, enc_dim//n_head]
         batch_size, seq_len, in_feature = x.size()
         sub_dim = in_feature // self.head_num
         return x.reshape(batch_size, seq_len, self.head_num, sub_dim)\
                 .permute(0, 2, 1, 3)\
                 .reshape(batch_size * self.head_num, seq_len, sub_dim)
     
-    def _reshape_from_batches(self, x):
+    def _reshape_from_batches(self, x):# [B*n_head, enc_T, enc_dim//n_head] -> [B, enc_T, enc_dim]
         batch_size, seq_len, in_feature = x.size()
         batch_size //= self.head_num
         out_dim = in_feature * self.head_num
@@ -100,26 +104,37 @@ class MultiHeadAttention(nn.Module):
 class PositionalAttention(nn.Module):
     def __init__(self, hparams):
         super(PositionalAttention, self).__init__()
-        self.positional_embedding = PositionalEmbedding(hparams.encoder_LSTM_dim+hparams.speaker_embedding_dim)
-        self.multi_head_attention = MultiHeadAttention(hparams.encoder_LSTM_dim+hparams.speaker_embedding_dim, hparams.pos_att_head_num)
-        
-    def forward(self, cond_inp, output_lengths=None, cond_lens=None): # [B, seq_len, dim], int, [B]
-        pos_emb = torch.arange(output_lengths.max().item(), device=cond_inp.device, dtype=cond_inp.dtype)
-        pos_emb = self.positional_embedding(pos_emb, bsz=cond_inp.size(0))
-        if output_lengths is not None: # masking for batches
-            dec_mask = get_mask_from_lengths(output_lengths).unsqueeze(2)
-            pos_emb = pos_emb * dec_mask
-        q = pos_emb
+        self.head_num = hparams.pos_att_head_num
+        if False:
+            self.positional_embedding = PositionalEmbedding(hparams.encoder_LSTM_dim+hparams.speaker_embedding_dim)
+            self.multi_head_attention = MultiHeadAttention(hparams.encoder_LSTM_dim+hparams.speaker_embedding_dim, hparams.pos_att_head_num)
+            self.merged_pos_enc = True
+        else:# have a seperate copy of the position encoding for each head
+            self.positional_embedding = PositionalEmbedding((hparams.encoder_LSTM_dim+hparams.speaker_embedding_dim)/hparams.pos_att_head_num)
+            self.multi_head_attention = MultiHeadAttention(hparams.encoder_LSTM_dim+hparams.speaker_embedding_dim, hparams.pos_att_head_num)
+            self.merged_pos_enc = False
+    
+    def forward(self, cond_inp, output_lengths, cond_lens=None):# [B, seq_len, dim], int, [B]
+        batch_size, enc_T, enc_dim = cond_inp.shape
+        dec_T_max = output_lengths.max().item()
+        pos_emb = torch.arange(dec_T_max, device=cond_inp.device, dtype=cond_inp.dtype)
+        pos_emb = self.positional_embedding(pos_emb, bsz=cond_inp.size(0))# [B, dec_T, enc_dim]
+        if not self.merged_pos_enc:
+            pos_emb = pos_emb.repeat(1, 1, self.head_num)
+        if output_lengths is not None:# masking for batches
+            dec_mask = get_mask_from_lengths(output_lengths).unsqueeze(2)# [B, dec_T, 1]
+            pos_emb = pos_emb * dec_mask# [B, dec_T, enc_dim] * [B, dec_T, 1] -> [B, dec_T, enc_dim]
+        q = pos_emb# [B, dec_T, enc_dim]
         
         # which takes the output hidden states of the encoder as the key vector and value vector, and takes the positional encoding of spectrogram length as query vector.
         # Note that the spectrogram length is taken from the ground truth spectrogram during training, and predicted by the length predictor during inference.
-        k = v = cond_inp
-        enc_mask = get_mask_from_lengths(cond_lens).unsqueeze(1).repeat(1, q.size(1), 1) if (cond_lens is not None) else None
-        output = self.multi_head_attention(q, k, v, mask=enc_mask)
+        k = v = cond_inp# [B, enc_T, enc_dim]
+        enc_mask = get_mask_from_lengths(cond_lens).unsqueeze(1).repeat(1, q.size(1), 1) if (cond_lens is not None) else None# [B, dec_T, enc_T]
+        output, attention_scores = self.multi_head_attention(q, k, v, mask=enc_mask)# [B, dec_T, enc_dim], [B, n_head, dec_T, enc_T]
         
         if output_lengths is not None:
-            output = output * dec_mask
-        return output
+            output = output * dec_mask# [B, dec_T, enc_dim] * [B, dec_T, 1]
+        return output, attention_scores
 
 
 drop_rate = 0.5
@@ -443,7 +458,8 @@ class FlowTTS(nn.Module):
             encoder_outputs = torch.cat((encoder_outputs, embedded_speakers), dim=2) # [batch, enc_T, enc_dim]
         
         # Positional Attention
-        cond = self.positional_attention(encoder_outputs, output_lengths=output_lengths, cond_lens=text_lengths).transpose(1, 2)
+        cond, attention_scores = self.positional_attention(encoder_outputs, output_lengths, cond_lens=text_lengths)
+        cond = cond.transpose(1, 2)
         assert not torch.isnan(cond).any(), 'cond has NaN values.'
         # [B, enc_T, enc_dim] -> [B, enc_dim, dec_T] # Masked Multi-head Attention
         
@@ -454,7 +470,7 @@ class FlowTTS(nn.Module):
         assert not torch.isnan(logdet_w_sum).any(), 'mel_outputs has NaN values.'
         
         return self.mask_outputs(
-            [mel_outputs, pred_output_lengths, log_s_sum, logdet_w_sum],
+            [mel_outputs, attention_scores, pred_output_lengths, log_s_sum, logdet_w_sum],
             output_lengths)
     
     def inference(self, text, speaker_ids, text_lengths=None, sigma=1.0):
@@ -481,7 +497,8 @@ class FlowTTS(nn.Module):
             encoder_outputs = torch.cat((encoder_outputs, embedded_speakers), dim=2) # [batch, enc_T, enc_dim]
         
         # Positional Attention
-        cond = self.positional_attention(encoder_outputs, output_lengths=pred_output_lengths, cond_lens=text_lengths).transpose(1, 2)
+        cond, attention_scores = self.positional_attention(encoder_outputs, pred_output_lengths, cond_lens=text_lengths)
+        cond = cond.transpose(1, 2)
         assert not torch.isnan(cond).any(), 'cond has NaN values.'
         # [B, enc_T, enc_dim] -> [B, enc_dim, dec_T] # Masked Multi-head Attention
         
@@ -490,4 +507,4 @@ class FlowTTS(nn.Module):
         assert not torch.isnan(mel_outputs).any(), 'mel_outputs has NaN values.'
         
         return self.mask_outputs(
-            [mel_outputs, None, None, None])
+            [mel_outputs, attention_scores, None, None, None])

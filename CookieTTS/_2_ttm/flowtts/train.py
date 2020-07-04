@@ -470,7 +470,7 @@ def train(output_directory, log_directory, checkpoint_path, warm_start, warm_sta
                         output_directory, "checkpoint_{}".format(iteration))
                     save_checkpoint(model, optimizer, learning_rate, iteration, hparams, best_validation_loss, average_loss, speaker_lookup, checkpoint_path)
             
-            if not is_overflow and ((iteration % int((hparams.iters_per_validation)/1) == 0) or (os.path.exists(save_file_check_path)) or (iteration < 1000 and (iteration % 250 == 0))):
+            if not is_overflow and ((iteration % int(validation_interval) == 0) or (os.path.exists(save_file_check_path)) or (iteration < 1000 and (iteration % 250 == 0))):
                 if rank == 0 and os.path.exists(save_file_check_path):
                     os.remove(save_file_check_path)
                 # perform validation and save "best_model" depending on validation loss

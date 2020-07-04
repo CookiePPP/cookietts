@@ -11,7 +11,6 @@ def create_hparams(hparams_string=None, verbose=False):
         ################################
         epochs=1000,
         iters_per_checkpoint=1000,
-        iters_per_validation=1000,
         seed=1234,
         dynamic_loss_scaling=True,
         fp16_run=False,
@@ -128,8 +127,8 @@ def create_hparams(hparams_string=None, verbose=False):
         use_saved_learning_rate=False,
         learning_rate=0.1e-5,
         weight_decay=1e-6,
-        batch_size=8,
-        val_batch_size=8, # for more precise comparisons between models, constant batch_size is useful
+        batch_size=48,
+        val_batch_size=48, # for more precise comparisons between models, constant batch_size is useful
         use_TBPTT=False,
         truncated_length=1000, # max mel length till truncation.
         mask_padding=True,#mask values by setting them to the same values in target and predicted

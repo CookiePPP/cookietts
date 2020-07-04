@@ -42,17 +42,8 @@ class AffineCouplingBlock(nn.Module):
         else:
             audio_0_out, audio_1_out = audio_out.chunk(2, 1)
             log_s, t = self.WN(audio_0_out, spect, speaker_ids)
-            ##print('audio_1_out.mean() =', audio_1_out.mean())
             audio_1 = (audio_1_out - t) / log_s.exp()
-            ##print('log_s.mean() =', log_s.mean())
-            assert not torch.isnan(log_s.mean()).any()
-            ##print('t.mean() =', t.mean())
-            assert not torch.isnan(t.mean()).any()
-            ##print('audio_1.mean() =', audio_1.mean())
-            assert not torch.isnan(audio_1.mean()).any()
             z = torch.cat((audio_0_out, audio_1), 1)
-            ##print('z.mean() =', z.mean())
-            assert not torch.isnan(z.mean()).any()
             return z, -log_s
 
 

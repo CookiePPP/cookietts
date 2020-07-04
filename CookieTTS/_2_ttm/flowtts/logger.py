@@ -17,10 +17,25 @@ class Tacotron2Logger(SummaryWriter):
     
     def log_validation(self, reduced_loss, model, y, y_pred, iteration):
         self.add_scalar("validation.loss", reduced_loss, iteration)
-        _, mel_outputs, gate_outputs, alignments = y_pred
-        mel_targets, gate_targets, *_ = y
+        z, alignments, pred_output_lengths, log_s_sum, logdet_w_sum = y_pred
+        mel_targets, *_ = y
         
         # plot distribution of parameters
         for tag, value in model.named_parameters():
             tag = tag.replace('.', '/')
             self.add_histogram(tag, value.data.cpu().numpy(), iteration)
+        
+        # plot alignment, mel target and predicted, gate target and predicted
+        for head_i in range(alignments.shape[1]):
+            idx = 0 # plot longest audio file
+            self.add_image(
+                f"alignment1/h{head_i}",
+                plot_alignment_to_numpy(alignments[idx][head_i].data.cpu().numpy().T),
+                iteration, dataformats='HWC')
+            
+            if alignments.shape[0] > 1: # if batch_size > 1...
+                idx = 1 # pick a second plot
+                self.add_image(
+                    f"alignment2/h{head_i}",
+                    plot_alignment_to_numpy(alignments[idx][head_i].data.cpu().numpy().T),
+                    iteration, dataformats='HWC')
