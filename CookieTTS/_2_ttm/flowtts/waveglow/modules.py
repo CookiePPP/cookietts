@@ -29,10 +29,9 @@ class AffineCouplingBlock(nn.Module):
             return audio_out, log_s
         else:
             audio_0, audio_1 = z.chunk(2, 1)
-            audio_0_out = audio_0
             log_s, t = self.WN(audio_0, spect, speaker_ids)
             audio_1_out = audio_1 * log_s.exp() + t
-            audio_out = torch.cat((audio_0_out, audio_1_out), 1)
+            audio_out = torch.cat((audio_0, audio_1_out), 1)
             return audio_out, log_s
     
     def inverse(self, audio_out, spect, speaker_ids=None):
@@ -42,10 +41,18 @@ class AffineCouplingBlock(nn.Module):
             return z, log_s
         else:
             audio_0_out, audio_1_out = audio_out.chunk(2, 1)
-            audio_0 = audio_0_out
             log_s, t = self.WN(audio_0_out, spect, speaker_ids)
+            ##print('audio_1_out.mean() =', audio_1_out.mean())
             audio_1 = (audio_1_out - t) / log_s.exp()
-            z = torch.cat((audio_0, audio_1), 1)
+            ##print('log_s.mean() =', log_s.mean())
+            assert not torch.isnan(log_s.mean()).any()
+            ##print('t.mean() =', t.mean())
+            assert not torch.isnan(t.mean()).any()
+            ##print('audio_1.mean() =', audio_1.mean())
+            assert not torch.isnan(audio_1.mean()).any()
+            z = torch.cat((audio_0_out, audio_1), 1)
+            ##print('z.mean() =', z.mean())
+            assert not torch.isnan(z.mean()).any()
             return z, -log_s
 
 

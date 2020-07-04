@@ -19,11 +19,7 @@ class ScaledDotProductAttention(nn.Module):
         scores = query.matmul(key.transpose(-2, -1)) / sqrt(dk)
         if mask is not None:
             scores = scores.masked_fill(mask == 0, -1e9)
-        print("mask.shape =", mask.shape)
-        print("scores.shape =", scores.shape)
         attention = F.softmax(scores, dim=-1)
-        print("attention.shape =", attention.shape)
-        print("value.shape =", value.shape)
         return attention.matmul(value)
 
 # https://github.com/CyberZHG/torch-multi-head-attention/blob/master/torch_multi_head_attention/multi_head_attention.py
@@ -104,25 +100,25 @@ class MultiHeadAttention(nn.Module):
 class PositionalAttention(nn.Module):
     def __init__(self, hparams):
         super(PositionalAttention, self).__init__()
-        self.multi_head_attention = MultiHeadAttention(hparams.encoder_LSTM_dim+hparams.speaker_embedding_dim, hparams.pos_att_head_num)
         self.positional_embedding = PositionalEmbedding(hparams.encoder_LSTM_dim+hparams.speaker_embedding_dim)
+        self.multi_head_attention = MultiHeadAttention(hparams.encoder_LSTM_dim+hparams.speaker_embedding_dim, hparams.pos_att_head_num)
         
     def forward(self, cond_inp, output_lengths=None, cond_lens=None): # [B, seq_len, dim], int, [B]
         pos_emb = torch.arange(output_lengths.max().item(), device=cond_inp.device, dtype=cond_inp.dtype)
-        pos_emb = self.positional_embedding(pos_emb)
+        pos_emb = self.positional_embedding(pos_emb, bsz=cond_inp.size(0))
         if output_lengths is not None: # masking for batches
-            mask = get_mask_from_lengths(output_lengths).unsqueeze(2)
-            assert (mask[:,0]>0).all()
-            pos_emb = pos_emb * mask
+            dec_mask = get_mask_from_lengths(output_lengths).unsqueeze(2)
+            pos_emb = pos_emb * dec_mask
         q = pos_emb
         
         # which takes the output hidden states of the encoder as the key vector and value vector, and takes the positional encoding of spectrogram length as query vector.
         # Note that the spectrogram length is taken from the ground truth spectrogram during training, and predicted by the length predictor during inference.
         k = v = cond_inp
-        if cond_lens is not None: # masking for batches
-            mask = get_mask_from_lengths(cond_lens).unsqueeze(1).repeat(1, q.size(1), 1)
-            print('0 mask.shape =', mask.shape)
-        output = self.multi_head_attention(q, k, v, mask=mask)
+        enc_mask = get_mask_from_lengths(cond_lens).unsqueeze(1).repeat(1, q.size(1), 1) if (cond_lens is not None) else None
+        output = self.multi_head_attention(q, k, v, mask=enc_mask)
+        
+        if output_lengths is not None:
+            output = output * dec_mask
         return output
 
 
@@ -426,7 +422,7 @@ class FlowTTS(nn.Module):
         
         assert not torch.isnan(text).any(), 'text has NaN values.'
         embedded_text = self.embedding(text).transpose(1, 2) # [B, embed, sequence]
-        assert not torch.isnan(embedded_text).any(), 'encoder_outputs has NaN values.'
+        assert not torch.isnan(embedded_text).any(), 'embedded_text has NaN values.'
         encoder_outputs = self.encoder(embedded_text, text_lengths, speaker_ids=speaker_ids) # [B, enc_T, enc_dim]
         assert not torch.isnan(encoder_outputs).any(), 'encoder_outputs has NaN values.'
         
@@ -436,7 +432,7 @@ class FlowTTS(nn.Module):
         assert not torch.isnan(encoder_lengths).any(), 'encoder_lengths has NaN values.'
         
         # sum lengths (used to predict mel-spec length)
-        encoder_lengths = encoder_lengths.clamp(0, 128)
+        encoder_lengths = encoder_lengths.clamp(1e-6, 4096)
         pred_output_lengths = encoder_lengths.sum((1,))
         assert not torch.isnan(encoder_lengths).any(), 'encoder_lengths has NaN values.'
         assert not torch.isnan(pred_output_lengths).any(), 'pred_output_lengths has NaN values.'
@@ -445,11 +441,6 @@ class FlowTTS(nn.Module):
             embedded_speakers = self.speaker_embedding(speaker_ids)[:, None]
             embedded_speakers = embedded_speakers.repeat(1, encoder_outputs.size(1), 1)
             encoder_outputs = torch.cat((encoder_outputs, embedded_speakers), dim=2) # [batch, enc_T, enc_dim]
-        
-        ##print('output_lengths.max() =', output_lengths.max())
-        ##print('pred_output_lengths.max() =', pred_output_lengths.max())
-        ##print('output_lengths.shape =', output_lengths.shape)
-        ##print('pred_output_lengths.shape =', pred_output_lengths.shape)
         
         # Positional Attention
         cond = self.positional_attention(encoder_outputs, output_lengths=output_lengths, cond_lens=text_lengths).transpose(1, 2)

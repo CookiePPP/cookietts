@@ -108,12 +108,10 @@ class WN(nn.Module):
             dilation = 2 ** i if hparams.wn_dilations_w is None else hparams.wn_dilations_w[i]
             padding = int((hparams.wn_kernel_size*dilation - dilation)/2)
             if (not hparams.wn_seperable_conv) or (hparams.wn_kernel_size == 1):
-                in_layer = nn.Conv1d(self.n_channels, 2*self.n_channels, hparams.wn_kernel_size,
-                                           dilation=dilation, padding=padding, padding_mode='zeros')
+                in_layer = nn.Conv1d(self.n_channels, 2*self.n_channels, hparams.wn_kernel_size, dilation=dilation, padding=padding, padding_mode='zeros')
                 in_layer = nn.utils.weight_norm(in_layer, name='weight')
             else:
-                depthwise = nn.Conv1d(self.n_channels, self.n_channels, hparams.wn_kernel_size,
-                                    dilation=dilation, padding=padding, padding_mode='zeros', groups=self.n_channels)
+                depthwise = nn.Conv1d(self.n_channels, self.n_channels, hparams.wn_kernel_size, dilation=dilation, padding=padding, padding_mode='zeros', groups=self.n_channels)
                 depthwise = nn.utils.weight_norm(depthwise, name='weight')
                 pointwise = nn.Conv1d(self.n_channels, 2*self.n_channels, 1,
                                     dilation=dilation, padding=0)
@@ -242,10 +240,8 @@ class FlowDecoder(nn.Module):
             
             if hparams.grad_checkpoint and (k+1)/hparams.n_flows <= hparams.grad_checkpoint:
                 mem_eff_layer = True
-                print(f"Flow {k} using Mem Efficient Backprop")
             else:
                 mem_eff_layer = False
-                print(f"Flow {k} using Normal Backprop")
             
             self.convinv.append( InvertibleConv1x1(n_remaining_channels, memory_efficient=mem_eff_layer) )
             self.WN.append( AffineCouplingBlock(WN, memory_efficient=mem_eff_layer, n_in_channels=n_remaining_channels//2,
@@ -311,8 +307,8 @@ class FlowDecoder(nn.Module):
                 assert not torch.isnan(log_det_W).any(), f'flow {k} spect has NaN values.'
             
             if k:
-                logdet_w_sum += log_det_W
-                log_s_sum += log_s.float().sum((1,))
+                logdet_w_sum = logdet_w_sum + log_det_W
+                log_s_sum = log_s_sum + log_s.float().sum((1,))
             else:
                 logdet_w_sum = log_det_W
                 log_s_sum = log_s.float().sum((1,))
@@ -344,7 +340,7 @@ class FlowDecoder(nn.Module):
         
         batch_dim, n_mel_channels, group_steps = z.shape
         z = z.view(batch_dim, self.n_group, -1) # [B, n_mel, T] -> [B, n_mel/8, T*8]
-        cond = F.interpolate(cond, size=z.shape[-1]) # [B, enc_dim, T] -> [B, enc_dim/8, T*8]
+        #cond = F.interpolate(cond, size=z.shape[-1]) # [B, enc_dim, T] -> [B, enc_dim/8, T*8]
         
         remained_z = []
         for r in z.split(self.z_split_sizes, 1):
@@ -353,22 +349,31 @@ class FlowDecoder(nn.Module):
         
         logdet = None
         for k, invconv, affine_coup in zip(range(self.n_flows-1, -1, -1), self.convinv[::-1], self.WN[::-1]):
-            
+
             if not self.mix_first:
                 z, _ = invconv.inverse(z)
-                assert not torch.isnan(z).any(), f'flow {k} z has NaN values.'
+                ##print(f'flow {k} invconv z.mean() = {z.mean()}')
+                assert not torch.isnan(z).any(), f'flow {k} invconv z has NaN values.'
+                assert not torch.isinf(z).any(), f'flow {k} invconv z has inf values.'
             
             z, _ = affine_coup.inverse(z, cond, speaker_ids=speaker_ids)
-            assert not torch.isnan(z).any(), f'flow {k} z has NaN values.'
+            ##print(f'flow {k} affine_coup 0.1 z.mean() = {z.mean()}') # nan
+            assert not torch.isnan(z).any(), f'flow {k} affine_coup z has NaN values.'
+            assert not torch.isinf(z).any(), f'flow {k} affine_coup z has inf values.'
+            ##print(f'flow {k} affine_coup 0.2 z.mean() = {z.mean()}') # getting nan here (despite being right after a check)
             
             if self.mix_first:
                 z, _ = invconv.inverse(z)
-                assert not torch.isnan(z).any(), f'flow {k} z has NaN values.'
+                ##print(f'flow {k} invconv z.mean() = {z.mean()}')
+                assert not torch.isnan(z).any(), f'flow {k} invconv z has NaN values.'
+                assert not torch.isinf(z).any(), f'flow {k} invconv z has inf values.'
             
             if k % self.n_early_every == 0 and k:
                 z = torch.cat((remained_z.pop(), z), 1)
+            
+            ##print("-------\n")
         
-        z = z.view(batch_dim, self.n_group, -1)
+        z = z.view(batch_dim, self.n_mel_channels, -1)
         return z, logdet
     
     @torch.no_grad()

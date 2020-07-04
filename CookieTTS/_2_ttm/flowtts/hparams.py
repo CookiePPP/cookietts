@@ -10,8 +10,8 @@ def create_hparams(hparams_string=None, verbose=False):
         # Experiment Parameters        #
         ################################
         epochs=1000,
-        iters_per_checkpoint=2000,
-        iters_per_validation=2000,
+        iters_per_checkpoint=1000,
+        iters_per_validation=1000,
         seed=1234,
         dynamic_loss_scaling=True,
         fp16_run=False,
@@ -103,7 +103,7 @@ def create_hparams(hparams_string=None, verbose=False):
         
         # (Decoder) WN parameters
         wn_n_channels=256,
-        wn_kernel_size=3,
+        wn_kernel_size=1,
         wn_dilations_w=1, # use list() to specify multiple dilations
         wn_n_layers=1,
         wn_res_skip=False,      # ignore unless using more than 1 layer
@@ -127,10 +127,9 @@ def create_hparams(hparams_string=None, verbose=False):
         ################################
         use_saved_learning_rate=False,
         learning_rate=0.1e-5,
-        weight_decay=1e-7,
-        grad_clip_thresh=100.0,
-        batch_size=32,
-        val_batch_size=32, # for more precise comparisons between models, constant batch_size is useful
+        weight_decay=1e-6,
+        batch_size=8,
+        val_batch_size=8, # for more precise comparisons between models, constant batch_size is useful
         use_TBPTT=False,
         truncated_length=1000, # max mel length till truncation.
         mask_padding=True,#mask values by setting them to the same values in target and predicted

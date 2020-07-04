@@ -21,13 +21,7 @@
     "Clipper_MLP": {
         "url": "https://mega.nz/folder/L952DI4Q#nibaVrvxbwgCgXMlPHVnVw",
         "download": 1,
-        "force_dl": 0,
-        "delete_non_voice_data": 1,
-        "delete_songs": 0,
-        "delete_noisy": 0,
-        "delete_very_noisy": 1,
-        "removable_folders": ["Noise samples"],
-        "removable_emotions": ["CANTERLOT VOICE"]
+        "force_dl": 0
     },
     "Blizzard2011": {
         "urls": [

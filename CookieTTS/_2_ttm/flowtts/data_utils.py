@@ -237,6 +237,7 @@ class TextMelLoader(torch.utils.data.Dataset):
         
         mel = self.get_mel(audiopath) # get mel-spec as tensor from audiofile.
         mel = mel[..., int(spectrogram_offset):int(spectrogram_offset+self.truncated_length)] # get a segment
+        mel = (mel/8)+3.5
         
         speaker_id = self.get_speaker_id(speaker) # get speaker_id as tensor normalized [ 0 -> len(speaker_ids) ]
         

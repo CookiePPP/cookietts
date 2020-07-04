@@ -15,7 +15,7 @@ def rmdir(directory, white_list=[], ignore_strs=[]):
             if any([x.lower() in str(item).lower() for x in ignore_strs]):
                 continue
             item.unlink()
-    if not len(directory.iterdir()):
+    if not len(list(directory.iterdir())):
         directory.rmdir()
 
 
@@ -27,26 +27,5 @@ def download(conf):
     
     # download files from MEGA
     megadown(conf['url'], filename='./')
-    
-    # cleanup
-    if conf["delete_non_voice_data"]:
-        rmdir('./', ignore_strs=['Sliced Dialogue'])
-    
-    if conf["delete_songs"]:
-        rmdir('./Sliced Dialogue/Songs', ignore_strs=[])
-    
-    if  conf["delete_noisy"]:
-        rmdir('./Sliced Dialogue', white_list=['_Noisy_'], ignore_strs=[])
-    
-    if conf["delete_very_noisy"]:
-        rmdir('./Sliced Dialogue', white_list=['_Very Noisy_'], ignore_strs=[])
-    
-    white_list = []
-    if len(conf["removable_folders"]):
-        white_list.extend(conf["removable_folders"])
-    if len(conf["removable_emotions"]):
-        white_list.extend([f"_{x}" for x in conf["removable_folders"]])
-    if len(white_list):
-        rmdir('./', white_list=white_list, ignore_strs=[])
     
     print("Finished!")
