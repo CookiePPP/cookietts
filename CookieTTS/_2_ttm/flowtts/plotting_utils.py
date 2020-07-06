@@ -12,7 +12,7 @@ def save_figure_to_numpy(fig):
 
 
 def plot_alignment_to_numpy(alignment, info=None):
-    fig, ax = plt.subplots(figsize=(6, 4))
+    fig, ax = plt.subplots(figsize=(16, 8))
     im = ax.imshow(alignment, cmap='inferno', aspect='auto', origin='lower',
                    interpolation='none')
     fig.colorbar(im, ax=ax)
@@ -30,7 +30,7 @@ def plot_alignment_to_numpy(alignment, info=None):
 
 
 def plot_spectrogram_to_numpy(spectrogram):
-    fig, ax = plt.subplots(figsize=(12, 3))
+    fig, ax = plt.subplots(figsize=(16, 3))
     im = ax.imshow(spectrogram, cmap='inferno', aspect="auto", origin="lower",
                    interpolation='none')
     plt.colorbar(im, ax=ax)
@@ -45,7 +45,7 @@ def plot_spectrogram_to_numpy(spectrogram):
 
 
 def plot_gate_outputs_to_numpy(gate_targets, gate_outputs):
-    fig, ax = plt.subplots(figsize=(12, 3))
+    fig, ax = plt.subplots(figsize=(16, 3))
     ax.scatter(range(len(gate_targets)), gate_targets, alpha=0.5,
                color='green', marker='+', s=1, label='target')
     ax.scatter(range(len(gate_outputs)), gate_outputs, alpha=0.5,

@@ -26,16 +26,23 @@ class Tacotron2Logger(SummaryWriter):
             self.add_histogram(tag, value.data.cpu().numpy(), iteration)
         
         # plot alignment, mel target and predicted, gate target and predicted
-        for head_i in range(alignments.shape[1]):
-            idx = 0 # plot longest audio file
-            self.add_image(
-                f"alignment1/h{head_i}",
-                plot_alignment_to_numpy(alignments[idx][head_i].data.cpu().numpy().T),
-                iteration, dataformats='HWC')
-            
-            if alignments.shape[0] > 1: # if batch_size > 1...
-                idx = 1 # pick a second plot
+        if len(alignments.shape) == 4:
+            for head_i in range(alignments.shape[1]):
+                idx = 0 # plot longest audio file
                 self.add_image(
-                    f"alignment2/h{head_i}",
+                    f"alignment1/h{head_i}",
                     plot_alignment_to_numpy(alignments[idx][head_i].data.cpu().numpy().T),
+                    iteration, dataformats='HWC')
+                
+                if alignments.shape[0] > 1: # if batch_size > 1...
+                    idx = 1 # pick a second plot
+                    self.add_image(
+                        f"alignment2/h{head_i}",
+                        plot_alignment_to_numpy(alignments[idx][head_i].data.cpu().numpy().T),
+                        iteration, dataformats='HWC')
+        else:
+            for idx in range(2): # plot longest audio file
+                self.add_image(
+                    f"alignment/{idx}",
+                    plot_alignment_to_numpy(alignments[idx].data.cpu().numpy().T),
                     iteration, dataformats='HWC')

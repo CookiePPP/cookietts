@@ -7,7 +7,7 @@ from torch import nn
 from torch.nn import functional as F
 from CookieTTS.utils.model.layers import ConvNorm, ConvNorm2D, LinearNorm
 from CookieTTS.utils.model.GPU import to_gpu
-from CookieTTS.utils.model.utils import get_mask_from_lengths
+from CookieTTS.utils.model.utils import get_mask_from_lengths, get_mask_3d
 from CookieTTS._2_ttm.flowtts.fastpitch.length_predictor import TemporalPredictor
 from CookieTTS._2_ttm.flowtts.fastpitch.transformer import PositionalEmbedding
 from CookieTTS._2_ttm.flowtts.waveglow.glow import FlowDecoder
@@ -27,7 +27,7 @@ class ScaledDotProductAttention(nn.Module):
         dk = query.size()[-1]
         scores = query.matmul(key.transpose(-2, -1)) / sqrt(dk)# [B*n_head, dec_T, enc_dim//n_head] @ [B*n_head, enc_T, enc_dim//n_head].t() -> [B*n_head, dec_T, enc_T]
         if mask is not None:
-            scores = scores.masked_fill(mask == 0, -1e9)# [B*n_head, dec_T, enc_T]
+            scores = scores.masked_fill(mask == 0, -65500.0)# [B*n_head, dec_T, enc_T]
         attention = F.softmax(scores, dim=-1) # softmax along enc dim
         return attention.matmul(value), attention# [B*n_head, dec_T, enc_T] @ [B*n_head, enc_T, enc_dim//n_head] -> [B*n_head, dec_T, enc_dim//n_head]
 
@@ -67,7 +67,7 @@ class MultiHeadAttention(nn.Module):
         k = self._reshape_to_batches(k)# [B, enc_T, enc_dim] -> [B*n_head, enc_T, enc_dim//n_head]
         v = self._reshape_to_batches(v)# [B, enc_T, enc_dim] -> [B*n_head, enc_T, enc_dim//n_head]
         if mask is not None:
-            mask = mask.repeat(self.head_num, 1, 1)# [B*n_head, dec_T, enc_T]
+            mask = mask.repeat(self.head_num, 1, 1)# [B, dec_T, enc_T] -> [B*n_head, dec_T, enc_T]
         y, attention_scores = ScaledDotProductAttention()(q, k, v, mask)
         y = self._reshape_from_batches(y)# [B*n_head, dec_T, enc_dim//n_head] -> [B, dec_T, enc_dim]
         
@@ -114,32 +114,67 @@ class PositionalAttention(nn.Module):
     def __init__(self, hparams):
         super(PositionalAttention, self).__init__()
         self.head_num = hparams.pos_att_head_num
+        self.merged_pos_enc = True
+        self.pos_enc_dim = hparams.encoder_LSTM_dim+hparams.speaker_embedding_dim
+        self.pos_enc_dim = self.pos_enc_dim if self.merged_pos_enc else self.pos_enc_dim/hparams.pos_att_head_num
         if False:
-            self.positional_embedding = PositionalEmbedding(hparams.encoder_LSTM_dim+hparams.speaker_embedding_dim)
+            self.positional_embedding = PositionalEmbedding(self.pos_enc_dim, inv_freq=hparams.pos_att_inv_freq)
             self.multi_head_attention = MultiHeadAttention(hparams.encoder_LSTM_dim+hparams.speaker_embedding_dim, hparams.pos_att_head_num)
-            self.merged_pos_enc = True
-        else:# have a seperate copy of the position encoding for each head
-            self.positional_embedding = PositionalEmbedding((hparams.encoder_LSTM_dim+hparams.speaker_embedding_dim)/hparams.pos_att_head_num)
-            self.multi_head_attention = MultiHeadAttention(hparams.encoder_LSTM_dim+hparams.speaker_embedding_dim, hparams.pos_att_head_num)
-            self.merged_pos_enc = False
+            self.pytorch_native_mha = False
+        else:
+            self.positional_embedding = PositionalEmbedding(self.pos_enc_dim, inv_freq=hparams.pos_att_inv_freq)
+            self.multi_head_attention = torch.nn.MultiheadAttention(hparams.encoder_LSTM_dim+hparams.speaker_embedding_dim,
+                                                                    hparams.pos_att_head_num, dropout=0.1, bias=True,
+                                                                    add_bias_kv=False, add_zero_attn=False, kdim=None, vdim=None)
+            self.pytorch_native_mha = True
+        
+        self.pos_enc_k = hparams.pos_att_positional_encoding_for_key
+        self.pos_enc_v = hparams.pos_att_positional_encoding_for_value
+        if self.pos_enc_k or self.pos_enc_v:
+            self.enc_positional_embedding = PositionalEmbedding(self.pos_enc_dim, inv_freq=hparams.pos_att_enc_inv_freq)
     
     def forward(self, cond_inp, output_lengths, cond_lens=None):# [B, seq_len, dim], int, [B]
         batch_size, enc_T, enc_dim = cond_inp.shape
+        
+        # get Random Position Offset (this *might* allow better distance generalisation)
+        #trandint = torch.randint(10000, (1,), device=cond_inp.device, dtype=cond_inp.dtype)
+        
+        # get Query from Positional Encoding
         dec_T_max = output_lengths.max().item()
-        pos_emb = torch.arange(dec_T_max, device=cond_inp.device, dtype=cond_inp.dtype)
-        pos_emb = self.positional_embedding(pos_emb, bsz=cond_inp.size(0))# [B, dec_T, enc_dim]
+        dec_pos_emb = torch.arange(0, dec_T_max, device=cond_inp.device, dtype=cond_inp.dtype)# + trandint
+        dec_pos_emb = self.positional_embedding(dec_pos_emb, bsz=cond_inp.size(0))# [B, dec_T, enc_dim]
         if not self.merged_pos_enc:
-            pos_emb = pos_emb.repeat(1, 1, self.head_num)
+            dec_pos_emb = dec_pos_emb.repeat(1, 1, self.head_num)
         if output_lengths is not None:# masking for batches
             dec_mask = get_mask_from_lengths(output_lengths).unsqueeze(2)# [B, dec_T, 1]
-            pos_emb = pos_emb * dec_mask# [B, dec_T, enc_dim] * [B, dec_T, 1] -> [B, dec_T, enc_dim]
-        q = pos_emb# [B, dec_T, enc_dim]
+            dec_pos_emb = dec_pos_emb * dec_mask# [B, dec_T, enc_dim] * [B, dec_T, 1] -> [B, dec_T, enc_dim]
+        q = dec_pos_emb# [B, dec_T, enc_dim]
         
-        # which takes the output hidden states of the encoder as the key vector and value vector, and takes the positional encoding of spectrogram length as query vector.
-        # Note that the spectrogram length is taken from the ground truth spectrogram during training, and predicted by the length predictor during inference.
+        # get Key/Value from Encoder Outputs
         k = v = cond_inp# [B, enc_T, enc_dim]
+        # (optional) add position encoding to Encoder outputs
+        if hasattr(self, 'enc_positional_embedding'):
+            enc_pos_emb = torch.arange(0, enc_T, device=cond_inp.device, dtype=cond_inp.dtype)# + trandint
+            enc_pos_emb = self.enc_positional_embedding(enc_pos_emb, bsz=cond_inp.size(0))# [B, enc_T, enc_dim]
+            if self.pos_enc_k:
+                k = k + enc_pos_emb
+            if self.pos_enc_v:
+                v = v + enc_pos_emb
         enc_mask = get_mask_from_lengths(cond_lens).unsqueeze(1).repeat(1, q.size(1), 1) if (cond_lens is not None) else None# [B, dec_T, enc_T]
-        output, attention_scores = self.multi_head_attention(q, k, v, mask=enc_mask)# [B, dec_T, enc_dim], [B, n_head, dec_T, enc_T]
+        
+        if not self.pytorch_native_mha:
+            output, attention_scores = self.multi_head_attention(q, k, v, mask=enc_mask)# [B, dec_T, enc_dim], [B, n_head, dec_T, enc_T]
+        else:
+            q = q.transpose(0, 1)# [B, dec_T, enc_dim] -> [dec_T, B, enc_dim]
+            k = k.transpose(0, 1)# [B, enc_T, enc_dim] -> [enc_T, B, enc_dim]
+            v = v.transpose(0, 1)# [B, enc_T, enc_dim] -> [enc_T, B, enc_dim]
+            enc_mask = ~enc_mask[:, 0, :] if (cond_lens is not None) else None# [B, dec_T, enc_T] -> # [B, enc_T]
+            attn_mask = ~get_mask_3d(output_lengths, cond_lens).repeat_interleave(self.head_num, 0) if (cond_lens is not None) else None#[B*n_head, dec_T, enc_T]
+            attn_mask = attn_mask.float() * -35500.0 if (cond_lens is not None) else None
+            output, attention_scores = self.multi_head_attention(q, k, v, key_padding_mask=enc_mask, attn_mask=attn_mask)# [dec_T, B, enc_dim], [B, dec_T, enc_T]
+            output = output.transpose(0, 1)# [dec_T, B, enc_dim] -> [B, dec_T, enc_dim]
+            attention_scores = attention_scores*get_mask_3d(output_lengths, cond_lens) if (cond_lens is not None) else attention_scores
+            #attention_scores # [B, dec_T, enc_T]
         
         if output_lengths is not None:
             output = output * dec_mask# [B, dec_T, enc_dim] * [B, dec_T, 1]
@@ -412,7 +447,7 @@ class FlowTTS(nn.Module):
             preserve_decoder_states = to_gpu(preserve_decoder_states).float()
         return (
             (text_padded, text_lengths, mel_padded, max_len, output_lengths, speaker_ids, torchmoji_hidden, preserve_decoder_states),
-            (mel_padded, gate_padded, output_lengths))
+            (mel_padded, gate_padded, output_lengths, text_lengths))
             # returns ((x),(y)) as (x) for training input, (y) for ground truth/loss calc
     
     def mask_outputs(self, outputs, output_lengths=None):

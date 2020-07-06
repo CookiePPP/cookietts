@@ -23,10 +23,10 @@ from CookieTTS.utils.model.utils import get_mask_from_lengths
 
 
 class PositionalEmbedding(nn.Module):
-    def __init__(self, demb):
+    def __init__(self, demb, inv_freq=10000):
         super(PositionalEmbedding, self).__init__()
         self.demb = demb
-        inv_freq = 1 / (10000 ** (torch.arange(0.0, demb, 2.0) / demb))
+        inv_freq = 1 / (inv_freq ** (torch.arange(0.0, demb, 2.0) / demb))
         self.register_buffer('inv_freq', inv_freq)
 
     def forward(self, pos_seq, bsz=None):

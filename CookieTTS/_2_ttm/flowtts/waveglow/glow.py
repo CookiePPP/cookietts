@@ -148,9 +148,8 @@ class WN(nn.Module):
         
         for i in range(self.n_layers):
             cond_offset = i*2*self.n_channels, (i+1)*2*self.n_channels
-            cond = cond[:,cond_offset[0]:cond_offset[1],:]
             
-            acts = GTU(self.in_layers[i](spect), cond, n_channels_tensor)
+            acts = GTU(self.in_layers[i](spect), cond[:,cond_offset[0]:cond_offset[1],:], n_channels_tensor)
             
             if hasattr(self, 'res_skip_layers') and len(self.res_skip_layers):
                 res_skip_acts = self.res_skip_layers[i](acts)

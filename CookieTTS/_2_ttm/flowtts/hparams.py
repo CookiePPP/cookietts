@@ -26,7 +26,7 @@ def create_hparams(hparams_string=None, verbose=False):
         ################################
         # Data Parameters              #
         ################################
-        check_files=False, # check all files exist, aren't corrupted, have text, good length, and other stuff before training.
+        check_files=True, # check all files exist, aren't corrupted, have text, good length, and other stuff before training.
         load_mel_from_disk=True,
         speakerlist='/media/cookie/Samsung 860 QVO/ClipperDatasetV2/filelists/speaker_ids.txt',
         use_saved_speakers=True, # use the speaker lookups saved inside the model instead of generating again
@@ -67,7 +67,7 @@ def create_hparams(hparams_string=None, verbose=False):
         encoder_kernel_size=5,
         encoder_n_convolutions=3,
         encoder_conv_hidden_dim=512,
-        encoder_LSTM_dim=512,
+        encoder_LSTM_dim=768,
         
         # (Length Predictor) Length Predictor parameters
         len_pred_filter_size=256,
@@ -76,21 +76,29 @@ def create_hparams(hparams_string=None, verbose=False):
         len_pred_n_layers=2,
         
         # (Attention) Positional Attention parameters
-        pos_att_head_num=4,
+        pos_att_head_num=4,  # Number of Attention heads
+        pos_att_inv_freq=10000,# default 10000, defines maximum frequency of decoder positional encoding
+        pos_att_guided_attention=True, # 'dumb' guided attention, simply punishes the model for attention that is non-diagonal. Decreases training speed and increases training stability with English speech. # As an example of how this works, if you imagine there is a 10 letter input that lasts 1 second. The first 0.1s is pushed towards using the 1st letter, the next 0.1s will be pushed towards using the 2nd letter, and so on for each chunk of audio. Since each letter has a different natural duration (especially punctuation), this attention guiding is not particularly accurate, so it's not recommended to use a high loss scalar later into training.
+        pos_att_guided_attention_sigma=0.5,  # how relaxed the diagonal constraint is, default should be good for any speakers.
+        pos_att_guided_attention_alpha=100.0, # loss scalar (the strength of the attention loss), high values can used during the start of training to keep all the attention heads in line, lower values should be used once the alignment has picked up.
+        
+        pos_att_enc_inv_freq=10000,# default 10000, defines maximum frequency of encoder outputs positional encoding
+        pos_att_positional_encoding_for_key=True,   # add position information to encoder outputs key   (used for key-query match to generate alignments)
+        pos_att_positional_encoding_for_value=False,# add position information to encoder outputs value (multiplied by alignment and sent to the decoder)
         
         # (Attention) Speaker Embed
-        speaker_embedding_dim=128,
+        speaker_embedding_dim=256,
         
         # (Decoder) Decoder parameters
         sigma=1.0,
         grad_checkpoint=0,
-        n_flows=10,
+        n_flows=4,
         n_group=160,
         n_early_every=4,
-        n_early_size=2,
+        n_early_size=20,
         mix_first=True,#True = WaveGlow style, False = WaveFlow style
         
-        # (Decoder) Cond parameters
+        # (Decoder) Decoder Cond parameters
         cond_residual=False,
         cond_res_rezero=False,
         cond_layers=0,
@@ -102,7 +110,7 @@ def create_hparams(hparams_string=None, verbose=False):
         
         # (Decoder) WN parameters
         wn_n_channels=256,
-        wn_kernel_size=1,
+        wn_kernel_size=5,
         wn_dilations_w=1, # use list() to specify multiple dilations
         wn_n_layers=1,
         wn_res_skip=False,      # ignore unless using more than 1 layer
@@ -127,8 +135,8 @@ def create_hparams(hparams_string=None, verbose=False):
         use_saved_learning_rate=False,
         learning_rate=0.1e-5,
         weight_decay=1e-6,
-        batch_size=48,
-        val_batch_size=48, # for more precise comparisons between models, constant batch_size is useful
+        batch_size=64,
+        val_batch_size=64, # for more precise comparisons between models, constant batch_size is useful
         use_TBPTT=False,
         truncated_length=1000, # max mel length till truncation.
         mask_padding=True,#mask values by setting them to the same values in target and predicted

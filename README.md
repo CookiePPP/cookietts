@@ -7,8 +7,8 @@ Missing stuff;
 - Pitch preprocessing
 - Energy preprocessing
 - Normalize transcripts before running Montreal Forced Aligner 
-- Tacotron2 and WaveGlow support for `.json` filelists.
-- Flow-TTS (the entire thing)
+- Tacotron2, Flow-TTS and WaveGlow support for `.json` filelists.
+- Flow-TTS (pretrained model and guided Attention)
 - WaveFlow (the entire thing)
 
 ---

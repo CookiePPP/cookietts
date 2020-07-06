@@ -232,7 +232,7 @@ def validate(model, criterion, valset, iteration, batch_size, n_gpus,
         for i, batch in tqdm(enumerate(val_loader), desc="Validation", total=len(val_loader), smoothing=0): # i = index, batch = stuff in array[i]
             x, y = model.parse_batch(batch)
             y_pred = model(x)
-            loss, len_loss, loss_z, loss_w, loss_s = criterion(y_pred, y)
+            loss, len_loss, loss_z, loss_w, loss_s, loss_att = criterion(y_pred, y)
             if distributed_run:
                 reduced_val_loss = reduce_tensor(loss.data, n_gpus).item()
             else:
@@ -417,7 +417,7 @@ def train(output_directory, log_directory, checkpoint_path, warm_start, warm_sta
             x, y = model.parse_batch(batch)
             y_pred = model(x)
             
-            loss, len_loss, loss_z, loss_w, loss_s = criterion(y_pred, y)
+            loss, len_loss, loss_z, loss_w, loss_s, loss_att = criterion(y_pred, y)
             
             if hparams.distributed_run:
                 reduced_loss = reduce_tensor(loss.data, n_gpus).item()
@@ -425,12 +425,14 @@ def train(output_directory, log_directory, checkpoint_path, warm_start, warm_sta
                 reduced_loss_z = reduce_tensor(loss_z.data, n_gpus).item()
                 reduced_loss_w = reduce_tensor(loss_w.data, n_gpus).item()
                 reduced_loss_s = reduce_tensor(loss_s.data, n_gpus).item()
+                reduced_loss_att = reduce_tensor(loss_att.data, n_gpus).item() if (loss_att is not None) else 0
             else:
                 reduced_loss = loss.item()
                 reduced_len_loss = len_loss.item()
                 reduced_loss_z = loss_z.item()
                 reduced_loss_w = loss_w.item()
                 reduced_loss_s = loss_s.item()
+                reduced_loss_att = loss_att.item() if (loss_att is not None) else 0
             
             if hparams.fp16_run:
                 with amp.scale_loss(loss, optimizer) as scaled_loss:
@@ -451,9 +453,11 @@ def train(output_directory, log_directory, checkpoint_path, warm_start, warm_sta
             if not is_overflow and rank == 0:
                 duration = time.time() - start_time
                 average_loss = rolling_loss.process(reduced_loss)
-                tqdm.write("{} [Train_loss {:.4f} Avg {:.4f}] [Len_loss {:.4f}] [z {:.4f}] [w {:.4f}] [s {:.4f}] [Grad Norm {:.4f}] "
-                      "[{:.2f}s/it] [{:.3f}s/file] [{:.7f} LR]".format(
-                    iteration, reduced_loss, average_loss, reduced_len_loss, reduced_loss_z, reduced_loss_w, reduced_loss_s, grad_norm, duration, (duration/(hparams.batch_size*n_gpus)), learning_rate))
+                loss_scale = amp._amp_state.loss_scalers[0]._loss_scale if hparams.fp16_run else 0 # get current Loss Scale of first optimizer
+                tqdm.write("{} [Train_loss:{:.4f} Avg:{:.4f} Len:{:.4f} z:{:.4f} w:{:.4f} s:{:.4f} att:{:.4f}] [Grad Norm {:.4f}] "
+                      "[{:.2f}s/it] [{:.3f}s/file] [{:.7f} LR] [{} LS]".format(
+                    iteration, reduced_loss, average_loss, reduced_len_loss, reduced_loss_z, reduced_loss_w, reduced_loss_s, reduced_loss_att, grad_norm,
+                        duration, (duration/(hparams.batch_size*n_gpus)), learning_rate, round(loss_scale)))
                 logger.log_training(reduced_loss, grad_norm, learning_rate, duration, iteration)
                 start_time = time.time()
             
