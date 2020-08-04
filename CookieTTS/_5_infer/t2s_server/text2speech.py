@@ -579,7 +579,7 @@ class T2S:
                         n_passes+=1 # metric for html
                         total_specs+=mel_batch_outputs.shape[0]
                         
-                        # get metrics for each item
+                        # get alignment metrics for each item
                         if end_mode == 'thresh':
                             output_lengths = get_first_over_thresh(gate_batch_outputs, gate_threshold)
                         elif end_mode == 'max':
@@ -607,7 +607,7 @@ class T2S:
                                 # factors that make up score
                                 weighted_score =  avg_prob.item() # general alignment quality
                                 diagonality_punishment = (max(diagonality.item(),1.20)-1.20) * 0.5 * diagonality_weighting  # speaking each letter at a similar pace.
-                                max_focus_punishment = max((enc_max_focus.item()-40), 0) * 0.005 * max_focus_weighting # getting stuck on same letter for 0.6s
+                                max_focus_punishment = max((enc_max_focus.item()-40), 0) * 0.005 * max_focus_weighting # getting stuck on same letter for 0.5s
                                 min_focus_punishment = max(0.25-enc_min_focus.item(),0) * min_focus_weighting # skipping single enc outputs
                                 avg_focus_punishment = max(2.5-enc_avg_focus.item(), 0) * avg_focus_weighting # skipping most enc outputs
                                 

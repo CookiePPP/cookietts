@@ -110,8 +110,8 @@ def prepare_dataloaders(hparams, saved_lookup):
                            speaker_ids=speaker_ids)
     valset = TextMelLoader(hparams.validation_files, hparams, check_files=hparams.check_files, shuffle=False,
                            speaker_ids=trainset.speaker_ids)
-    collate_fn = TextMelCollate(hparams.n_frames_per_step)
-
+    collate_fn = TextMelCollate(hparams)
+    
     if hparams.distributed_run:
         train_sampler = DistributedSampler(trainset,shuffle=False)#True)
         shuffle = False
@@ -248,7 +248,7 @@ def validate(model, criterion, valset, iteration, batch_size, n_gpus,
             rate, prob = alignment_metric(x, y_pred)
             diagonality += rate
             avg_prob += prob
-            loss, gate_loss = criterion(y_pred, y)
+            loss, gate_loss = criterion(y_pred, y, 0)
             if distributed_run:
                 reduced_val_loss = reduce_tensor(loss.data, n_gpus).item()
             else:
@@ -455,7 +455,7 @@ def train(output_directory, log_directory, checkpoint_path, warm_start, warm_sta
             x, y = model.parse_batch(batch) # move batch to GPU (async)
             y_pred = model(x, teacher_force_till=teacher_force_till, p_teacher_forcing=p_teacher_forcing, drop_frame_rate=drop_frame_rate)
             
-            loss, gate_loss = criterion(y_pred, y)
+            loss, gate_loss = criterion(y_pred, y, iteration)
             
             if hparams.distributed_run:
                 reduced_loss = reduce_tensor(loss.data, n_gpus).item()

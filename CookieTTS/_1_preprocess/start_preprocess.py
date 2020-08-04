@@ -1,6 +1,7 @@
 import os
 
 step_total = '??'
+step_complete = 0
 
 # save preprocessing directory for later
 preprocess_dir = os.path.abspath(os.path.split(__file__)[0])
@@ -80,7 +81,8 @@ def step_2_1():
     
     # move back to preprocess directorys
     os.chdir(preprocess_dir)
-    
+
+
 def step_2_2():
     """move remaining folders/files to preprocessed datasets folder."""
     # chdir to downloads dir
@@ -217,7 +219,7 @@ del dataset, dataset_dir
 #################################################################################
 path_sample_rates = {}
 dataset = 'VCTK'
-if dconf['VCTK']['download']:
+if False: #dconf['VCTK']['download']:
     import numpy as np
     from scripts.audio_preprocessing import multiprocess_directory, process_audio_multiprocess
     dataset_dir = os.path.join(DATASET_FOLDER, dataset)
@@ -459,14 +461,18 @@ if True:
     # Write 'emotion|emotion_id|emotion_latent_0|emotion_latent_1' lookup table to txt file
     # note - I'm not sure how to set the latents so this will just generate an blakn table for the user to fill-in.
     if not os.path.exists('emotion_info.txt') or REGENERATE_EMOTION_INFO:
-        emotions = list(set([j for i in [y['emotions'] for z in meta.values() for y in z] for j in i])) # find all emotions in all clips in all datasets
+        from collections import Counter
+        emotions = [j for i in [y['emotions'] for z in meta.values() for y in z] for j in i] # find all emotions in all clips in all datasets
+        emotions = Counter(emotions) # dict of {'emotion': n_occurences}
+        emotions = {k: v for k, v in reversed(sorted(emotions.items(), key=lambda item: item[1]))} # sort by n_occurences
         with open('emotion_info.txt', "w") as f:
             lines = []
-            lines.append(f';{"emotion":<23}|{"emotion_id":<12}|{"arousal":<10}|{"valence":<10}\n;')
-            for emotion_id, emotion in enumerate(emotions):
-                lines.append(f'{emotion:<24}|{0:<12}|{0.0:<10}|{0.0:<10}')
+            lines.append(f';{"emotion":<23}|{"emotion_id":<12}|{"file_count":<12}|{"arousal":<10}|{"valence":<10}\n;')
+            for emotion_id, (emotion, n_occurences) in enumerate(emotions.items()):
+                lines.append(f'{emotion:<24}|{emotion_id:<12}|{n_occurences:<12}|{0.0:<10}|{0.0:<10}')
             f.write('\n'.join(lines))
         print("blank emotion_info.txt written! Please modify before usage!")
+        del emotions
     
     # Noise level baseline will be 0 for Clean, 1 for Noisy, 2 for Very Noisy.
     # "Clean" vs "Other", and voices like the TF2 Announcer/Administrator will need to be figured out.
@@ -478,7 +484,7 @@ if True:
     # additional option 1: g2p neural network for predicting phonemes from graphemes.
     # additional option 2: force aligner system that uses the audio file and grapheme_transcript to produce the phoneme_transcript.
     use_g2p = False
-    use_forced_aligner = True
+    use_forced_aligner = False
     if use_forced_aligner: # MFA has unique needs in that it will need to be ran seperately for each speaker.
         print(f'{step_complete:>3}/{step_total:<3} Getting phonetic transcripts, timing information and missing vocab from Montreal Forced Aligner...')
         from CookieTTS.utils.dataset import MFA
@@ -542,7 +548,7 @@ if True:
                 if use_g2p:
                     # TODO: convert g2p arrout into phoneme transcript
                     phoneme_transcript = g2p(grapheme_transcript)
-                    #phoneme_transcript =  
+                    #phoneme_transcript = 
                     pass
                 else: # lookup
                     phoneme_transcript = arpa.get(grapheme_transcript)
@@ -558,13 +564,14 @@ if True:
     
     
     # (if using torchMoji) Generate and save torchMoji hidden states for every clip
-    print(f'{step_complete:>3}/{step_total:<3} Running TorchMoji on Dataset')
-    from scripts.text_embeddings import write_hidden_states
-    path_quote_pairs = [[y['path'],y['quote']] for z in meta.values() for y in z]
-    print(f'Found {len(path_quote_pairs)} path-quote pairs.')
-    write_hidden_states(path_quote_pairs)
-    del path_quote_pairs
-    print('TorchMoji Done!'); step_complete+=1
+    if True:
+        print(f'{step_complete:>3}/{step_total:<3} Running TorchMoji on Dataset')
+        from scripts.text_embeddings import write_hidden_states
+        path_quote_pairs = [[y['path'],y['quote']] for z in meta.values() for y in z]
+        print(f'Found {len(path_quote_pairs)} path-quote pairs.')
+        write_hidden_states(path_quote_pairs)
+        del path_quote_pairs
+        print('TorchMoji Done!'); step_complete+=1
     
     
     # (if using SV2TTS) Generate and save speaker embeddings for every clip.

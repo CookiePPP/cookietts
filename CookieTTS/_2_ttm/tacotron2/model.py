@@ -70,7 +70,7 @@ class Attention(nn.Module):
         super(Attention, self).__init__()
         self.query_layer = LinearNorm(attention_rnn_dim, attention_dim,
                                       bias=False, w_init_gain='tanh')
-        self.memory_layer = LinearNorm(embedding_dim, attention_dim, bias=False,
+        self.memory_layer = LinearNorm(embedding_dim, attention_dim, bias=False, # Crushes the Encoder outputs to Attention Dimension used by this module
                                        w_init_gain='tanh')
         self.v = LinearNorm(attention_dim, 1, bias=False)
         self.location_layer = LocationLayer(attention_location_n_filters,
@@ -306,6 +306,7 @@ class GMMAttention(nn.Module): # Experimental from NTT123
             raise
         
         self.score_mask_value = 0 # -float("inf")
+        
         self.register_buffer('pos', torch.arange(
             0, 2000, dtype=torch.float).view(1, -1, 1).data)
     
@@ -326,12 +327,14 @@ class GMMAttention(nn.Module): # Experimental from NTT123
             attention_hidden_state = attention_hidden_state.tanh()
         w, delta, scale = self.F(attention_hidden_state.unsqueeze(1)).chunk(3, dim=-1)
         delta = delta.sigmoid()#*1.0 # normalize 0.0 - 1.0,
-        if self.delta_min_limit: delta = delta.clamp(min=self.delta_min_limit) # supposed to be fine with autograd but not 100% confident.
-        if self.delta_offset: delta = delta + self.delta_offset
+        if self.delta_min_limit:
+            delta = delta.clamp(min=self.delta_min_limit) # supposed to be fine with autograd but not 100% confident.
+        if self.delta_offset:
+            delta = delta + self.delta_offset
         loc = previous_location + delta
         scale = scale.sigmoid() * 2 + 1
         
-        if False: # I don't know anything about this but both versions exist
+        if True: # I don't know anything about this but both versions exist
             pos = self.pos[:, :memory.shape[1], :]
             z1 = torch.erf((loc-pos+0.5)*scale)
             z2 = torch.erf((loc-pos-0.5)*scale)
@@ -345,7 +348,7 @@ class GMMAttention(nn.Module): # Experimental from NTT123
             z = (z1 - z2)*0.5
             w = torch.softmax(w, dim=-1) + 1e-5
         
-        z = torch.bmm(z, w.squeeze(1).unsqueeze(2)).squeeze(-1)
+        z = torch.bmm(z, w.squeeze(1).unsqueeze(2)).squeeze(-1) # [B, enc_T, num_mixtures] @ [B, num_mixtures, 1] -> [B, enc_T]
         # z = z.sum(dim=-1)
         return z, loc
     
@@ -814,9 +817,9 @@ class Decoder(nn.Module):
         attention_weights:
         """
         if self.AttRNN_extra_decoder_input:
-            cell_input = torch.cat((decoder_input, self.attention_context, self.decoder_hidden), -1)
+            cell_input = torch.cat((decoder_input, self.attention_context, self.decoder_hidden), -1)# [Processed Previous Spect Frame, Last input Taken from Text/Att, Previous Decoder state used to produce frame]
         else:
-            cell_input = torch.cat((decoder_input, self.attention_context), -1)
+            cell_input = torch.cat((decoder_input, self.attention_context), -1)# [Processed Previous Spect Frame, Last input Taken from Text/Att]
         
         if self.normalize_AttRNN_output and self.attention_type == 1:
             cell_input = cell_input.tanh()
@@ -1025,7 +1028,7 @@ class Tacotron2(nn.Module):
         
     def parse_batch(self, batch):
         text_padded, text_lengths, mel_padded, gate_padded, \
-            output_lengths, speaker_ids, torchmoji_hidden, preserve_decoder_states = batch
+            output_lengths, speaker_ids, torchmoji_hidden, preserve_decoder_states, sylps, emotion_id, emotion_onehot = batch
         text_padded = to_gpu(text_padded).long()
         text_lengths = to_gpu(text_lengths).long()
         output_lengths = to_gpu(output_lengths).long()
@@ -1037,9 +1040,15 @@ class Tacotron2(nn.Module):
             torchmoji_hidden = to_gpu(torchmoji_hidden).float()
         if preserve_decoder_states is not None:
             preserve_decoder_states = to_gpu(preserve_decoder_states).float()
+        if sylps is not None:
+            sylps = to_gpu(sylps).float()
+        if emotion_id is not None:
+            emotion_id = to_gpu(emotion_id).long()
+        if emotion_onehot is not None:
+            emotion_onehot = to_gpu(emotion_onehot).float()
         return (
-            (text_padded, text_lengths, mel_padded, max_len, output_lengths, speaker_ids, torchmoji_hidden, preserve_decoder_states),
-            (mel_padded, gate_padded, output_lengths))
+            (text_padded, text_lengths, mel_padded, max_len, output_lengths, speaker_ids, torchmoji_hidden, preserve_decoder_states, sylps, emotion_id, emotion_onehot),
+            (mel_padded, gate_padded, output_lengths, emotion_id, emotion_onehot))
             # returns ((x),(y)) as (x) for training input, (y) for ground truth/loss calc
     
     def mask_outputs(self, outputs, output_lengths=None):
@@ -1055,7 +1064,7 @@ class Tacotron2(nn.Module):
         return outputs
     
     def forward(self, inputs, teacher_force_till=None, p_teacher_forcing=None, drop_frame_rate=None):
-        text, text_lengths, gt_mels, max_len, output_lengths, speaker_ids, torchmoji_hidden, preserve_decoder_states = inputs
+        text, text_lengths, gt_mels, max_len, output_lengths, speaker_ids, torchmoji_hidden, preserve_decoder_states, sylps, emotion_id, emotion_onehot = inputs
         text_lengths, output_lengths = text_lengths.data, output_lengths.data
         
         if teacher_force_till == None: p_teacher_forcing = self.p_teacher_forcing
@@ -1070,7 +1079,7 @@ class Tacotron2(nn.Module):
         encoder_outputs = self.encoder(embedded_text, text_lengths, speaker_ids=speaker_ids) # [B, time, encoder_out]
         
         if self.with_gst:
-            embedded_gst = self.gst(gt_mels if (torchmoji_hidden is None) else torchmoji_hidden, ref_mode=self.ref_mode) # create embedding from tokens from reference mel
+            embedded_gst, *gst_extra = self.gst(gt_mels if (torchmoji_hidden is None) else torchmoji_hidden, ref_mode=self.ref_mode) # create embedding from tokens from reference mel
             embedded_gst = embedded_gst.repeat(1, encoder_outputs.size(1), 1) # repeat token along-side the other embeddings for input to decoder
             encoder_outputs = torch.cat((encoder_outputs, embedded_gst), dim=2) # [batch, time, encoder_out]
         
@@ -1086,7 +1095,7 @@ class Tacotron2(nn.Module):
         mel_outputs_postnet.add_(mel_outputs)
         
         return self.mask_outputs(
-            [mel_outputs, mel_outputs_postnet, gate_outputs, alignments],
+            [mel_outputs, mel_outputs_postnet, gate_outputs, alignments, gst_extra],
             output_lengths)
     
     def inference(self, text, speaker_ids, style_input=None, style_mode=None, text_lengths=None):
@@ -1096,22 +1105,22 @@ class Tacotron2(nn.Module):
         if self.with_gst:
             assert (style_input is not None) or (style_mode.lower() == 'zeros'), "style mode specified but no style_input"
             if style_mode.lower() == 'mel': # enter any 160 channel mel-spectrogram
-                embedded_gst = self.gst(style_input)
+                embedded_gst, *_ = self.gst(style_input)
             elif style_mode.lower() == 'zeros': # enter any value, will set style_tokens to 0
                 weights = torch.ones(1, self.token_num).cuda()
-                embedded_gst = self.gst(weights*0.0, ref_mode=0).half()
+                embedded_gst, *_ = self.gst(weights*0.0, ref_mode=0).half()
             elif style_mode.lower() == 'style_token' or  style_mode.lower() == 'token': # should input style_token length list/array
                 assert len(style_input) == self.token_num
                 weights = torch.FloatTensor(style_input).unsqueeze(0).cuda()
-                embedded_gst = self.gst(weights, ref_mode=0).half()
+                embedded_gst, *_ = self.gst(weights, ref_mode=0).half()
             elif style_mode.lower() == 'torchmoji_hidden':
                 assert type(style_input) == torch.Tensor
-                embedded_gst = self.gst(style_input, ref_mode=3).half() # should input hidden_state of torchMoji as tensor
+                embedded_gst, *_ = self.gst(style_input, ref_mode=3).half() # should input hidden_state of torchMoji as tensor
             elif style_mode.lower() == 'torchmoji_string':
                 assert type(style_input) == type(list()) or type(style_input) == type('')
                 if type(style_input) == type(''):
                     style_input = [style_input,]
-                embedded_gst = self.gst(style_input, ref_mode=2).half() # should input text as string
+                embedded_gst, *_ = self.gst(style_input, ref_mode=2).half() # should input text as string
             else:
                 raise NotImplementedError("No style option specified however styles are used in this model.")
             embedded_gst = embedded_gst.repeat(1, encoder_outputs.size(1), 1)

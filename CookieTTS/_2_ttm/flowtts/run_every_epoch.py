@@ -10,14 +10,14 @@ custom_lr = 1 # use Live Custom Learning Rate instead of Scheduler.
 
 # Custom LR
 decay_start = 40000 # wait till decay_start to start decaying learning rate
-A_ = 800e-6
+A_ = 5e-4
 B_ = 40000
 C_ = 0.00000000
 min_learning_rate = 1e-8
 
 warmup_start = 0
-warmup_end   = 3000
-warmup_start_lr = 50e-6
+warmup_end   = 1000
+warmup_start_lr = 0.5e-4
 
 grad_clip_thresh = 100
 

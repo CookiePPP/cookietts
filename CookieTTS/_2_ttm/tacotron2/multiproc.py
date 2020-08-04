@@ -1,6 +1,7 @@
 import time
 import torch
 import sys
+import os
 import subprocess
 
 argslist = list(sys.argv)[1:]
@@ -9,6 +10,7 @@ argslist.append('--n_gpus={}'.format(num_gpus))
 workers = []
 job_id = time.strftime("%Y_%m_%d-%H%M%S")
 argslist.append("--group_name=group_{}".format(job_id))
+os.makedirs('logs', exist_ok=True)
 
 for i in range(num_gpus):
     argslist.append('--rank={}'.format(i))

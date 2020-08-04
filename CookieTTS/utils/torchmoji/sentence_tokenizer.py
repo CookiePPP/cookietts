@@ -8,9 +8,9 @@ from __future__ import print_function, division, unicode_literals
 import numbers
 import numpy as np
 
-from torchmoji.create_vocab import extend_vocab, VocabBuilder
-from torchmoji.word_generator import WordGenerator
-from torchmoji.global_variables import SPECIAL_TOKENS
+from CookieTTS.utils.torchmoji.create_vocab import extend_vocab, VocabBuilder
+from CookieTTS.utils.torchmoji.word_generator import WordGenerator
+from CookieTTS.utils.torchmoji.global_variables import SPECIAL_TOKENS
 
 # import torch
 

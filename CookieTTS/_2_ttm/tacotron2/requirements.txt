@@ -7,5 +7,4 @@ tensorboardX==1.1
 Unidecode==1.0.22
 pillow
 nltk==3.4.5
-jamo==0.4.1
-music21
+syllables

@@ -5,11 +5,12 @@ import numpy as np
 import torch
 import torch.utils.data
 import librosa
+import syllables
 
 import CookieTTS.utils.audio.stft as STFT
 from CookieTTS.utils.dataset.utils import load_wav_to_torch, load_filepaths_and_text
 from CookieTTS.utils.text import text_to_sequence
-
+from CookieTTS.utils.text.ARPA import ARPA
 
 class TextMelLoader(torch.utils.data.Dataset):
     """
@@ -20,12 +21,16 @@ class TextMelLoader(torch.utils.data.Dataset):
     def __init__(self, audiopaths_and_text, hparams, check_files=True, TBPTT=True, shuffle=False, speaker_ids=None, audio_offset=0, verbose=False):
         self.audiopaths_and_text = load_filepaths_and_text(audiopaths_and_text)
         self.text_cleaners = hparams.text_cleaners
+        self.arpa = ARPA(hparams.dict_path)
+        self.p_arpabet = hparams.p_arpabet
         self.max_wav_value = hparams.max_wav_value
         self.sampling_rate = hparams.sampling_rate
         self.load_mel_from_disk = hparams.load_mel_from_disk
         self.truncated_length = hparams.truncated_length
         self.batch_size = hparams.batch_size
         self.speaker_ids = speaker_ids
+        self.emotion_classes = hparams.vae_classes
+        self.n_classes = len(hparams.vae_classes)
         self.audio_offset = audio_offset
         self.shuffle = shuffle
         if speaker_ids is None:
@@ -67,13 +72,14 @@ class TextMelLoader(torch.utils.data.Dataset):
         n_gpus = hparams.n_gpus
         self.rank = hparams.rank
         self.total_batch_size = self.batch_size * n_gpus # number of audio files being processed together
-        self.truncated_length = hparams.truncated_length # frames
         
         # -------------- PREDICT LENGTH (TBPTT) --------------
         if hparams.use_TBPTT and TBPTT:
+            self.truncated_length = hparams.truncated_length # frames
             self.audio_lengths = torch.tensor([self.get_mel(x[0]).shape[1] for x in self.audiopaths_and_text]) # get the length of every file (the long way)
         else:
-            self.audio_lengths = torch.tensor([self.truncated_length-1 for x in self.audiopaths_and_text]) # use dummy lengths
+            self.truncated_length = 99999999 # frames
+            self.audio_lengths = torch.tensor([1 for x in self.audiopaths_and_text]) # use dummy lengths
         self.update_dataloader_indexes()
         # -------------- PREDICT LENGTH (TBPTT) --------------
     
@@ -139,56 +145,57 @@ class TextMelLoader(torch.utils.data.Dataset):
         i = 0
         i_offset = 0
         for i_ in range(len(self.audiopaths_and_text)):
-            i = i_ + i_offset # iterating on an array you're also updating will cause some indexes to be skipped.
-            if i == len(self.audiopaths_and_text): break
+            i = i_ + i_offset # iterating on an array you're also updating will cause some indexes to be skipped when not using an offset.
+            if i == len(self.audiopaths_and_text):
+                break
             file = self.audiopaths_and_text[i]
             if self.load_mel_from_disk and '.wav' in file[0]:
                 if verbose:
-                    print("|".join(file), "\n[warning] in filelist while expecting '.npy' . Being Ignored.")
+                    print("|".join(file), "\n[warning] in filelist while expecting '.npy' . Being ignored.\n")
                 self.audiopaths_and_text.remove(file)
                 i_offset-=1
                 continue
             elif not self.load_mel_from_disk and '.npy' in file[0]:
                 if verbose:
-                    print("|".join(file), "\n[warning] in filelist while expecting '.wav' . Being Ignored.")
+                    print("|".join(file), "\n[warning] in filelist while expecting '.wav' . Being ignored.\n")
                 self.audiopaths_and_text.remove(file)
                 i_offset-=1
                 continue
             if not os.path.exists(file[0]):
                 if verbose:
-                    print("|".join(file), "\n[warning] does not exist and has been ignored")
+                    print("|".join(file), "\n[warning] does not exist and has been ignored.\n")
                 self.audiopaths_and_text.remove(file)
                 i_offset-=1
                 continue
             if not len(file[1]):
                 if verbose:
-                    print("|".join(file), "\n[warning] has no text and has been ignored.")
+                    print("|".join(file), "\n[warning] has no text and has been ignored.\n")
                 self.audiopaths_and_text.remove(file)
                 i_offset-=1
                 continue
             if len(file[1]) < 3:
                 if verbose:
-                    print("|".join(file), "\n[info] has no/very little text.")
+                    print("|".join(file), "\n[info] has no/very little text.\n")
             if not ((file[1].strip())[-1] in r"!?,.;:♫␤"):
                 if verbose:
-                    print("|".join(file), "\n[info] has no ending punctuation.")
+                    print("|".join(file), "\n[info] has no ending punctuation.\n")
             if self.load_mel_from_disk:
                 melspec = torch.from_numpy(np.load(file[0], allow_pickle=True))
                 mel_length = melspec.shape[1]
                 if mel_length == 0:
-                    print("|".join(file), "\n[warning] has 0 duration and has been ignored")
+                    print("|".join(file), "\n[warning] has 0 duration and has been ignored.\n")
                     self.audiopaths_and_text.remove(file)
                     i_offset-=1
                     continue
             if any(i in file[1] for i in banned_strings):
                 if verbose:
-                    print("|".join(file), "\n[info] is in banned strings and has been ignored.")
+                    print("|".join(file), "\n[info] is in banned strings and has been ignored.\n")
                 self.audiopaths_and_text.remove(file)
                 i_offset-=1
                 continue
             if any(i in file[0] for i in banned_paths):
                 if verbose:
-                    print("|".join(file), "\n[info] is in banned paths and has been ignored.")
+                    print("|".join(file), "\n[info] is in banned paths and has been ignored.\n")
                 self.audiopaths_and_text.remove(file)
                 i_offset-=1
                 continue
@@ -222,26 +229,45 @@ class TextMelLoader(torch.utils.data.Dataset):
                     melspec.size(0), self.stft.n_mel_channels))
         return melspec
     
+    def one_hot_embedding(self, labels, num_classes=None):
+        """Embedding labels to one-hot form.
+        
+        Args:
+          labels: (LongTensor) class labels, sized [N,].
+          num_classes: (int) number of classes.
+        
+        Returns:
+          (tensor) encoded labels, sized [N, #classes].
+        """
+        if num_classes is None:
+            num_classes = self.n_classes
+        y = torch.eye(num_classes)
+        return y[labels]
+    
     def get_mel_text_pair(self, index):
         filelist_index, spectrogram_offset = self.dataloader_indexes[index]
         next_filelist_index, next_spectrogram_offset = self.dataloader_indexes[index+self.total_batch_size] if index+self.total_batch_size < self.len else (None, None)
-        if filelist_index != next_filelist_index:
-            preserve_decoder_state = torch.tensor(False)
-        else:
-            preserve_decoder_state = torch.tensor(True)
+        preserve_decoder_state = torch.tensor(False) if (filelist_index != next_filelist_index) else torch.tensor(True)
         
         audiopath, text, speaker = self.audiopaths_and_text[filelist_index]
-        text = self.get_text(text) # convert text into tensor representation
+        mel = self.get_mel(audiopath) # get mel-spec as tensor from audiofile. [n_mel, dec_T]
+        mel = mel[..., int(spectrogram_offset):int(spectrogram_offset+self.truncated_length)] # segment if over truncated length
         
-        mel = self.get_mel(audiopath) # get mel-spec as tensor from audiofile.
-        mel = mel[..., int(spectrogram_offset):int(spectrogram_offset+self.truncated_length)] # get a segment
+        sylps = self.get_syllables_per_second(text, (mel.shape[-1]*self.hop_length)/self.sampling_rate)# [] FloatTensor
         
-        speaker_id = self.get_speaker_id(speaker) # get speaker_id as tensor normalized [ 0 -> len(speaker_ids) ]
+        if random.random() < self.p_arpabet:# (randomly) convert to phonemes
+            text = self.arpa.get(text)
         
-        if self.load_torchmoji: torchmoji = self.get_torchmoji_hidden(audiopath)
-        else: torchmoji = None
+        text = self.get_text(text)# convert text into tensor representation
         
-        return (text, mel, speaker_id, torchmoji, preserve_decoder_state)
+        speaker_id = self.get_speaker_id(speaker)# get speaker_id as tensor normalized [ 0 -> len(speaker_ids) ]
+        
+        emotion_id = self.get_emotion_id(audiopath)# [1] IntTensor
+        emotion_onehot = self.one_hot_embedding(emotion_id, num_classes=self.n_classes+1).squeeze(0)[:-1]# [n_classes]
+        
+        torchmoji = self.get_torchmoji_hidden(audiopath) if (self.load_torchmoji) else None
+        
+        return (text, mel, speaker_id, torchmoji, preserve_decoder_state, sylps, emotion_id, emotion_onehot)
     
     def get_torchmoji_hidden(self, audiopath):
         audiopath_without_ext = ".".join(audiopath.split(".")[:-1])
@@ -249,6 +275,22 @@ class TextMelLoader(torch.utils.data.Dataset):
         file_path_safe = audiopath_without_ext[0:path_path_len]
         hidden_state = np.load(file_path_safe + "_.npy")
         return torch.from_numpy(hidden_state).float()
+    
+    def get_emotion_id(self, audiopath):
+        emotion_id = self.n_classes # int
+        if len(audiopath.split("_")) >= 6:
+            emotions = audiopath.split("_")[4].lower().split(" ") # e.g: ["neutral",]
+            for emotion in reversed(emotions):
+                try:
+                    emotion_id = self.emotion_classes.index(emotion) # INT in set {0, 1, ... n_classes-1}
+                except:
+                    pass
+        return torch.LongTensor([emotion_id,]) # [1]
+    
+    def get_syllables_per_second(self, text, duration):
+        n_syl = syllables.estimate(text)
+        sylps = n_syl/duration
+        return torch.tensor(sylps) # []
     
     def get_speaker_id(self, speaker_id):
         return torch.IntTensor([self.speaker_ids[int(speaker_id)]])
@@ -269,9 +311,10 @@ class TextMelLoader(torch.utils.data.Dataset):
 class TextMelCollate():
     """ Zero-pads model inputs and targets based on number of frames per setep
     """
-    def __init__(self, n_frames_per_step):
-        self.n_frames_per_step = n_frames_per_step
-
+    def __init__(self, hparams):
+        self.n_frames_per_step = hparams.n_frames_per_step
+        self.n_classes = len(hparams.vae_classes)
+    
     def __call__(self, batch):
         """Collate's training batch from normalized text and mel-spectrogram
         PARAMS
@@ -309,6 +352,9 @@ class TextMelCollate():
         else:
             torchmoji_hidden = None
         preserve_decoder_states = torch.FloatTensor(len(batch))
+        sylps = torch.FloatTensor(len(batch))
+        emotion_id = torch.FloatTensor(len(batch))
+        emotion_onehot = torch.FloatTensor(len(batch), self.n_classes)
         
         for i in range(len(ids_sorted_decreasing)):
             mel = batch[ids_sorted_decreasing[i]][1]
@@ -319,8 +365,11 @@ class TextMelCollate():
             if torchmoji_hidden is not None:
                 torchmoji_hidden[i] = batch[ids_sorted_decreasing[i]][3]
             preserve_decoder_states[i] = batch[ids_sorted_decreasing[i]][4]
+            sylps[i] = batch[ids_sorted_decreasing[i]][5]
+            emotion_id[i] = batch[ids_sorted_decreasing[i]][6]
+            emotion_onehot[i] = batch[ids_sorted_decreasing[i]][7]
         
         #print("text_padded.shape =", text_padded.shape, "mel_padded.shape =", mel_padded.shape, "output_lengths =", output_lengths, "preserve_decoder_states =", preserve_decoder_states, sep="\n") # debug for TBPTT
         model_inputs = (text_padded, input_lengths, mel_padded, gate_padded,
-                        output_lengths, speaker_ids, torchmoji_hidden, preserve_decoder_states)
+                        output_lengths, speaker_ids, torchmoji_hidden, preserve_decoder_states, sylps, emotion_id, emotion_onehot)
         return model_inputs

@@ -28,15 +28,15 @@ def create_hparams(hparams_string=None, verbose=False):
         ################################
         # Data Parameters              #
         ################################
-        check_files=False, # check all files exist, aren't corrupted, have text, good length, and other stuff before training.
+        check_files=True, # check all files exist, aren't corrupted, have text, good length, and other stuff before training.
         load_mel_from_disk=True,
         speakerlist='/media/cookie/Samsung 860 QVO/ClipperDatasetV2/filelists/speaker_ids.txt',
-        use_saved_speakers=True, # use the speaker lookups saved inside the model instead of generating again
-        raw_speaker_ids=False, # use the speaker IDs found in filelists for the internal IDs. Values over max_speakers will crash (as intended).
-        training_files='/media/cookie/Samsung 860 QVO/ClipperDatasetV2/filelists/train_taca2_arpa.txt',
-        validation_files='/media/cookie/Samsung 860 QVO/ClipperDatasetV2/filelists/validation_taca2_arpa.txt',
-        #training_files='/media/cookie/Samsung 860 QVO/ClipperDatasetV2/filelists/mel_train_taca2_merged.txt',
-        #validation_files='/media/cookie/Samsung 860 QVO/ClipperDatasetV2/filelists/mel_validation_taca2_merged.txt',
+        dict_path='../../dict/merged.dict.txt',
+        p_arpabet=0.5, # probability to use ARPAbet / pronounciation dictionary.
+        use_saved_speakers=True,# use the speaker lookups saved inside the model instead of generating again
+        raw_speaker_ids=False,  # use the speaker IDs found in filelists for the internal IDs. Values greater than n_speakers will crash (as intended).
+        training_files='/media/cookie/Samsung 860 QVO/ClipperDatasetV2/filelists/mel_train_taca2.txt',
+        validation_files='/media/cookie/Samsung 860 QVO/ClipperDatasetV2/filelists/mel_validation_taca2.txt',
         text_cleaners=['basic_cleaners'],
         
         ################################
@@ -126,8 +126,8 @@ def create_hparams(hparams_string=None, verbose=False):
         # (Decoder) Attention Type 1 Parameters
         num_att_mixtures=1,# 5 baseline
         attention_layers=1,# 1 baseline
-        delta_offset=0,    # 0 baseline, values around 0.005 will push the model forwards. Since we're using the sigmoid function caution is suggested.
-        delta_min_limit=0, # 0 baseline, values around 0.010 will force the model to move forward, in this example, the model cannot spend more than 100 steps on the same encoder output.
+        delta_offset=0.005,    # 0 baseline, values around 0.005 will push the model forwards. Since we're using the sigmoid function caution is suggested.
+        delta_min_limit=0.0, # 0 baseline, values around 0.010 will force the model to move forward, in this example, the model cannot spend more than 100 steps on the same encoder output.
         lin_bias=False, # I need to figure out what that layer is called.
         initial_gain='relu', # initial weight distribution 'tanh','relu','sigmoid','linear'
         normalize_attention_input=True, # False baseline
@@ -156,18 +156,23 @@ def create_hparams(hparams_string=None, verbose=False):
         num_heads=8,
         
         # (GST) Style Token Layer
-        token_num=5, # acts as the information bottleneck.
-        token_activation_func='tanh', # default 'softmax', options 'softmax','sigmoid','tanh','absolute'
+        gst_vae_mode=True,# output normally distributed tokens parameterised by the GST Encoder
+        token_num=5, # acts as the information bottleneck (and normal dist for VAE mode).
+        token_activation_func='linear', # default 'softmax', options 'softmax','sigmoid','tanh','linear'
+        p_drop_tokens=0.0, # Nudge the decoder to infer style without GST's input
+        drop_tokens_mode='zeros',#Options: ('zeros','halfs','embedding','speaker_embedding','emotion_embedding') # Replaces style_tokens with either a scaler or an embedding, or speaker embeddings
         token_embedding_size=256, # token embedding size
+        
+        # (GST) Semi-supervised VAE/Classifier
+        ss_vae_gst = True, # use semi-supervised VAE
+                           # This will require labelled classes (as defined below) and add a classifier module to the model.
+        vae_classes = ['neutral','anxious','happy','annoyed','sad','confused','smug','angry','whispering','shouting','sarcastic','amused','surprised','singing','fear','serious'],
+        ss_vae_zu_dim = 32, # unsupervised Latent Dim
         
         # (GST) TorchMoji
         torchMoji_attDim=2304,# published model uses 2304
         torchMoji_linear=True,# load/save text infer linear layer.
-        torchMoji_training=True,# switch GST to torchMoji mode
-        
-        # (GST) Drop Style Tokens
-        p_drop_tokens=0.0, # Nudge the decoder to infer style without GST's input
-        drop_tokens_mode='zeros',#Options: ('zeros','halfs','embedding','speaker_embedding','emotion_embedding') # Replaces style_tokens with either a scaler or an embedding, or speaker embeddings
+        torchMoji_training=False,# switch GST to torchMoji mode
         
         ################################
         # Optimization Hyperparameters #
@@ -177,8 +182,8 @@ def create_hparams(hparams_string=None, verbose=False):
         learning_rate=0.1e-5,
         weight_decay=1e-6,
         grad_clip_thresh=1.0,
-        batch_size=64,
-        val_batch_size=64, # for more precise comparisons between models, constant batch_size is useful
+        batch_size=16,
+        val_batch_size=16, # for more precise comparisons between models, constant batch_size is useful
         use_TBPTT=True,
         truncated_length=1000, # max mel length till truncation.
         mask_padding=True,#mask values by setting them to the same values in target and predicted

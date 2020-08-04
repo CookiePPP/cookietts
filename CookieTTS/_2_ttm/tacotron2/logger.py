@@ -27,7 +27,7 @@ class Tacotron2Logger(SummaryWriter):
         self.add_scalar("validation.average_max_attention_weight", avg_prob, iteration)
         self.add_scalar("validation.p_teacher_forcing", val_p_teacher_forcing, iteration)
         self.add_scalar("validation.teacher_force_till", val_teacher_force_till, iteration)
-        _, mel_outputs, gate_outputs, alignments = y_pred
+        _, mel_outputs, gate_outputs, alignments, *_ = y_pred
         mel_targets, gate_targets, *_ = y
     
         # plot distribution of parameters
@@ -52,7 +52,7 @@ class Tacotron2Logger(SummaryWriter):
         self.add_scalar("infer.loss", reduced_loss, iteration)
         self.add_scalar("infer.attention_alignment_diagonality", diagonality, iteration)
         self.add_scalar("infer.average_max_attention_weight", avg_prob, iteration)
-        _, mel_outputs, gate_outputs, alignments = y_pred
+        _, mel_outputs, gate_outputs, alignments, *_ = y_pred
         mel_targets, gate_targets, *_ = y
         
         # plot alignment, mel target and predicted, gate target and predicted
@@ -100,7 +100,7 @@ class Tacotron2Logger(SummaryWriter):
         self.add_scalar("teacher_forced_validation.loss", reduced_loss, iteration)
         self.add_scalar("teacher_forced_validation.attention_alignment_diagonality", diagonality, iteration)
         self.add_scalar("teacher_forced_validation.average_max_attention_weight", avg_prob, iteration)
-        _, mel_outputs, gate_outputs, alignments = y_pred
+        _, mel_outputs, gate_outputs, alignments, *_ = y_pred
         mel_targets, gate_targets, *_ = y
 
         # plot distribution of parameters

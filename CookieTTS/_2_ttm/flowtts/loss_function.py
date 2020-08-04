@@ -1,6 +1,6 @@
 import torch
 from torch import nn
-from CookieTTS.utils.model.utils import get_mask_from_lengths
+from CookieTTS.utils.model.utils import get_mask_from_lengths, get_mask_3d
 
 # https://github.com/gothiswaysir/Transformer_Multi_encoder/blob/952868b01d5e077657a036ced04933ce53dcbf4c/nets/pytorch_backend/e2e_tts_tacotron2.py#L28-L156
 class GuidedAttentionLoss(torch.nn.Module):
@@ -157,7 +157,7 @@ class Tacotron2Loss(nn.Module):
         log_s_sum = torch.masked_select(log_s_sum , mask[:, :log_s_sum.shape[1], :])
         loss_s = -log_s_sum.sum()/(n_elems)
         
-        loss = loss_z+loss_w+loss_s+len_pred_loss
+        loss = loss_z+loss_w+loss_s+(len_pred_loss*0.01)
         assert not torch.isnan(loss).any(), 'loss has NaN values.'
         
         # (optional) Guided Attention Loss
@@ -166,5 +166,10 @@ class Tacotron2Loss(nn.Module):
             loss = loss + att_loss
         else:
             att_loss = None
+        
+        if True: # Min-Enc Attention Loss
+            mask = get_mask_3d(output_lengths, text_lengths)
+            attention_scores.sum((1,)) # [B, dec_T, enc_T]
+            mask
         
         return loss, len_pred_loss, loss_z, loss_w, loss_s, att_loss

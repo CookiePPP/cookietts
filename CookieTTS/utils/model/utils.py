@@ -1,23 +1,31 @@
 import numpy as np
 from scipy.io.wavfile import read
 import torch
+from typing import Optional
 
 
-def get_mask_from_lengths(lengths, max_len=None):
-    if not max_len:
+def get_mask_from_lengths(lengths: torch.Tensor, max_len = None):
+    if max_len is None:
         max_len = int(torch.max(lengths).item())
     ids = torch.arange(0, max_len, out=torch.cuda.LongTensor(max_len))
     mask = (ids < lengths.unsqueeze(1))
     return mask
 
 
-def get_mask_3d(widths, heights):
-    max_w = torch.max(widths).item()
-    max_h = torch.max(heights).item()
-    mask = torch.zeros(widths.size(0), max_w, max_h, device=widths.device)
-    for i in range(widths.size(0)):
-        mask[i,:widths[i],:heights[i]] = 1
-    return mask==1
+@torch.jit.script
+def get_mask_3d(widths, heights, max_w: Optional[torch.Tensor] = None, max_h: Optional[torch.Tensor] = None):
+    device = widths.device
+    B = widths.shape[0]
+    if max_w is None:
+        max_w = torch.max(widths)
+    if max_h is None:
+        max_h = torch.max(heights)
+    seq_w = torch.arange(0, max_w, device=device) # [max_w]
+    seq_h = torch.arange(0, max_h, device=device)# [max_h]
+    mask_w = (seq_w.unsqueeze(0) < widths.unsqueeze(1)).to(torch.bool) # [1, max_w] < [B, 1] -> [B, max_w]
+    mask_h = (seq_h.unsqueeze(0) < heights.unsqueeze(1)).to(torch.bool)# [1, max_h] < [B, 1] -> [B, max_h]
+    mask = (mask_w.unsqueeze(2) & mask_h.unsqueeze(1))# [B, max_w, 1] & [B, 1, max_h] -> [B, max_w, max_h]
+    return mask# [B, max_w, max_h]
 
 
 def get_drop_frame_mask_from_lengths(lengths, drop_frame_rate):

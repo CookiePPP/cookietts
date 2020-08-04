@@ -21,11 +21,16 @@ ipython_config.py
 
 # Model Checkpoints
 /CookieTTS/_2_ttm/flowtts/outdir/
+/CookieTTS/_2_ttm/untts/outdir/
 /CookieTTS/_2_ttm/tacotron2/outdir/
 /CookieTTS/_4_mtw/waveglow/outdir/
+/CookieTTS/_2_ttm/tacotron2/checkpoints/
+/CookieTTS/_2_ttm/tacotron2/NewCPs/
 
 # Model logs
 /CookieTTS/_2_ttm/flowtts/logs/
+/CookieTTS/_2_ttm/untts/logs/
+/CookieTTS/_2_ttm/untts/old_logs/
 /CookieTTS/_2_ttm/tacotron2/logs/
 
 # megatools folders

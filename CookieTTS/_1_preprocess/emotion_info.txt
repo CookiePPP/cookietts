@@ -1,37 +1,31 @@
-;emotion                |emotion_id  |arousal   |valence   
-disgust                 |0           |0.0       |0.0       
-singing                 |0           |0.0       |0.0       
-exhausted               |0           |0.0       |0.0       
-fear                    |0           |0.0       |0.0       
-v                       |0           |0.0       |0.0       
-piratevoice             |0           |0.0       |0.0       
-confusesd               |0           |0.0       |0.0       
-anger                   |0           |0.0       |0.0       
-surprised               |0           |0.0       |0.0       
-sad                     |0           |0.0       |0.0       
-crazy                   |0           |0.0       |0.0       
-confused                |0           |0.0       |0.0       
-serious                 |0           |0.0       |0.0       
-bored                   |0           |0.0       |0.0       
-disgusted               |0           |0.0       |0.0       
-anxious                 |0           |0.0       |0.0       
-sarcastic               |0           |0.0       |0.0       
-voice                   |0           |0.0       |0.0       
-muffled                 |0           |0.0       |0.0       
-neutral                 |0           |0.0       |0.0       
-happy                   |0           |0.0       |0.0       
-tired                   |0           |0.0       |0.0       
-surprise                |0           |0.0       |0.0       
-amused                  |0           |0.0       |0.0       
-whining                 |0           |0.0       |0.0       
-dizzy                   |0           |0.0       |0.0       
-unknown                 |0           |0.0       |0.0       
-angry                   |0           |0.0       |0.0       
-smug                    |0           |0.0       |0.0       
-whispering              |0           |0.0       |0.0       
-canterlot               |0           |0.0       |0.0       
-annoyed                 |0           |0.0       |0.0       
-love                    |0           |0.0       |0.0       
-shouting                |0           |0.0       |0.0       
-suprised                |0           |0.0       |0.0       
-laughing                |0           |0.0       |0.0       
+;emotion                |emotion_id  |file_count  |arousal   |valence   
+;
+neutral                 |0           |24672       |0.0       |0.0       
+anxious                 |1           |6240        |0.0       |0.0       
+happy                   |2           |5050        |0.0       |0.0       
+annoyed                 |3           |3771        |0.0       |0.0       
+sad                     |4           |1642        |0.0       |0.0       
+confused                |5           |1338        |0.0       |0.0       
+smug                    |6           |997         |0.0       |0.0       
+angry                   |7           |762         |0.0       |0.0       
+whispering              |8           |678         |0.0       |0.0       
+shouting                |9           |664         |0.0       |0.0       
+sarcastic               |10          |518         |0.0       |0.0       
+amused                  |11          |516         |0.0       |0.0       
+surprised               |12          |313         |0.0       |0.0       
+singing                 |13          |225         |0.0       |0.0       
+fear                    |14          |222         |0.0       |0.0       
+serious                 |15          |199         |0.0       |0.0       
+crazy                   |16          |149         |0.0       |0.0       
+tired                   |17          |116         |0.0       |0.0       
+disgust                 |18          |43          |0.0       |0.0       
+voice                   |19          |26          |0.0       |0.0       
+canterlot               |20          |26          |0.0       |0.0       
+whining                 |21          |26          |0.0       |0.0       
+muffled                 |22          |19          |0.0       |0.0       
+exhausted               |23          |16          |0.0       |0.0       
+love                    |24          |13          |0.0       |0.0       
+piratevoice             |25          |2           |0.0       |0.0       
+bored                   |26          |2           |0.0       |0.0       
+dizzy                   |27          |1           |0.0       |0.0       
+laughing                |28          |1           |0.0       |0.0       
