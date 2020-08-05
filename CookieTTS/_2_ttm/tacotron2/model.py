@@ -9,9 +9,9 @@ from CookieTTS.utils.model.layers import ConvNorm, ConvNorm2D, LinearNorm, LSTMC
 from CookieTTS.utils.model.GPU import to_gpu
 from CookieTTS.utils.model.utils import get_mask_from_lengths, dropout_frame
 
-from SylpsNet import SylpsNet
-from EmotionNet import EmotionNet
-from AuxEmotionNet import AuxEmotionNet
+from modules.SylpsNet import SylpsNet
+from modules.EmotionNet import EmotionNet
+from modules.AuxEmotionNet import AuxEmotionNet
 
 drop_rate = 0.5
 
@@ -740,6 +740,9 @@ class Tacotron2(nn.Module):
         self.emotion_net = EmotionNet(hparams)
         self.aux_emotion_net = AuxEmotionNet(hparams)
         
+        if hparams.use_postnet_discriminator:
+            self.postnet_discriminator = PostnetDiscriminator(hparams)
+    
     def parse_batch(self, batch):
         text_padded, text_lengths, mel_padded, gate_padded, output_lengths, speaker_ids, \
           torchmoji_hidden, preserve_decoder_states, sylps, emotion_id, emotion_onehot = batch
@@ -781,12 +784,9 @@ class Tacotron2(nn.Module):
         text, text_lengths, gt_mels, max_len, output_lengths, speaker_ids, torchmoji_hidden, preserve_decoder_states, gt_sylps, emotion_id, emotion_onehot = inputs
         text_lengths, output_lengths = text_lengths.data, output_lengths.data
         
-        if teacher_force_till == None:
-            p_teacher_forcing = self.p_teacher_forcing
-        if p_teacher_forcing == None:
-            teacher_force_till = self.teacher_force_till
-        if drop_frame_rate == None:
-            drop_frame_rate = self.drop_frame_rate
+        if teacher_force_till == None: p_teacher_forcing  = self.p_teacher_forcing
+        if p_teacher_forcing == None:  teacher_force_till = self.teacher_force_till
+        if drop_frame_rate == None:    drop_frame_rate    = self.drop_frame_rate
         
         if drop_frame_rate > 0. and self.training:
             # gt_mels shape (B, n_mel_channels, T_out),
@@ -799,25 +799,29 @@ class Tacotron2(nn.Module):
         encoder_outputs, pred_sylps = self.encoder(embedded_text, text_lengths, speaker_ids=speaker_ids) # [B, enc_T, enc_dim]
         memory.append(encoder_outputs)
         
-        # Sylps -> sylzu, mu, logvar
-        sylzu, syl_mu, syl_logvar = self.SylpsNet(gt_sylps)
-        memory.append( sylzu[:, None].repeat(1, encoder_outputs.size(1), 1) )
-        
-        # Gt_mels, speaker, encoder_outputs -> zs, em_zu, em_mu, em_logvar
-        zs, em_zu, em_mu, em_logvar = self.EmotionNet(gt_mels, speaker_ids, encoder_outputs,
-                                                            emotion_id=emotion_id, emotion_onehot=emotion_onehot)
-        memory.extend(( em_zu[:, None].repeat(1, encoder_outputs.size(1), 1),
-                           zs[:, None].repeat(1, encoder_outputs.size(1), 1), ))
-        
         # speaker_id -> speaker_embed
         speaker_embed = self.speaker_embedding(speaker_ids)
         memory.append( speaker_embed[:, None].repeat(1, encoder_outputs.size(1), 1) )
         
+        # Sylps -> sylzu, mu, logvar
+        sylzu, syl_mu, syl_logvar = self.sylps_net(gt_sylps)
+        memory.append( sylzu[:, None].repeat(1, encoder_outputs.size(1), 1) )
+        
+        # Gt_mels, speaker, encoder_outputs -> zs, em_zu, em_mu, em_logvar
+        zs, em_zu, em_mu, em_logvar = self.emotion_net(gt_mels, speaker_embed, encoder_outputs,
+                                                            emotion_id=emotion_id, emotion_onehot=emotion_onehot)
+        memory.extend(( em_zu[:, None].repeat(1, encoder_outputs.size(1), 1),
+                           zs[:, None].repeat(1, encoder_outputs.size(1), 1), ))
+        
+        # torchMoji, encoder_outputs -> aux(zs, em_mu, em_logvar)
+        aux_zs, aux_em_mu, aux_em_logvar = self.aux_emotion_net(torchmoji_hidden, encoder_outputs)
+        
         # memory -> mel_outputs
         memory = torch.cat(memory, dim=2)# concat along Embed dim
-        mel_outputs, gate_outputs, alignments = self.decoder(
-            memory, gt_mels, memory_lengths=text_lengths, preserve_decoder=preserve_decoder_states, teacher_force_till=teacher_force_till, p_teacher_forcing=p_teacher_forcing)
+        mel_outputs, gate_outputs, alignments = self.decoder(memory, gt_mels, memory_lengths=text_lengths, preserve_decoder=preserve_decoder_states,
+                                                                         teacher_force_till=teacher_force_till, p_teacher_forcing=p_teacher_forcing)
         
+        # mel_outputs -> mel_outputs_postnet (learn a modifier for the output)
         mel_outputs_postnet = self.postnet(mel_outputs)
         mel_outputs_postnet.add_(mel_outputs)
         
