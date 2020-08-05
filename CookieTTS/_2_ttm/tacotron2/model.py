@@ -5,11 +5,13 @@ import torch
 from torch.autograd import Variable
 from torch import nn
 from torch.nn import functional as F
-from CookieTTS.utils.model.layers import ConvNorm, ConvNorm2D, LinearNorm
+from CookieTTS.utils.model.layers import ConvNorm, ConvNorm2D, LinearNorm, LSTMCellWithZoneout, GMMAttention, DynamicConvolutionAttention
 from CookieTTS.utils.model.GPU import to_gpu
 from CookieTTS.utils.model.utils import get_mask_from_lengths, dropout_frame
-#from modules import GST # mellotron GST implementation
-from TPGST import GST # Other GST implementation
+
+from SylpsNet import SylpsNet
+from EmotionNet import EmotionNet
+from AuxEmotionNet import AuxEmotionNet
 
 drop_rate = 0.5
 
@@ -25,24 +27,6 @@ def load_model(hparams):
             print(f'mask value not found for attention_type {hparams.attention_type}')
             raise
     return model
-
-
-class LSTMCellWithZoneout(nn.LSTMCell):
-    def __init__(self, input_size, hidden_size, bias=True, zoneout_prob=0.1):
-        super().__init__(input_size, hidden_size, bias)
-        self._zoneout_prob = zoneout_prob
-
-    def forward(self, input, hx):
-        old_h, old_c = hx
-        new_h, new_c = super(LSTMCellWithZoneout, self).forward(input, hx)
-        if self.training:
-            c_mask = torch.empty_like(new_c).bernoulli_(p=self._zoneout_prob).bool().data
-            h_mask = torch.empty_like(new_h).bernoulli_(p=self._zoneout_prob).bool().data
-            h = torch.where(h_mask, old_h, new_h)
-            c = torch.where(c_mask, old_c, new_c)
-            return h, c
-        else:
-            return new_h, new_c
 
 
 class LocationLayer(nn.Module):
@@ -77,7 +61,7 @@ class Attention(nn.Module):
                                             attention_location_kernel_size,
                                             attention_dim)
         self.score_mask_value = -float("inf")
-        
+    
     def get_alignment_energies(self, query, processed_memory,
                                attention_weights_cat):
         """
@@ -91,21 +75,13 @@ class Attention(nn.Module):
         -------
         alignment (batch, enc_time)
         """
-        
-        # easy to read
-        #processed_query = self.query_layer(query.unsqueeze(1))
-        #processed_attention_weights = self.location_layer(attention_weights_cat)
-        #energies = self.v(torch.tanh(
-        #    processed_query + processed_attention_weights + processed_memory))
-        
-        # using inplace addition
         processed = self.location_layer(attention_weights_cat) # [B, 2, enc] # conv1d, matmul
         processed.add_( self.query_layer(query.unsqueeze(1)).expand_as(processed_memory) ) # unsqueeze, matmul, expand_as, add_
         processed.add_( processed_memory ) # add_
         energies = self.v( torch.tanh( processed ) ) # tanh, matmul
         
         return energies.squeeze(-1) # squeeze
-
+    
     def forward(self, attention_hidden_state, memory, processed_memory,
                 attention_weights_cat, mask, attention_weights=None):
         """
@@ -129,249 +105,6 @@ class Attention(nn.Module):
         attention_context = attention_context.squeeze(1) # squeeze
         
         return attention_context, attention_weights
-
-
-class DynamicConvolutionAttention(nn.Module):
-    """A first attempt at making this Attention."""
-    def __init__(self, attention_rnn_dim, embedding_dim, attention_dim,
-                 attention_location_n_filters, attention_location_kernel_size,
-                 dynamic_filter_num, dynamic_filter_len): # default 8, 21)
-        super(DynamicConvolutionAttention, self).__init__()
-        self.dynamic_filter_len = dynamic_filter_len
-        self.dynamic_filter_num = dynamic_filter_num
-        
-        # static
-        self.location_layer = LocationLayer(attention_location_n_filters,
-                                            attention_location_kernel_size,
-                                            attention_dim, out_bias=True)
-        self.v = LinearNorm(attention_dim, 1, bias=False)
-        
-        # dynamic
-        self.dynamic_filter = torch.nn.Sequential(
-            LinearNorm(attention_rnn_dim, attention_dim, bias=True, w_init_gain='tanh'), # attention_rnn_dim -> attention dim
-            nn.Tanh(),#nn.LeakyReLU(negative_slope=0.1),#nn.ReLU(),#nn.Tanh(),
-            LinearNorm(attention_dim, dynamic_filter_num*dynamic_filter_len, bias=False, w_init_gain='tanh'), # filter_num * filter_length
-            )
-        self.vg = LinearNorm(dynamic_filter_num, attention_dim, bias=True)
-        
-        # prior
-        self.prior_filter = self.get_prior_filter(dynamic_filter_num, dynamic_filter_len).to("cuda")
-        
-        # misc
-        self.score_mask_value = -float("inf")
-    
-    def get_prior_filter(self, dynamic_filter_num, dynamic_filter_len):
-        assert dynamic_filter_len == 21, "Only filter_len of 21 is currently supported" # I don't know how to calcuate this one atm so here's a set of premade values I found on their Reddit post
-        prior_filters = torch.tensor( [0.7400209, 0.07474979, 0.04157422, 0.02947039, 0.023170564, 0.019321883, 0.016758798, 0.014978543, 0.013751862, 0.013028075, 0.013172861] ) # [filter_len-10]
-        prior_filters = prior_filters.flip(dims=(0,)) # [filter_len-10] -> [filter_len-10]
-        prior_filters = prior_filters[None, None, :] # [filter_len-10] -> [1, 1, filter_len-10]
-        return prior_filters
-    
-    def get_alignment_energies(self, attention_RNN_state,
-                               attention_weights_cat):
-        """
-        PARAMS
-        ------
-        attention_RNN_state: attention rnn last output [B, dim]       ## decoder output (batch, n_mel_channels * n_frames_per_step)
-        attention_weights_cat: prev and cumulative att weights (B, 2, enc_time)
-        
-        RETURNS
-        -------
-        alignment (batch, enc_time)
-        """
-        verbose = 0 # debug
-        # get Static filter intermediate value
-        processed = self.location_layer(attention_weights_cat) # [B, 2, enc_T] -> [B, attention_n_filters, enc_T] -> [B, enc_T, attention_dim] # take prev+cumulative att weights, send through conv -> linear
-        if verbose: print("1 processed.shape =", processed.shape) # [16, 90, 1]
-        
-        # get Dynamic filter intermediate value(s)
-        prev_att = attention_weights_cat[:, 0, :][:, :, None] # [B, 2, enc_T] -> [B, enc_T] -> [B, enc_T, 1]
-        dynamic_filt = self.dynamic_filter(attention_RNN_state) # [B, AttRNN_dim] -> [B, attention_dim] -> [B, 1, attention_dim] -> [B, 1, dynamic_filter_num*dynamic_filter_len]
-        dynamic_filt = dynamic_filt.view([-1, self.dynamic_filter_len, self.dynamic_filter_num]) # [B, 1, dynamic_filter_num*dynamic_filter_len] -> [B, dynamic_filter_len, dynamic_filter_num]
-        if verbose: print("1 prev_att.shape =", prev_att.shape) # [16, 90, 1]
-        if verbose: print("1 dynamic_filt.shape =", dynamic_filt.shape) # [16, 21, 8]
-        
-        if True: # calc dynamic energies from matmul with dynamic filter
-            # "stack previous alignments into matrices" # https://www.reddit.com/r/MachineLearning/comments/dmo0z1/r_attenchilada_locationrelative_attention/f6vtkmk/
-            prev_att_stacked = prev_att.repeat(1,1,self.dynamic_filter_len)
-            dynamic = prev_att_stacked @ dynamic_filt # [B, enc_T, dynamic_filter_len] @ [B, dynamic_filter_len, dynamic_filter_num] -> [B, enc_T, dynamic_filter_num]
-            if True: # extra linear?
-                dynamic = self.vg(dynamic) # [B, enc_T, dynamic_filter_num] -> [B, enc_T, attention_dim]
-                pass
-        else:  # calc dynamic engeries from F.conv1d with dynamic filter
-            dynamic_filt = dynamic_filt.permute(2,0,1)[:,:,None,:] # [B, dynamic_filter_len, dynamic_filter_num] -> [dynamic_filter_num,B                 ,1, dynamic_filter_len]
-                                                                                                                   #(out_channels      ,in_channels/groups,kH,kW                )
-            if verbose: print("1.9 dynamic_filt.shape =", dynamic_filt.shape) # [8, 24, 1, 21]
-            shape = dynamic_filt.shape
-            dynamic_filt = dynamic_filt.reshape(shape[0]*shape[1], 1, 1, shape[-1]) # [dynamic_filter_num,B,1, dynamic_filter_len] -> [dynamic_filter_num*B,1,1, dynamic_filter_len]
-            prev_att_shaped = prev_att[None, ...].permute(0, 1, 3, 2) # [B, enc_T, 1] -> [1, B, enc_T, 1] -> [1        ,B          ,1 ,enc_T]
-                                                                                                            #(minibatch,in_channels,iH,iW   )
-            if verbose: print("2 prev_att_shaped.shape =", prev_att_shaped.shape) # [1, 24, 1, 65] -> [24, 8, 1, 65]
-            if verbose: print("2 dynamic_filt.shape =", dynamic_filt.shape) # [8, 24, 1, 21]
-            if False:
-                padd = (self.dynamic_filter_len-1)//2
-                dynamic = torch.nn.functional.conv2d(prev_att_shaped, dynamic_filt, bias=None, stride=1, padding=(0,padd), dilation=1, groups=prev_att_shaped.size(1))# [1, B, 1, enc_T] -> [1, B*dyna_f_num, 1, enc_T]
-            else:
-                padd = self.dynamic_filter_len - 1
-                prev_att_shaped = F.pad(prev_att_shaped, (padd, 0)) # [1, 1, B, enc_T] -> [1, 1, B, padd+enc_T]
-                dynamic = torch.nn.functional.conv2d(prev_att_shaped, dynamic_filt, bias=None, stride=1, padding=0, dilation=1, groups=prev_att_shaped.size(1))# [1, B, 1, enc_T] -> [1, B*dyna_f_num, 1, enc_T]
-            if verbose: print("2 dynamic.shape =", dynamic.shape) # [1, 8, 1, 65]
-            dynamic = dynamic.view(shape[1], shape[0], -1).transpose(1,2) # [1, B*dyna_f_num, 1, enc_T] -> [B, dyna_f_num, enc_T] -> [B, enc_T, dyna_f_num]
-        
-        if verbose: print("2.1 dynamic.shape =", dynamic.shape) # [1, 8, 1, 65]
-        
-        # I don't currently know how the Dynamic and Static energies are meant to interact (I can't tell from the paper).
-        if True: # first try addition
-            energies = self.v( torch.tanh( processed + dynamic ) ) # [B, enc_T, attention_dim] -> [B, enc_T, 1] # mix them
-        elif True: # then try concatentation
-            proc = torch.cat( (processed, dynamic), dim=2) # [B, enc_T, dynamic_filter_num] + [B, enc_T, attention_dim] -> [B, enc_T, dynamic_filter_num+attention_dim]
-            energies = self.v( torch.tanh( proc ) ) # [B, enc_T, attention_dim] -> [B, enc_T, 1] # mix them
-        elif True: # then try adding seperated energies
-            static_energies = self.v( torch.tanh( processed ) ) # [B, enc_T, attention_dim] -> [B, enc_T, 1] # mix them
-            if verbose: print("static_energies.shape =", static_energies.shape)
-            dynamic_energies = self.vg( torch.tanh(dynamic) ) # [B, enc_T, dynamic_filter_num] -> [B, enc_T, 1] # mix them
-            if verbose: print("dynamic_energies.shape =", dynamic_energies.shape)
-            energies = static_energies + dynamic_energies # [B, enc_T, 1] + [B, enc_T, 1] -> [B, enc_T, 1]
-        else:
-            pass
-        
-        if False: # add the Prior filter
-            padd = self.dynamic_filter_len - 11
-            prev_att = F.pad(prev_att.transpose(1,2), (padd, 0)) # [B, enc_T, 1] -> [B, 1, enc_T] -> [B, 1, enc_T+padd]
-            prior_energy = F.conv1d(prev_att, self.prior_filter.to(prev_att.dtype)) # [B, 1, enc_T+padd] -> [B, 1, enc_T]
-            prior_energy = (prior_energy.clamp(min=1e-6)).log() # [B, enc_T, 1] clamp min value so log doesn't underflow
-            #prior_energy = prior_energy.clamp(min=1e-6)
-            #prior_energy = prior_energy.squeeze(-1) # [B, enc_T, 1] -> [B, enc_T]
-            
-            if verbose: print("3 energies.shape =", energies.shape) #
-            if verbose: print("3 prior_energy.shape =", prior_energy.shape) #
-            
-            energies += prior_energy.transpose(1,2) # [B, enc_T, 1]
-        
-        return energies.squeeze(-1) # [B, enc_T, 1] -> [B, enc_T] # squeeze blank dim
-
-    def forward(self, attention_RNN_state, attention_weights_cat, memory, mask, attention_weights=None):
-        """
-        PARAMS
-        ------
-        attention_hidden_state: attention rnn last output
-        memory: encoder outputs
-        processed_memory: processed encoder outputs
-        attention_weights_cat: previous and cummulative attention weights
-        mask: binary mask for padded data
-        """
-        if attention_weights is None:
-            alignment = self.get_alignment_energies(
-                attention_RNN_state, attention_weights_cat) # outputs [B, enc_T]
-            
-            if mask is not None:
-                alignment.data.masked_fill_(mask, self.score_mask_value)
-            
-            attention_weights = F.softmax(alignment, dim=1) # softmax
-        attention_context = torch.bmm(attention_weights.unsqueeze(1), memory) # unsqueeze, bmm
-        attention_context = attention_context.squeeze(1) # squeeze
-        
-        return attention_context, attention_weights
-
-
-class GMMAttention(nn.Module): # Experimental from NTT123
-    def __init__(self, num_mixtures, attention_layers, attention_rnn_dim, embedding_dim, attention_dim,
-                 attention_location_n_filters, attention_location_kernel_size, hparams):
-        super(GMMAttention, self).__init__()
-        self.num_mixtures = num_mixtures
-        self.normalize_attention_input = hparams.normalize_attention_input
-        self.delta_min_limit = hparams.delta_min_limit
-        self.delta_offset = hparams.delta_offset
-        self.lin_bias = hparams.lin_bias
-        self.initial_gain = hparams.initial_gain
-        lin = nn.Linear(attention_dim, 3*num_mixtures, bias=self.lin_bias)
-        lin.weight.data.mul_(0.01)
-        if self.lin_bias:
-            lin.bias.data.mul_(0.008)
-            lin.bias.data.sub_(2.0)
-        
-        if attention_layers == 1:
-            self.F = nn.Sequential(
-                    LinearNorm(attention_rnn_dim, attention_dim, bias=True, w_init_gain=self.initial_gain),
-                    nn.Tanh(),
-                    lin)
-        elif attention_layers == 2:
-            self.F = nn.Sequential(
-                    LinearNorm(attention_rnn_dim, attention_dim, bias=True, w_init_gain=self.initial_gain),
-                    LinearNorm(attention_dim, attention_dim, bias=False, w_init_gain='tanh'),
-                    nn.Tanh(),
-                    lin)
-        else:
-            print(f"attention_layers invalid, valid values are... 1, 2\nCurrent Value {attention_layers}")
-            raise
-        
-        self.score_mask_value = 0 # -float("inf")
-        
-        self.register_buffer('pos', torch.arange(
-            0, 2000, dtype=torch.float).view(1, -1, 1).data)
-    
-    
-    def get_alignment_energies(self, attention_hidden_state, memory, previous_location):
-        """
-        PARAMS
-        ------
-        query: decoder output (batch, n_mel_channels * n_frames_per_step)
-        memory: encoder outputs (B, T_in, attention_dim)
-        attention_weights_cat: cumulative and prev. att weights (B, 2, max_time)
-        
-        RETURNS
-        -------
-        alignment (batch, max_time)
-        """
-        if self.normalize_attention_input:
-            attention_hidden_state = attention_hidden_state.tanh()
-        w, delta, scale = self.F(attention_hidden_state.unsqueeze(1)).chunk(3, dim=-1)
-        delta = delta.sigmoid()#*1.0 # normalize 0.0 - 1.0,
-        if self.delta_min_limit:
-            delta = delta.clamp(min=self.delta_min_limit) # supposed to be fine with autograd but not 100% confident.
-        if self.delta_offset:
-            delta = delta + self.delta_offset
-        loc = previous_location + delta
-        scale = scale.sigmoid() * 2 + 1
-        
-        if True: # I don't know anything about this but both versions exist
-            pos = self.pos[:, :memory.shape[1], :]
-            z1 = torch.erf((loc-pos+0.5)*scale)
-            z2 = torch.erf((loc-pos-0.5)*scale)
-            z = (z1 - z2)*0.5
-            w = torch.sigmoid(w) #w = torch.softmax(w, dim=-1) # not sure which to use
-        else:
-            std = torch.nn.functional.softplus(scale + 5) + 1e-5
-            pos = self.pos[:, :memory.shape[1], :]
-            z1 = torch.tanh((loc-pos+0.5) / std)
-            z2 = torch.tanh((loc-pos-0.5) / std)
-            z = (z1 - z2)*0.5
-            w = torch.softmax(w, dim=-1) + 1e-5
-        
-        z = torch.bmm(z, w.squeeze(1).unsqueeze(2)).squeeze(-1) # [B, enc_T, num_mixtures] @ [B, num_mixtures, 1] -> [B, enc_T]
-        # z = z.sum(dim=-1)
-        return z, loc
-    
-    def forward(self, attention_hidden_state, memory, previous_location, mask):
-        """
-        PARAMS
-        ------
-        attention_hidden_state: attention rnn last output
-        memory: encoder outputs
-        attention_weights_cat: previous and cummulative attention weights
-        mask: binary mask for padded data
-        """
-        alignment, loc = self.get_alignment_energies(attention_hidden_state, memory, previous_location)
-        
-        if mask is not None:
-            alignment.data.masked_fill_(mask, self.score_mask_value)
-        
-        #attention_weights = alignment # without softmax
-        attention_weights = F.softmax(alignment, dim=1) # with softmax
-        attention_context = torch.bmm(attention_weights.unsqueeze(1), memory)
-        attention_context = attention_context.squeeze(1)
-        
-        return attention_context, attention_weights, loc
 
 
 class Prenet(nn.Module):
@@ -405,7 +138,6 @@ class Postnet(nn.Module):
     """Postnet
         - Five 1-d convolution with 512 channels and kernel size 5
     """
-
     def __init__(self, hparams):
         super(Postnet, self).__init__()
         self.convolutions = nn.ModuleList()
@@ -436,12 +168,12 @@ class Postnet(nn.Module):
                          dilation=1, w_init_gain='linear'),
                 nn.BatchNorm1d(hparams.n_mel_channels))
             )
-
+    
     def forward(self, x):
         for i in range(len(self.convolutions) - 1):
             x = F.dropout(torch.tanh(self.convolutions[i](x)), drop_rate, self.training)
         x = F.dropout(self.convolutions[-1](x), drop_rate, self.training)
-
+        
         return x
 
 
@@ -503,8 +235,7 @@ class Encoder(nn.Module):
                 text = torch.cat((text, speaker_embedding), dim=1) # [B, embed, sequence]
         
         for conv in self.convolutions:
-            #text = F.dropout(F.relu(conv(text)), drop_rate, self.training) # Normal ReLU
-            text = F.dropout(self.LReLU(conv(text)), drop_rate, self.training) # LeakyReLU
+            text = F.dropout(self.LReLU(conv(text)), drop_rate, self.training)
         
         if self.encoder_speaker_embed_dim and self.encoder_concat_speaker_embed == 'before_lstm':
             text = torch.cat((text, speaker_embedding), dim=1) # [B, embed, sequence]
@@ -532,8 +263,7 @@ class Encoder(nn.Module):
                 text = torch.cat((text, speaker_embedding), dim=1) # [B, embed, sequence]
         
         for conv in self.convolutions:
-            #text = F.dropout(F.relu(conv(text)), drop_rate, self.training) # Normal ReLU
-            text = F.dropout(self.LReLU(conv(text)), drop_rate, self.training) # LeakyReLU
+            text = F.dropout(self.LReLU(conv(text)), drop_rate, self.training)
         
         if self.encoder_speaker_embed_dim and self.encoder_concat_speaker_embed == 'before_lstm':
             text = torch.cat((text, speaker_embedding), dim=1) # [B, embed, sequence]
@@ -541,7 +271,6 @@ class Encoder(nn.Module):
         text = text.transpose(1, 2) # [B, embed, sequence] -> [B, sequence, embed]
         
         if text_lengths is not None:
-            #text *= get_mask_from_lengths(text_lengths)[:, :, None]
             # pytorch tensor are not reversible, hence the conversion
             text_lengths = text_lengths.cpu().numpy()
             text = nn.utils.rnn.pack_padded_sequence(
@@ -551,7 +280,6 @@ class Encoder(nn.Module):
         outputs, _ = self.lstm(text) # -> [B, sequence, embed]
         
         if text_lengths is not None:
-            #outputs *= get_mask_from_lengths(text_lengths)[:, :, None]
             outputs, _ = nn.utils.rnn.pad_packed_sequence(
                 outputs, batch_first=True)
         
@@ -583,7 +311,6 @@ class Decoder(nn.Module):
         self.p_teacher_forcing = hparams.p_teacher_forcing
         self.teacher_force_till = hparams.teacher_force_till
         self.num_att_mixtures = hparams.num_att_mixtures
-        self.extra_projection = hparams.extra_projection
         self.normalize_attention_input = hparams.normalize_attention_input
         self.normalize_AttRNN_output = hparams.normalize_AttRNN_output
         self.attention_type = hparams.attention_type
@@ -642,11 +369,6 @@ class Decoder(nn.Module):
                 hparams.decoder_rnn_dim, 1, zoneout_prob=self.p_DecRNN_hidden_dropout) # hidden_size, bias)
             self.p_DecRNN_hidden_dropout = 0.0 # zoneout assigned inside LSTMCellWithZoneout so don't need normal dropout
         
-        if self.extra_projection:
-            self.linear_projection_pre = LinearNorm(
-                hparams.decoder_rnn_dim + self.encoder_LSTM_dim,
-                hparams.decoder_rnn_dim + self.encoder_LSTM_dim)
-        
         self.linear_projection = LinearNorm(
             hparams.decoder_rnn_dim + self.encoder_LSTM_dim,
             hparams.n_mel_channels * hparams.n_frames_per_step)
@@ -669,7 +391,6 @@ class Decoder(nn.Module):
         decoder_input = Variable(memory.data.new(
             B, self.n_mel_channels * self.n_frames_per_step).zero_())
         return decoder_input
-    
     
     def initialize_decoder_states(self, memory, mask, preserve=None, override=None):
         """ Initializes attention rnn states, decoder rnn states, attention
@@ -749,7 +470,7 @@ class Decoder(nn.Module):
             self.previous_location = Variable(memory.data.new(
                 B, 1, self.num_att_mixtures).zero_())
         self.mask = mask
-
+    
     def parse_decoder_inputs(self, decoder_inputs):
         """ Prepares decoder inputs, i.e. mel outputs
         PARAMS
@@ -801,9 +522,9 @@ class Decoder(nn.Module):
             mel_outputs.size(0), -1, self.n_mel_channels)
         # (B, T_out, n_mel_channels) -> (B, n_mel_channels, T_out)
         mel_outputs = mel_outputs.transpose(1, 2)
-
+        
         return mel_outputs, gate_outputs, alignments
-
+    
     def decode(self, decoder_input, attention_weights=None):
         """ Decoder step using stored states, attention and memory
         PARAMS
@@ -850,7 +571,7 @@ class Decoder(nn.Module):
         else:
             raise NotImplementedError(f"Attention Type {self.attention_type} Invalid")
         
-        self.attention_weights_cum += self.attention_weights# [B, enc]??? # cumulative weights determine how much time has been spent on each encoder_input, should let the model know what has already been said and what still needs to be spoken
+        self.attention_weights_cum += self.attention_weights# [B, enc] # cumulative weights determine how much time has been spent on each encoder_input, should let the model know what has already been said and what still needs to be spoken
         
         decoder_input = torch.cat( (self.attention_hidden, self.attention_context), -1) # cat 6.475ms
         
@@ -868,14 +589,10 @@ class Decoder(nn.Module):
         
         gate_prediction = self.gate_layer(decoder_hidden_attention_context) # addmm 5.762ms
         
-        if self.extra_projection:
-            decoder_hidden_attention_context = self.linear_projection_pre(
-                decoder_hidden_attention_context)
-        
         decoder_output = self.linear_projection(decoder_hidden_attention_context) # addmm 5.621ms
         
         return decoder_output, gate_prediction, self.attention_weights
-
+    
     def forward(self, memory, decoder_inputs, memory_lengths, preserve_decoder=None, teacher_force_till=None, p_teacher_forcing=None):
         """ Decoder forward pass for training
         PARAMS
@@ -883,7 +600,7 @@ class Decoder(nn.Module):
         memory: Encoder outputs
         decoder_inputs: Decoder inputs for teacher forcing. i.e. mel-specs
         memory_lengths: Encoder output lengths for attention masking.
-
+        
         RETURNS
         -------
         mel_outputs: mel outputs from the decoder
@@ -908,7 +625,7 @@ class Decoder(nn.Module):
             embedded_speakers = embedded_speakers.repeat(1, encoder_outputs.size(1), 1)
             decoder_inputs = torch.cat((decoder_inputs, embedded_speakers), dim=2)
         
-        decoder_inputs = self.prenet(decoder_inputs) # some linear layers
+        decoder_inputs = self.prenet(decoder_inputs)
         
         self.initialize_decoder_states(
             memory, mask=~get_mask_from_lengths(memory_lengths), preserve=preserve_decoder)
@@ -963,7 +680,7 @@ class Decoder(nn.Module):
                 gate_outputs += [gate_output_gpu.squeeze(1)]
                 alignments += [alignment]
             
-            if self.attention_type == 1 and self.num_att_mixtures == 1:## stop when the attention location is out of the encoder_outputs
+            if self.attention_type == 1 and self.num_att_mixtures == 1:# stop when the attention location is out of the encoder_outputs
                 if self.previous_location.squeeze().item() + 1. > memory.shape[1]:
                     break
             else:
@@ -973,7 +690,7 @@ class Decoder(nn.Module):
                 if sig_max_gates.min() > self.gate_threshold: # min()  ( implicit item() as well )
                     break_point = min(break_point, i+self.gate_delay)
             
-            if i >= break_point: # gt
+            if i >= break_point:
                 break
             
             decoder_input = mel_output
@@ -983,7 +700,7 @@ class Decoder(nn.Module):
         mel_outputs, gate_outputs, alignments = self.parse_decoder_outputs(
             mel_outputs, gate_outputs, alignments)
         
-        # apply modification to the GPU as well.
+        # apply sigmoid to the GPU as well.
         gate_outputs = torch.sigmoid(gate_outputs)
         
         return mel_outputs, gate_outputs, alignments
@@ -996,39 +713,36 @@ class Tacotron2(nn.Module):
         self.fp16_run = hparams.fp16_run
         self.n_mel_channels = hparams.n_mel_channels
         self.n_frames_per_step = hparams.n_frames_per_step
-        self.token_num = hparams.token_num
         self.p_teacher_forcing = hparams.p_teacher_forcing
         self.teacher_force_till = hparams.teacher_force_till
         self.encoder_concat_speaker_embed = hparams.encoder_concat_speaker_embed
-        self.speaker_embedding_dim = hparams.speaker_embedding_dim
-        self.with_gst = hparams.with_gst
-        ref_mode_lookup = {
-            False: 1, #torchMoji_training false, use normal training
-            True: 3,} #torchMoji_training true, train the linear instead
-        self.ref_mode = ref_mode_lookup[hparams.torchMoji_training and hparams.torchMoji_linear]
         
         self.embedding = nn.Embedding(
             hparams.n_symbols, hparams.symbols_embedding_dim)
         std = sqrt(2.0 / (hparams.n_symbols + hparams.symbols_embedding_dim))
         val = sqrt(3.0) * std  # uniform bounds for std
         self.embedding.weight.data.uniform_(-val, val)
-        self.encoder = Encoder(hparams)
-        self.decoder = Decoder(hparams)
-        self.postnet = Postnet(hparams)
+        
         self.drop_frame_rate = hparams.drop_frame_rate
         if self.drop_frame_rate > 0.:
             # global mean is not used at inference.
             self.global_mean = getattr(hparams, 'global_mean', None)
-        if self.with_gst:
-            self.gst = GST(hparams)
-            self.drop_tokens_mode = hparams.drop_tokens_mode
+        
+        self.speaker_embedding_dim = hparams.speaker_embedding_dim
         if self.speaker_embedding_dim:
             self.speaker_embedding = nn.Embedding(
                 hparams.n_speakers, self.speaker_embedding_dim)
         
+        self.encoder = Encoder(hparams)
+        self.decoder = Decoder(hparams)
+        self.postnet = Postnet(hparams)
+        self.sylps_net = SylpsNet(hparams)
+        self.emotion_net = EmotionNet(hparams)
+        self.aux_emotion_net = AuxEmotionNet(hparams)
+        
     def parse_batch(self, batch):
-        text_padded, text_lengths, mel_padded, gate_padded, \
-            output_lengths, speaker_ids, torchmoji_hidden, preserve_decoder_states, sylps, emotion_id, emotion_onehot = batch
+        text_padded, text_lengths, mel_padded, gate_padded, output_lengths, speaker_ids, \
+          torchmoji_hidden, preserve_decoder_states, sylps, emotion_id, emotion_onehot = batch
         text_padded = to_gpu(text_padded).long()
         text_lengths = to_gpu(text_lengths).long()
         output_lengths = to_gpu(output_lengths).long()
@@ -1064,32 +778,45 @@ class Tacotron2(nn.Module):
         return outputs
     
     def forward(self, inputs, teacher_force_till=None, p_teacher_forcing=None, drop_frame_rate=None):
-        text, text_lengths, gt_mels, max_len, output_lengths, speaker_ids, torchmoji_hidden, preserve_decoder_states, sylps, emotion_id, emotion_onehot = inputs
+        text, text_lengths, gt_mels, max_len, output_lengths, speaker_ids, torchmoji_hidden, preserve_decoder_states, gt_sylps, emotion_id, emotion_onehot = inputs
         text_lengths, output_lengths = text_lengths.data, output_lengths.data
         
-        if teacher_force_till == None: p_teacher_forcing = self.p_teacher_forcing
-        if p_teacher_forcing == None: teacher_force_till = self.teacher_force_till
-        if drop_frame_rate == None: drop_frame_rate = self.drop_frame_rate
+        if teacher_force_till == None:
+            p_teacher_forcing = self.p_teacher_forcing
+        if p_teacher_forcing == None:
+            teacher_force_till = self.teacher_force_till
+        if drop_frame_rate == None:
+            drop_frame_rate = self.drop_frame_rate
         
         if drop_frame_rate > 0. and self.training:
             # gt_mels shape (B, n_mel_channels, T_out),
             gt_mels = dropout_frame(gt_mels, self.global_mean, output_lengths, drop_frame_rate)
         
-        embedded_text = self.embedding(text).transpose(1, 2) # [B, embed, sequence]
-        encoder_outputs = self.encoder(embedded_text, text_lengths, speaker_ids=speaker_ids) # [B, time, encoder_out]
+        memory = []
         
-        if self.with_gst:
-            embedded_gst, *gst_extra = self.gst(gt_mels if (torchmoji_hidden is None) else torchmoji_hidden, ref_mode=self.ref_mode) # create embedding from tokens from reference mel
-            embedded_gst = embedded_gst.repeat(1, encoder_outputs.size(1), 1) # repeat token along-side the other embeddings for input to decoder
-            encoder_outputs = torch.cat((encoder_outputs, embedded_gst), dim=2) # [batch, time, encoder_out]
+        # Text -> Encoder Outputs, pred_sylps
+        embedded_text = self.embedding(text).transpose(1, 2) # [B, embed, enc_T]
+        encoder_outputs, pred_sylps = self.encoder(embedded_text, text_lengths, speaker_ids=speaker_ids) # [B, enc_T, enc_dim]
+        memory.append(encoder_outputs)
         
-        if self.speaker_embedding_dim:
-            embedded_speakers = self.speaker_embedding(speaker_ids)[:, None]
-            embedded_speakers = embedded_speakers.repeat(1, encoder_outputs.size(1), 1)
-            encoder_outputs = torch.cat((encoder_outputs, embedded_speakers), dim=2) # [batch, time, encoder_out]
+        # Sylps -> sylzu, mu, logvar
+        sylzu, syl_mu, syl_logvar = self.SylpsNet(gt_sylps)
+        memory.append( sylzu[:, None].repeat(1, encoder_outputs.size(1), 1) )
         
+        # Gt_mels, speaker, encoder_outputs -> zs, em_zu, em_mu, em_logvar
+        zs, em_zu, em_mu, em_logvar = self.EmotionNet(gt_mels, speaker_ids, encoder_outputs,
+                                                            emotion_id=emotion_id, emotion_onehot=emotion_onehot)
+        memory.extend(( em_zu[:, None].repeat(1, encoder_outputs.size(1), 1),
+                           zs[:, None].repeat(1, encoder_outputs.size(1), 1), ))
+        
+        # speaker_id -> speaker_embed
+        speaker_embed = self.speaker_embedding(speaker_ids)
+        memory.append( speaker_embed[:, None].repeat(1, encoder_outputs.size(1), 1) )
+        
+        # memory -> mel_outputs
+        memory = torch.cat(memory, dim=2)# concat along Embed dim
         mel_outputs, gate_outputs, alignments = self.decoder(
-            encoder_outputs, gt_mels, memory_lengths=text_lengths, preserve_decoder=preserve_decoder_states, teacher_force_till=teacher_force_till, p_teacher_forcing=p_teacher_forcing)
+            memory, gt_mels, memory_lengths=text_lengths, preserve_decoder=preserve_decoder_states, teacher_force_till=teacher_force_till, p_teacher_forcing=p_teacher_forcing)
         
         mel_outputs_postnet = self.postnet(mel_outputs)
         mel_outputs_postnet.add_(mel_outputs)
