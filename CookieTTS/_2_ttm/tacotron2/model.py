@@ -291,7 +291,7 @@ class Decoder(nn.Module):
         super(Decoder, self).__init__()
         self.n_mel_channels = hparams.n_mel_channels
         self.n_frames_per_step = hparams.n_frames_per_step
-        self.encoder_LSTM_dim = hparams.encoder_LSTM_dim + hparams.token_embedding_size + hparams.speaker_embedding_dim
+        self.memory_dim = hparams.encoder_LSTM_dim + hparams.speaker_embedding_dim + len(hparams.emotion_classes) + hparams.zu_latent_dim + 1# size 1 == "sylzu"
         self.attention_rnn_dim = hparams.attention_rnn_dim
         self.decoder_rnn_dim = hparams.decoder_rnn_dim
         self.prenet_dim = hparams.prenet_dim
@@ -324,9 +324,9 @@ class Decoder(nn.Module):
             [hparams.prenet_dim]*hparams.prenet_layers, self.p_prenet_dropout, self.prenet_batchnorm)
         
         if self.AttRNN_extra_decoder_input:
-            AttRNN_Dimensions = hparams.prenet_dim + self.encoder_LSTM_dim + hparams.decoder_rnn_dim
+            AttRNN_Dimensions = hparams.prenet_dim + self.memory_dim + hparams.decoder_rnn_dim
         else:
-            AttRNN_Dimensions = hparams.prenet_dim + self.encoder_LSTM_dim
+            AttRNN_Dimensions = hparams.prenet_dim + self.memory_dim
         
         if self.AttRNN_hidden_dropout_type == 'dropout':
             self.attention_rnn = nn.LSTMCell(
@@ -340,18 +340,18 @@ class Decoder(nn.Module):
         
         if self.attention_type == 0:
             self.attention_layer = Attention(
-                hparams.attention_rnn_dim, self.encoder_LSTM_dim,
+                hparams.attention_rnn_dim, self.memory_dim,
                 hparams.attention_dim, hparams.attention_location_n_filters,
                 hparams.attention_location_kernel_size)
         elif self.attention_type == 1:
             self.attention_layer = GMMAttention(
                 hparams.num_att_mixtures, hparams.attention_layers,
-                hparams.attention_rnn_dim, self.encoder_LSTM_dim,
+                hparams.attention_rnn_dim, self.memory_dim,
                 hparams.attention_dim, hparams.attention_location_n_filters,
                 hparams.attention_location_kernel_size, hparams)
         elif self.attention_type == 2:
             self.attention_layer = DynamicConvolutionAttention(
-                hparams.attention_rnn_dim, self.encoder_LSTM_dim,
+                hparams.attention_rnn_dim, self.memory_dim,
                 hparams.attention_dim, hparams.attention_location_n_filters,
                 hparams.attention_location_kernel_size,
                 hparams.dynamic_filter_num, hparams.dynamic_filter_len)
@@ -361,20 +361,20 @@ class Decoder(nn.Module):
         
         if self.DecRNN_hidden_dropout_type == 'dropout':
             self.decoder_rnn = nn.LSTMCell(
-                hparams.attention_rnn_dim + self.encoder_LSTM_dim, # input_size
+                hparams.attention_rnn_dim + self.memory_dim, # input_size
                 hparams.decoder_rnn_dim, 1) # hidden_size, bias)
         elif self.DecRNN_hidden_dropout_type == 'zoneout':
             self.decoder_rnn = LSTMCellWithZoneout(
-                hparams.attention_rnn_dim + self.encoder_LSTM_dim, # input_size
+                hparams.attention_rnn_dim + self.memory_dim, # input_size
                 hparams.decoder_rnn_dim, 1, zoneout_prob=self.p_DecRNN_hidden_dropout) # hidden_size, bias)
             self.p_DecRNN_hidden_dropout = 0.0 # zoneout assigned inside LSTMCellWithZoneout so don't need normal dropout
         
         self.linear_projection = LinearNorm(
-            hparams.decoder_rnn_dim + self.encoder_LSTM_dim,
+            hparams.decoder_rnn_dim + self.memory_dim,
             hparams.n_mel_channels * hparams.n_frames_per_step)
         
         self.gate_layer = LinearNorm(
-            hparams.decoder_rnn_dim + self.encoder_LSTM_dim, 1,
+            hparams.decoder_rnn_dim + self.memory_dim, 1,
             bias=True, w_init_gain='sigmoid')
     
     def get_go_frame(self, memory):
@@ -808,13 +808,13 @@ class Tacotron2(nn.Module):
         memory.append( sylzu[:, None].repeat(1, encoder_outputs.size(1), 1) )
         
         # Gt_mels, speaker, encoder_outputs -> zs, em_zu, em_mu, em_logvar
-        zs, em_zu, em_mu, em_logvar = self.emotion_net(gt_mels, speaker_embed, encoder_outputs,
-                                                            emotion_id=emotion_id, emotion_onehot=emotion_onehot)
+        zs, em_zu, em_mu, em_logvar, em_params = self.emotion_net(gt_mels, speaker_embed, encoder_outputs,
+                                                                   text_lengths=text_lengths, emotion_id=emotion_id, emotion_onehot=emotion_onehot)
         memory.extend(( em_zu[:, None].repeat(1, encoder_outputs.size(1), 1),
                            zs[:, None].repeat(1, encoder_outputs.size(1), 1), ))
         
         # torchMoji, encoder_outputs -> aux(zs, em_mu, em_logvar)
-        aux_zs, aux_em_mu, aux_em_logvar = self.aux_emotion_net(torchmoji_hidden, encoder_outputs)
+        aux_zs, aux_em_mu, aux_em_logvar, aux_em_params = self.aux_emotion_net(torchmoji_hidden, speaker_embed, encoder_outputs, text_lengths=text_lengths)
         
         # memory -> mel_outputs
         memory = torch.cat(memory, dim=2)# concat along Embed dim
@@ -826,7 +826,11 @@ class Tacotron2(nn.Module):
         mel_outputs_postnet.add_(mel_outputs)
         
         return self.mask_outputs(
-            [mel_outputs, mel_outputs_postnet, gate_outputs, alignments, gst_extra],
+            [mel_outputs, mel_outputs_postnet, gate_outputs, alignments, pred_sylps
+                [sylzu, syl_mu, syl_logvar],
+                [zs, em_zu, em_mu, em_logvar, em_params],
+                [aux_zs, aux_em_mu, aux_em_logvar, aux_em_params],
+            ],
             output_lengths)
     
     def inference(self, text, speaker_ids, style_input=None, style_mode=None, text_lengths=None):

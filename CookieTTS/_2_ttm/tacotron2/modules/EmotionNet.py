@@ -27,7 +27,7 @@ class ReferenceEncoder(nn.Module):
         self.convs = nn.ModuleList([
             mm.Conv2d(channels[c], channels[c+1], 3, stride=2, bn=True, bias=bias, activation_fn=conv_act_func)
             for c in range(len(channels)-1)
-        ]) # [B, dec_T/r, 128)
+        ]) # [B, dec_T/r, 128]
         self.gru = nn.GRU(rnn_dim*2, rnn_dim, batch_first=True)
         self.fc = nn.Sequential(
             nn.Linear(rnn_dim, rnn_dim),
@@ -41,7 +41,7 @@ class ReferenceEncoder(nn.Module):
         Returns:
             y_: (Batch, 1, Embedding) Reference Embedding
         """
-        y_ = x.transpose(1, 2).unsqueeze(1) # [B, n_mel, dec_T) -> [B, 1, dec_T, n_mel]
+        y_ = x.transpose(1, 2).unsqueeze(1) # [B, n_mel, dec_T] -> [B, 1, dec_T, n_mel]
         
         for i in range(len(self.convs)):
             y_ = self.convs[i](y_)
@@ -51,9 +51,9 @@ class ReferenceEncoder(nn.Module):
         shape = y_.shape
         y_ = y_.contiguous().view(shape[0], shape[1], shape[2]*shape[3]) # [B, dec_T//64, C, n_mel//64] -> [B, dec_T//64, C*n_mel//64] merge last 2 dimensions
         
-        y_, out = self.gru(y_, hidden) # out = [1, B, T_Embed]
+        y_ = self.gru(y_, hidden)[1]# [1, B, T_Embed]
         
-        y_ = self.fc(out.squeeze(0)) # [1, B, T_Embed] -> [B, T_Embed]
+        y_ = self.fc(y_.squeeze(0)) # [1, B, T_Embed] -> [B, T_Embed]
         
         if self.activation_fn is not None:
             y_ = self.activation_fn(y_)
@@ -84,10 +84,14 @@ class EmotionNet(nn.Module):
         else:
             return mu
     
-    def forward(self, gt_mels, speaker_embed, encoder_outputs, emotion_id=None, emotion_onehot=None):# [B]
+    def forward(self, gt_mels, speaker_embed, encoder_outputs, text_lengths=None, emotion_id=None, emotion_onehot=None):# [B]
         ref = self.ref_enc(gt_mels)# [B, 1, Embed]
         speaker_embed = speaker_embed[:, None]# [B, embed] -> [B, 1, embed]
+        
+        if text_lengths is not None:
+            encoder_outputs = nn.utils.rnn.pack_padded_sequence(encoder_outputs, text_lengths.cpu().numpy(), batch_first=True, enforce_sorted=False)
         _, encoder_output = self.text_rnn(encoder_outputs).transpose(0, 1)# [B, enc_T, enc_dim] -> [1, B, enc_dim] -> [B, 1, enc_dim]
+        
         cat_inputs = torch.cat((ref, speaker_embed, encoder_output), dim=2)# [B, 1, dim]
         
         prob_energies = self.classifier_layer(cat_inputs)# [B, 1, n_class]
