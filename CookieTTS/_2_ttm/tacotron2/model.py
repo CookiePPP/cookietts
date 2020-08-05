@@ -9,9 +9,9 @@ from CookieTTS.utils.model.layers import ConvNorm, ConvNorm2D, LinearNorm, LSTMC
 from CookieTTS.utils.model.GPU import to_gpu
 from CookieTTS.utils.model.utils import get_mask_from_lengths, dropout_frame
 
-from modules.SylpsNet import SylpsNet
-from modules.EmotionNet import EmotionNet
-from modules.AuxEmotionNet import AuxEmotionNet
+from CookieTTS._2_ttm.tacotron2.nets.SylpsNet import SylpsNet
+from CookieTTS._2_ttm.tacotron2.nets.EmotionNet import EmotionNet
+from CookieTTS._2_ttm.tacotron2.nets.AuxEmotionNet import AuxEmotionNet
 
 drop_rate = 0.5
 
@@ -226,6 +226,8 @@ class Encoder(nn.Module):
                             int(hparams.encoder_LSTM_dim / 2), 1,
                             batch_first=True, bidirectional=True)
         self.LReLU = nn.LeakyReLU(negative_slope=0.01) # LeakyReLU
+        
+        self.sylps_layer = LinearNorm(hparams.encoder_LSTM_dim, 1)
     
     def forward(self, text, text_lengths, speaker_ids=None):
         if self.encoder_speaker_embed_dim:
@@ -248,12 +250,16 @@ class Encoder(nn.Module):
             text, text_lengths, batch_first=True, enforce_sorted=False)
         
         self.lstm.flatten_parameters()
-        outputs, _ = self.lstm(text)
+        outputs, (hidden_state, _) = self.lstm(text)
         
         outputs, _ = nn.utils.rnn.pad_packed_sequence(
             outputs, batch_first=True)
+            
+        hidden_state = hidden_state.transpose(0, 1)# [2, B, h_dim] -> [B, 2, h_dim]
+        B, _, h_dim = hidden_state.shape
+        pred_sylps = self.sylps_layer(hidden_state.contiguous().view(B, -1))# [B, 2, h_dim] -> [B, 2*h_dim] -> [B, 1]
         
-        return outputs
+        return outputs, pred_sylps
     
     def inference(self, text, speaker_ids=None, text_lengths=None):
         if self.encoder_speaker_embed_dim:
@@ -291,7 +297,7 @@ class Decoder(nn.Module):
         super(Decoder, self).__init__()
         self.n_mel_channels = hparams.n_mel_channels
         self.n_frames_per_step = hparams.n_frames_per_step
-        self.memory_dim = hparams.encoder_LSTM_dim + hparams.speaker_embedding_dim + len(hparams.emotion_classes) + hparams.zu_latent_dim + 1# size 1 == "sylzu"
+        self.memory_dim = hparams.encoder_LSTM_dim + hparams.speaker_embedding_dim + len(hparams.emotion_classes) + hparams.emotionnet_latent_dim + 1# size 1 == "sylzu"
         self.attention_rnn_dim = hparams.attention_rnn_dim
         self.decoder_rnn_dim = hparams.decoder_rnn_dim
         self.prenet_dim = hparams.prenet_dim
@@ -461,7 +467,7 @@ class Decoder(nn.Module):
             self.attention_context = self.attention_context.detach()
         else:
             self.attention_context = Variable(memory.data.new( # attention output
-                B, self.encoder_LSTM_dim).zero_())
+                B, self.memory_dim).zero_())
         
         self.memory = memory
         if self.attention_type == 0:
@@ -765,7 +771,7 @@ class Tacotron2(nn.Module):
             emotion_onehot = to_gpu(emotion_onehot).float()
         return (
             (text_padded, text_lengths, mel_padded, max_len, output_lengths, speaker_ids, torchmoji_hidden, preserve_decoder_states, sylps, emotion_id, emotion_onehot),
-            (mel_padded, gate_padded, output_lengths, emotion_id, emotion_onehot))
+            (mel_padded, gate_padded, output_lengths, emotion_id, emotion_onehot, sylps))
             # returns ((x),(y)) as (x) for training input, (y) for ground truth/loss calc
     
     def mask_outputs(self, outputs, output_lengths=None):
@@ -810,8 +816,8 @@ class Tacotron2(nn.Module):
         # Gt_mels, speaker, encoder_outputs -> zs, em_zu, em_mu, em_logvar
         zs, em_zu, em_mu, em_logvar, em_params = self.emotion_net(gt_mels, speaker_embed, encoder_outputs,
                                                                    text_lengths=text_lengths, emotion_id=emotion_id, emotion_onehot=emotion_onehot)
-        memory.extend(( em_zu[:, None].repeat(1, encoder_outputs.size(1), 1),
-                           zs[:, None].repeat(1, encoder_outputs.size(1), 1), ))
+        memory.extend(( em_zu.repeat(1, encoder_outputs.size(1), 1),
+                           zs.repeat(1, encoder_outputs.size(1), 1), ))
         
         # torchMoji, encoder_outputs -> aux(zs, em_mu, em_logvar)
         aux_zs, aux_em_mu, aux_em_logvar, aux_em_params = self.aux_emotion_net(torchmoji_hidden, speaker_embed, encoder_outputs, text_lengths=text_lengths)
@@ -826,7 +832,7 @@ class Tacotron2(nn.Module):
         mel_outputs_postnet.add_(mel_outputs)
         
         return self.mask_outputs(
-            [mel_outputs, mel_outputs_postnet, gate_outputs, alignments, pred_sylps
+            [mel_outputs, mel_outputs_postnet, gate_outputs, alignments, pred_sylps,
                 [sylzu, syl_mu, syl_logvar],
                 [zs, em_zu, em_mu, em_logvar, em_params],
                 [aux_zs, aux_em_mu, aux_em_logvar, aux_em_params],

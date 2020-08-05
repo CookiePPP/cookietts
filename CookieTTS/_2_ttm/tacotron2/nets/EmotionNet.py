@@ -63,6 +63,8 @@ class ReferenceEncoder(nn.Module):
 class EmotionNet(nn.Module):
     def __init__(self, hparams):
         super(EmotionNet, self).__init__()
+        self.unknown_id = len(hparams.emotion_classes)
+        
         self.ref_enc = ReferenceEncoder(hparams, hparams.emotionnet_ref_enc_convs,
                                                hparams.emotionnet_ref_enc_rnn_dim,
                                                hparams.emotionnet_ref_enc_use_bias)
@@ -90,14 +92,19 @@ class EmotionNet(nn.Module):
         
         if text_lengths is not None:
             encoder_outputs = nn.utils.rnn.pack_padded_sequence(encoder_outputs, text_lengths.cpu().numpy(), batch_first=True, enforce_sorted=False)
-        _, encoder_output = self.text_rnn(encoder_outputs).transpose(0, 1)# [B, enc_T, enc_dim] -> [1, B, enc_dim] -> [B, 1, enc_dim]
+        encoder_output = self.text_rnn(encoder_outputs)[1].transpose(0, 1)# [B, enc_T, enc_dim] -> [1, B, enc_dim] -> [B, 1, enc_dim]
         
         cat_inputs = torch.cat((ref, speaker_embed, encoder_output), dim=2)# [B, 1, dim]
         
         prob_energies = self.classifier_layer(cat_inputs)# [B, 1, n_class]
         zs = F.log_softmax(prob_energies, dim=2)         # [B, 1, n_class]
         
-        latent_inputs = torch.cat((cat_inputs, zs), dim=2)# [B, 1, dim]
+        # use GT emotion labels where supervision is possible
+        ss_zs = zs.new_empty(zs.shape)
+        ss_zs[emotion_id==self.unknown_id] = zs[emotion_id==self.unknown_id]
+        ss_zs[emotion_id!=self.unknown_id] = (emotion_onehot[:, None][emotion_id!=self.unknown_id]+1e-8).log()
+        
+        latent_inputs = torch.cat((cat_inputs, ss_zs), dim=2)# [B, 1, dim]
         zu_params = self.latent_layer(latent_inputs)# [B, 1, 2*lat_dim]
         zu_mu, zu_logvar = zu_params.chunk(2, dim=2)# [B, 1, 2*lat_dim] -> [B, 1, lat_dim], [B, 1, lat_dim]
         zu = self.reparameterize(zu_mu, zu_logvar)

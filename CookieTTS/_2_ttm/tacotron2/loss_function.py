@@ -9,36 +9,55 @@ from CookieTTS.utils.model.utils import get_mask_from_lengths
 class Tacotron2Loss(nn.Module):
     def __init__(self, hparams):
         super(Tacotron2Loss, self).__init__()
+        assert hparams.melout_loss_func in ['MSELoss','SmoothL1Loss','L1Loss'], "melout_loss_func is not valid.\n Options are ['MSELoss','SmoothL1Loss','L1Loss']"
+        assert hparams.postnet_melout_loss_func in ['MSELoss','SmoothL1Loss','L1Loss'], "postnet_melout_loss_func is not valid.\n Options are ['MSELoss','SmoothL1Loss','L1Loss']"
         
         # Gate Loss
         self.pos_weight = torch.tensor(hparams.gate_positive_weight)
         
         # Spectrogram Loss
-        self.loss_func = hparams.loss_func
+        self.melout_loss = hparams.melout_loss_func
+        self.postnet_melout_loss = hparams.postnet_melout_loss_func
         self.masked_select = hparams.masked_select
         
-        # VAE
-        self.vae_gst_loss = hparams.gst_vae_mode
+        # KL Scheduler Params
         if False:
             self.anneal_function = 'logistic'
             self.lag = ''
             self.k = 0.00025
             self.x0 = 1000
             self.upper = 0.005
-            self.kl_weight = 1.0
+        elif True:
+            self.anneal_function = 'constant'
+            self.lag = None
+            self.k = None
+            self.x0 = None
+            self.upper = 0.2 # weight
         else:
             self.anneal_function = 'cycle'
             self.lag = 1000#   dead_steps
             self.k = 4000 #  warmup_steps
             self.x0 = 10000 # cycle_steps
             self.upper = 1.0 # aux weight
-            self.kl_weight = 1.0 # weight
             assert (self.lag+self.k) <= self.x0
         
-        # Semi-Supervised VAE
-        self.ss_vae_gst_loss = hparams.ss_vae_gst
-        self.n_classes = len(hparams.vae_classes)
-        self.vae_alpha = 1.0 # Classifier loss
+        # SylNet / EmotionNet / AuxEmotionNet Params
+        self.n_classes = len(hparams.emotion_classes)
+        
+        self.zsClassificationLoss = 1.0 # EmotionNet Classification Loss (Negative Cross Entropy)
+        self.zsClassificationMAELoss = 0.0 # EmotionNet Classification Loss (Mean Absolute Error)
+        self.zsClassificationMSELoss = 1.0 # EmotionNet Classification Loss (Mean Squared Error)
+        
+        self.em_kl_weight = 1.0 # EmotionNet KDL weight
+        self.syl_KDL_weight = 1.0 # SylNet KDL Weight
+        
+        self.pred_sylps_MSE_weight = 0.1# Encoder Pred Sylps MSE weight
+        self.pred_sylps_MAE_weight = 0.0# Encoder Pred Sylps MAE weight
+        
+        self.predzu_MSE_weight = 0.2 # AuxEmotionNet Pred Zu MSE weight
+        self.predzu_MAE_weight = 0.0 # AuxEmotionNet Pred Zu MAE weight
+        
+        self.auxClassificationLoss = 1.0 # AuxEmotionNet Classification Loss
         
         # debug/fun
         self.AvgClassAcc = 0.0
@@ -55,7 +74,7 @@ class Tacotron2Loss(nn.Module):
         elif anneal_function == 'cycle':
             return min(1,(max(0,(step%x0)-lag))/k) * upper
         elif anneal_function == 'constant':
-            return 0.001
+            return upper or 0.001
     
     
     def log_standard_categorical(self, p):
@@ -85,11 +104,7 @@ class Tacotron2Loss(nn.Module):
         
         loglik_y = -self.log_standard_categorical(y).sum()/B # [] log p(y)
         
-        print(
-            f"sloglik_y = {loglik_y}",
-            f"sKLD_ = {KLD_}", sep='\n')
-        
-        return loglik_y + KLD
+        return -(loglik_y + KLD), KLD
     
     # -U(x), elbo for unlabeled data
     def _U(self, log_prob, mu, logvar, beta=1.0):
@@ -114,23 +129,23 @@ class Tacotron2Loss(nn.Module):
         # sum q(y|x) * -L(x,y) over y
         q_Lxy = (prob * _Lxy[:, None]).sum()/B # ([B, d] * [B, 1]).sum(1).mean() -> []
         
-        print(
-            f"uloglik_y = {loglik_y.sum()/B}",
-            f"uKLD_ = {KLD_.sum()/B}",
-            f"_Lxy = {_Lxy}",
-            f"H = {H}", sep='\n')
-        
-        return q_Lxy + H # [] + []
+        KLD_bmean = KLD_.sum()/B
+        return -(q_Lxy + H), KLD_bmean # [] + [], []
+    
     
     def forward(self, model_output, targets, iter):
-        mel_target, gate_target, output_lengths, emotion_id_target, emotion_onehot_target, *_ = targets
+        mel_target, gate_target, output_lengths, emotion_id_target, emotion_onehot_target, sylps_target, *_ = targets
         mel_target.requires_grad = False
         gate_target.requires_grad = False
-        mel_out, mel_out_postnet, gate_out, alignments, gst_extra = model_output
+        mel_out, mel_out_postnet, gate_out, alignments, pred_sylps, syl_package, em_package, aux_em_package, *_ = model_output
         gate_target = gate_target.view(-1, 1)
         gate_out = gate_out.view(-1, 1)
         
         Bsz, n_mel, dec_T = mel_target.shape
+        
+        unknown_id = self.n_classes
+        supervised_mask = (emotion_id_target != unknown_id)# [B] BoolTensor
+        unsupervised_mask = ~supervised_mask               # [B] BoolTensor
         
         # remove paddings before loss calc
         if self.masked_select:
@@ -141,79 +156,127 @@ class Tacotron2Loss(nn.Module):
             mel_out = torch.masked_select(mel_out, mask)
             mel_out_postnet = torch.masked_select(mel_out_postnet, mask)
         
-        if self.loss_func == 'MSELoss':
-            loss = nn.MSELoss()(mel_out, mel_target) + \
-                nn.MSELoss()(mel_out_postnet, mel_target)
-        elif self.loss_func == 'SmoothL1Loss':
-            loss = nn.SmoothL1Loss()(mel_out, mel_target) + \
-                nn.SmoothL1Loss()(mel_out_postnet, mel_target)
+        if self.melout_loss == 'MSELoss':
+            loss = nn.MSELoss()(mel_out, mel_target)
+        elif self.melout_loss == 'SmoothL1Loss':
+            loss = nn.SmoothL1Loss()(mel_out, mel_target)
+        elif self.melout_loss == 'L1Loss':
+            loss = nn.L1Loss()(mel_out, mel_target)
+        
+        if self.postnet_melout_loss == 'MSELoss':
+            loss += nn.MSELoss()(mel_out_postnet, mel_target)
+        elif self.postnet_melout_loss == 'SmoothL1Loss':
+            loss += nn.SmoothL1Loss()(mel_out_postnet, mel_target)
+        elif self.postnet_melout_loss == 'L1Loss':
+            loss += nn.L1Loss()(mel_out_postnet, mel_target)
         
         if True: # gate/stop loss
             gate_loss = nn.BCEWithLogitsLoss(pos_weight=self.pos_weight)(gate_out, gate_target)
             loss += gate_loss
         
-        if self.vae_gst_loss: # VAE-GST loss
-            kl_weight = self.vae_kl_anneal_function(self.anneal_function, self.lag, iter, self.k, self.x0, self.upper) # outputs 0<y<1
-            kl_weight = kl_weight * self.kl_weight
-            if not self.ss_vae_gst_loss: # where y labels don't exist
-                z, mu, logvar = gst_extra
-                kl_loss = -0.5 * torch.sum(1 + logvar - logvar.exp() - mu.pow(2))# "1 + logvar - logvar.exp()" <- keep variance close to 1.0
-                loss += kl_loss*kl_weight
-            else: # Semi-Supervised Loss for case where y labels exist
-                z, mu, logvar, zs = gst_extra# zu_sample, zu_mean, zu_logvar, pred_logprob
-                emotion_id_target     # indexes
-                emotion_onehot_target # one-hot
+        if True: # SylpsNet loss
+            sylzu, syl_mu, syl_logvar = syl_package
+            sylKLD = -0.5 * (1 + syl_logvar - syl_logvar.exp() - syl_mu.pow(2)).sum()/Bsz
+            loss += (sylKLD*self.syl_KDL_weight)
+        
+        if True: # Pred Sylps loss
+            pred_sylps = pred_sylps.squeeze(1)# [B, 1] -> [B]
+            sylps_MSE = nn.MSELoss()(pred_sylps, sylps_target)
+            sylps_MAE = nn.L1Loss()(pred_sylps, sylps_target)
+            loss += (sylps_MSE*self.pred_sylps_MSE_weight)
+            loss += (sylps_MAE*self.pred_sylps_MAE_weight)
+        
+        if True: # EmotionNet loss
+            zs, em_zu, em_mu, em_logvar, em_params = [x.squeeze(1) for x in em_package] # VAE-GST loss
+            kl_scale = self.vae_kl_anneal_function(self.anneal_function, self.lag, iter, self.k, self.x0, self.upper) # outputs 0<y<1
+            em_kl_weight = kl_scale*self.em_kl_weight
+            
+            SupervisedLoss = ClassicationMAELoss = ClassicationMSELoss = ClassicationNCELoss = SupervisedKDL = UnsupervisedLoss = UnsupervisedKDL = torch.tensor(0)
+            if ( sum(supervised_mask) > 0): # if labeled data > 0:
+                mu_labeled = em_mu[supervised_mask]
+                logvar_labeled = em_logvar[supervised_mask]
+                log_prob_labeled = zs[supervised_mask]
+                y_onehot = emotion_onehot_target[supervised_mask]
                 
-                unknown_id = self.n_classes
-                supervised_mask = (emotion_id_target != unknown_id)# [B] BoolTensor
-                unsupervised_mask = ~supervised_mask               # [B] BoolTensor
+                # -Elbo for labeled data (L(X,y))
+                SupervisedLoss, SupervisedKDL = self._L(y_onehot, mu_labeled, logvar_labeled, beta=em_kl_weight)
+                loss += SupervisedLoss
                 
-                SupervisedLoss = 0
-                ClassicationLoss = 0
-                if ( sum(supervised_mask) > 0): # if labeled data > 0:
-                    mu_labeled = mu[supervised_mask]
-                    logvar_labeled = logvar[supervised_mask]
-                    y_onehot = emotion_onehot_target[supervised_mask]
-                    
-                    # -Elbo for labeled data (L(X,y))
-                    SupervisedLoss = -self._L(y_onehot, mu_labeled, logvar_labeled, beta=kl_weight)
-                    
-                    # Add auxiliary classification loss q(y|x)
-                    s_log_prob = zs[supervised_mask]
-                    
-                    # negative cross entropy
-                    ClassicationLoss = -torch.sum(y_onehot * s_log_prob, dim=1).mean()
+                # Add MSE/MAE Loss
+                prob_labeled = log_prob_labeled.exp()
+                ClassicationMAELoss = nn.L1Loss()(prob_labeled, y_onehot)
+                loss += (ClassicationMAELoss*self.zsClassificationMAELoss)
                 
-                UnsupervisedLoss = 0
-                if ( sum(unsupervised_mask) > 0): # if unlabeled data > 0:
-                    mu_unlabeled = mu[unsupervised_mask]
-                    logvar_unlabeled = logvar[unsupervised_mask]
-                    
-                    # get q(y|x) from classifier
-                    u_log_prob = zs[unsupervised_mask]
-                    
-                    # -Elbo for unlabeled data (U(x))
-                    UnsupervisedLoss = -self._U(u_log_prob, mu_unlabeled, logvar_unlabeled, beta=kl_weight)
+                ClassicationMSELoss = nn.MSELoss()(prob_labeled, y_onehot)
+                loss += (ClassicationMSELoss*self.zsClassificationMSELoss)
                 
-                # debug/fun
-                S_Bsz = supervised_mask.sum().item()
-                U_Bsz = unsupervised_mask.sum().item()
-                ClassicationAccStr = 'N/A'
-                if S_Bsz > 0:
-                    ClassificationAcc = (torch.argmax(s_log_prob.exp(), dim=1) == torch.argmax(y_onehot, dim=1)).float().sum().item()/S_Bsz # top-1 accuracy
-                    self.AvgClassAcc = self.AvgClassAcc*0.95 + ClassificationAcc*0.05
-                    ClassicationAccStr = round(ClassificationAcc*100, 2)
-                print(
-                    "            loss = ", loss, '\n',
-                    "  SupervisedLoss = ", SupervisedLoss, '\n',
-                    "UnsupervisedLoss = ", UnsupervisedLoss, '\n',
-                    "ClassicationLoss = ", ClassicationLoss, '\n',
-                    "ClassicationAcc  = ", ClassicationAccStr, '%\n',
-                    "AvgClassicatAcc  = ", round(self.AvgClassAcc*100, 2), '%\n',
-                    "Total Batch Size = ", Bsz, '\n',
-                    "Super Batch Size = ", S_Bsz, '\n',
-                    "UnSup Batch Size = ", U_Bsz, '\n',
-                    sep='')
-                loss += SupervisedLoss + UnsupervisedLoss + (ClassicationLoss*self.vae_alpha)
+                # Add auxiliary classification loss q(y|x) # negative cross entropy
+                ClassicationNCELoss = -torch.sum(y_onehot * log_prob_labeled, dim=1).mean()
+                loss += (ClassicationNCELoss*self.zsClassificationLoss)
+            
+            if ( sum(unsupervised_mask) > 0): # if unlabeled data > 0:
+                mu_unlabeled = em_mu[unsupervised_mask]
+                logvar_unlabeled = em_logvar[unsupervised_mask]
+                log_prob_unlabeled = zs[unsupervised_mask]
                 
+                # -Elbo for unlabeled data (U(x))
+                UnsupervisedLoss, UnsupervisedKDL = self._U(log_prob_unlabeled, mu_unlabeled, logvar_unlabeled, beta=em_kl_weight)
+                loss += UnsupervisedLoss
+        
+        
+        PredDistMSE = PredDistMAE = AuxClassicationMAELoss = AuxClassicationMSELoss = AuxClassicationNCELoss = torch.tensor(0)
+        if True: # AuxEmotionNet loss
+            aux_zs, aux_em_mu, aux_em_logvar, aux_em_params = [x.squeeze(1) for x in aux_em_package]
+            
+            # pred em_zu dist param Loss
+            PredDistMSE = nn.MSELoss()(aux_em_params, em_params)
+            PredDistMAE = nn.L1Loss()( aux_em_params, em_params)
+            loss += (PredDistMSE*self.predzu_MSE_weight + PredDistMAE*self.predzu_MAE_weight)
+            
+            # Aux Zs Classification Loss
+            if ( sum(supervised_mask) > 0): # if labeled data > 0:
+                log_prob_labeled = aux_zs[supervised_mask]
+                prob_labeled = log_prob_labeled.exp()
+                
+                AuxClassicationMAELoss = nn.L1Loss()(prob_labeled, y_onehot)
+                loss += (AuxClassicationMAELoss*self.zsClassificationMAELoss)
+                
+                AuxClassicationMSELoss = nn.MSELoss()(prob_labeled, y_onehot)
+                loss += (AuxClassicationMSELoss*self.zsClassificationMSELoss)
+                
+                AuxClassicationNCELoss = -torch.sum(y_onehot * log_prob_labeled, dim=1).mean()
+                loss += (AuxClassicationNCELoss*self.auxClassificationLoss)
+        
+        
+        # debug/fun
+        S_Bsz = supervised_mask.sum().item()
+        U_Bsz = unsupervised_mask.sum().item()
+        ClassicationAccStr = 'N/A'
+        if S_Bsz > 0:
+            ClassificationAcc = (torch.argmax(log_prob_labeled.exp(), dim=1) == torch.argmax(y_onehot, dim=1)).float().sum().item()/S_Bsz # top-1 accuracy
+            self.AvgClassAcc = self.AvgClassAcc*0.95 + ClassificationAcc*0.05
+            ClassicationAccStr = round(ClassificationAcc*100, 2)
+        print(
+            "            Total loss = ", loss.item(), '\n',
+            "                sylKLD = ", sylKLD.item(), '\n',
+            "             sylps_MSE = ", sylps_MSE.item(), '\n',
+            "             sylps_MAE = ", sylps_MAE.item(), '\n',
+            "        SupervisedLoss = ", SupervisedLoss.item(), '\n',
+            "         SupervisedKDL = ", SupervisedKDL.item(), '\n',
+            "      UnsupervisedLoss = ", UnsupervisedLoss.item(), '\n',
+            "       UnsupervisedKDL = ", UnsupervisedKDL.item(), '\n',
+            "   ClassicationMSELoss = ", ClassicationMSELoss.item(), '\n',
+            "   ClassicationMAELoss = ", ClassicationMAELoss.item(), '\n',
+            "   ClassicationNCELoss = ", ClassicationNCELoss.item(), '\n',
+            "AuxClassicationMSELoss = ", AuxClassicationMSELoss.item(), '\n',
+            "AuxClassicationMAELoss = ", AuxClassicationMAELoss.item(), '\n',
+            "AuxClassicationNCELoss = ", AuxClassicationNCELoss.item(), '\n',
+            "      ClassicationAcc  = ", ClassicationAccStr, '%\n',
+            "      AvgClassicatAcc  = ", round(self.AvgClassAcc*100, 2), '%\n',
+            "      Total Batch Size = ", Bsz, '\n',
+            "      Super Batch Size = ", S_Bsz, '\n',
+            "      UnSup Batch Size = ", U_Bsz, '\n',
+            sep='')
+        
+        
         return loss, gate_loss

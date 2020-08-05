@@ -142,43 +142,33 @@ def create_hparams(hparams_string=None, verbose=False):
         postnet_kernel_size=5,
         postnet_n_convolutions=5,
         
-        # (GST) Reference encoder
-        with_gst=True,
-        ref_enc_pack_padded_seq=True, # TODO
-        ref_enc_filters=[32, 32, 64, 64, 128, 128],
-        ref_enc_size=[3, 3],
-        ref_enc_strides=[2, 2],
-        ref_enc_pad=[1, 1],
-        ref_enc_gru_size=128,
+        # (SylpsNet) Predicts speaking speed
+        sylpsnet_layer_dims = [32, 32],# width of each layer, LeakyReLU() is used between hiddens
         
-        # (GST) Multi-headed Attention Layer
-        gstAtt_dim=128,
-        num_heads=8,
+        # (EmotionNet) Semi-supervised VAE/Classifier
+        emotion_classes = ['neutral','anxious','happy','annoyed','sad','confused','smug','angry','whispering','shouting','sarcastic','amused','surprised','singing','fear','serious'],
+        emotionnet_latent_dim=32,# unsupervised Latent Dim
         
-        # (GST) Style Token Layer
-        gst_vae_mode=True,# output normally distributed tokens parameterised by the GST Encoder
-        token_num=5, # acts as the information bottleneck (and normal dist for VAE mode).
-        token_activation_func='linear', # default 'softmax', options 'softmax','sigmoid','tanh','linear'
-        p_drop_tokens=0.0, # Nudge the decoder to infer style without GST's input
-        drop_tokens_mode='zeros',#Options: ('zeros','halfs','embedding','speaker_embedding','emotion_embedding') # Replaces style_tokens with either a scaler or an embedding, or speaker embeddings
-        token_embedding_size=256, # token embedding size
+        # (EmotionNet) Reference encoder
+        emotionnet_ref_enc_convs=[32, 32, 64, 64, 128, 128],
+        emotionnet_ref_enc_rnn_dim=128,
+        emotionnet_ref_enc_use_bias=False,
         
-        # (GST) Semi-supervised VAE/Classifier
-        ss_vae_gst = True, # use semi-supervised VAE
-                           # This will require labelled classes (as defined below) and add a classifier module to the model.
-        vae_classes = ['neutral','anxious','happy','annoyed','sad','confused','smug','angry','whispering','shouting','sarcastic','amused','surprised','singing','fear','serious'],
-        ss_vae_zu_dim = 32, # unsupervised Latent Dim
-        
-        # (GST) TorchMoji
+        # (TorchMoji)
         torchMoji_attDim=2304,# published model uses 2304
-        torchMoji_linear=True,# load/save text infer linear layer.
-        torchMoji_training=False,# switch GST to torchMoji mode
+        
+        # (AuxEmotionNet)
+        auxemotionnet_layer_dims=[256,],# width of each layer, LeakyReLU() is used between hiddens
+        
+        # Experimental/Ignore
+        use_postnet_discriminator = False,
         
         ################################
         # Optimization Hyperparameters #
         ################################
         use_saved_learning_rate=False,
-        loss_func = 'MSELoss', # options 'MSELoss','SmoothL1Loss'
+        melout_loss_func = 'MSELoss', # options 'MSELoss','SmoothL1Loss','L1Loss'
+        postnet_melout_loss_func = 'MSELoss', # options 'MSELoss','SmoothL1Loss','L1Loss'
         learning_rate=0.1e-5,
         weight_decay=1e-6,
         grad_clip_thresh=1.0,

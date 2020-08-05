@@ -12,16 +12,16 @@ class AuxEmotionNet(nn.Module):
             last_layer = (i+1 == len(hparams.auxemotionnet_layer_dims))
             in_dim = out_dim = dim
             if i == 0:
-                in_dim = 2
+                in_dim = hparams.torchMoji_attDim
             if last_layer:
-                out_dim = 1
+                out_dim = hparams.torchMoji_attDim
             layers.append( LinearNorm(in_dim, out_dim) )
             if not last_layer:
                 layers.append( nn.LeakyReLU(negative_slope=0.05, inplace=True) )
-        self.seq_layers = nn.Sequential( layers )
+        self.seq_layers = nn.Sequential( *layers )
         
         self.n_classes = len(hparams.emotion_classes)
-        input_dim = hparams.speaker_embedding_dim + hparams.torchMoji_attDim + hparams.encoder_LSTM_dim + len(hparams.emotion_classes)
+        input_dim = hparams.speaker_embedding_dim + hparams.torchMoji_attDim + hparams.encoder_LSTM_dim
         self.latent_classifier_layer = LinearNorm(input_dim, hparams.emotionnet_latent_dim*2+self.n_classes)
         
         self.text_rnn = nn.GRU(hparams.encoder_LSTM_dim, hparams.encoder_LSTM_dim, batch_first=True)
@@ -36,12 +36,12 @@ class AuxEmotionNet(nn.Module):
             return mu
     
     def forward(self, torchmoji_hidden, speaker_embed, encoder_outputs, text_lengths=None):# [B]
-        ref = self.seq_layers(torchmoji_hidden)# [B, 1, Embed]
+        ref = self.seq_layers(torchmoji_hidden[:, None])# [B, 1, Embed]
         speaker_embed = speaker_embed[:, None]# [B, embed] -> [B, 1, embed]
         
         if text_lengths is not None:
             encoder_outputs = nn.utils.rnn.pack_padded_sequence(encoder_outputs, text_lengths.cpu().numpy(), batch_first=True, enforce_sorted=False)
-        _, encoder_output = self.text_rnn(encoder_outputs).transpose(0, 1)# [B, enc_T, enc_dim] -> [1, B, enc_dim] -> [B, 1, enc_dim]
+        encoder_output = self.text_rnn(encoder_outputs)[1].transpose(0, 1)# [B, enc_T, enc_dim] -> [1, B, enc_dim] -> [B, 1, enc_dim]
         
         cat_inputs = torch.cat((ref, speaker_embed, encoder_output), dim=2)# [B, 1, dim]
         

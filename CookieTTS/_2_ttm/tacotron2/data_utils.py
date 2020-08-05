@@ -29,8 +29,8 @@ class TextMelLoader(torch.utils.data.Dataset):
         self.truncated_length = hparams.truncated_length
         self.batch_size = hparams.batch_size
         self.speaker_ids = speaker_ids
-        self.emotion_classes = hparams.vae_classes
-        self.n_classes = len(hparams.vae_classes)
+        self.emotion_classes = hparams.emotion_classes
+        self.n_classes = len(hparams.emotion_classes)
         self.audio_offset = audio_offset
         self.shuffle = shuffle
         if speaker_ids is None:
@@ -39,7 +39,7 @@ class TextMelLoader(torch.utils.data.Dataset):
             else:
                 self.speaker_ids = self.create_speaker_lookup_table(self.audiopaths_and_text)
         
-        self.load_torchmoji = hparams.torchMoji_training and hparams.torchMoji_linear
+        self.load_torchmoji = True#hparams.torchMoji_training and hparams.torchMoji_linear
         
         # ---------- CHECK FILES --------------
         self.start_token = hparams.start_token
@@ -313,7 +313,7 @@ class TextMelCollate():
     """
     def __init__(self, hparams):
         self.n_frames_per_step = hparams.n_frames_per_step
-        self.n_classes = len(hparams.vae_classes)
+        self.n_classes = len(hparams.emotion_classes)
     
     def __call__(self, batch):
         """Collate's training batch from normalized text and mel-spectrogram

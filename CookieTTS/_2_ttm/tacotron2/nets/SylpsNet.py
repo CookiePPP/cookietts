@@ -18,7 +18,7 @@ class SylpsNet(nn.Module):
             layers.append( LinearNorm(in_dim, out_dim) )
             if not last_layer:
                 layers.append( nn.LeakyReLU(negative_slope=0.05, inplace=True) )
-        self.seq_layers = nn.Sequential( layers )
+        self.seq_layers = nn.Sequential( *layers )
         self.res_weight = nn.Parameter( torch.tensor(0.01) )
     
     def reparameterize(self, mu, logvar, rand_sample=None):
