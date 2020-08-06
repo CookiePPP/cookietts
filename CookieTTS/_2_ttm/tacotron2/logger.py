@@ -9,7 +9,7 @@ class Tacotron2Logger(SummaryWriter):
         super(Tacotron2Logger, self).__init__(logdir)
 
     def log_training(self, reduced_loss, grad_norm, learning_rate, duration,
-                     iteration, teacher_force_till, p_teacher_forcing, diagonality=None, avg_prob=None):
+                     iteration, loss_terms, teacher_force_till, p_teacher_forcing, diagonality=None, avg_prob=None):
         if diagonality is not None:
             self.add_scalar("training.attention_alignment_diagonality", diagonality, iteration)
         if avg_prob is not None:
@@ -20,13 +20,19 @@ class Tacotron2Logger(SummaryWriter):
         self.add_scalar("training.p_teacher_forcing", p_teacher_forcing, iteration)
         self.add_scalar("training.teacher_force_till", teacher_force_till, iteration)
         self.add_scalar("duration", duration, iteration)
-    
-    def log_validation(self, reduced_loss, model, y, y_pred, iteration, val_teacher_force_till, val_p_teacher_forcing, diagonality, avg_prob):
+        
+        if iteration%10 == 0:# log every 10th iter
+            self.log_additional_losses(loss_terms, iteration, prepend='training.')
+        
+    def log_validation(self, reduced_loss, model, y, y_pred, iteration, loss_terms, val_teacher_force_till, val_p_teacher_forcing, diagonality, avg_prob):
         self.add_scalar("validation.loss", reduced_loss, iteration)
         self.add_scalar("validation.attention_alignment_diagonality", diagonality, iteration)
         self.add_scalar("validation.average_max_attention_weight", avg_prob, iteration)
         self.add_scalar("validation.p_teacher_forcing", val_p_teacher_forcing, iteration)
         self.add_scalar("validation.teacher_force_till", val_teacher_force_till, iteration)
+        
+        self.log_additional_losses(loss_terms, iteration, prepend='validation.')
+        
         _, mel_outputs, gate_outputs, alignments, *_ = y_pred
         mel_targets, gate_targets, *_ = y
     
@@ -148,3 +154,56 @@ class Tacotron2Logger(SummaryWriter):
                 gate_targets[idx].data.cpu().numpy(),
                 torch.sigmoid(gate_outputs[idx]).data.cpu().numpy()),
             iteration, dataformats='HWC')
+    
+    def log_weighted(self, term, iteration, section='', name=''):
+        if len(section) and section[-1] != '/':
+            section = section + '/'
+        self.add_scalar(f"{section}{name}", term[0], iteration)
+        self.add_scalar(f"_weighted_{section}{name}", term[0]*term[1], iteration)
+    
+    def log_additional_losses(self, loss_terms, iteration, prepend=''):
+        self.log_weighted(loss_terms[1], iteration, section=f'{prepend}spect', name='MSELoss')
+        self.log_weighted(loss_terms[2], iteration, section=f'{prepend}spect', name='L1Loss')
+        self.log_weighted(loss_terms[3], iteration, section=f'{prepend}spect', name='SmoothedL1Loss')
+        self.log_weighted(loss_terms[4], iteration, section=f'{prepend}postnet', name='MSELoss')
+        self.log_weighted(loss_terms[5], iteration, section=f'{prepend}postnet', name='L1Loss')
+        self.log_weighted(loss_terms[6], iteration, section=f'{prepend}postnet', name='SmoothedL1Loss')
+        self.log_weighted(loss_terms[7], iteration, section='', name=f'{prepend}GateLoss')
+        self.log_weighted(loss_terms[8], iteration, section=f'{prepend}SylpsNet', name='KLDivergence')
+        self.log_weighted(loss_terms[9], iteration, section=f'{prepend}SylpsNet', name='PredSylpsMSE')
+        self.log_weighted(loss_terms[10], iteration, section=f'{prepend}SylpsNet', name='PredSylpsMAE')
+        self.log_weighted(loss_terms[11], iteration, section=f'{prepend}SupervisedLoss', name='Total')
+        self.log_weighted(loss_terms[12], iteration, section=f'{prepend}SupervisedLoss', name='KLDivergence')
+        self.log_weighted(loss_terms[13], iteration, section=f'{prepend}UnsupervisedLoss', name='Total')
+        self.log_weighted(loss_terms[14], iteration, section=f'{prepend}UnsupervisedLoss', name='KLDivergence')
+        self.log_weighted(loss_terms[15], iteration, section=f'{prepend}ClassicationLoss', name='MSE')
+        self.log_weighted(loss_terms[16], iteration, section=f'{prepend}ClassicationLoss', name='MAE')
+        self.log_weighted(loss_terms[17], iteration, section=f'{prepend}ClassicationLoss', name='NCE')
+        self.log_weighted(loss_terms[18], iteration, section=f'{prepend}AuxClassicationLoss', name='MSE')
+        self.log_weighted(loss_terms[19], iteration, section=f'{prepend}AuxClassicationLoss', name='MAE')
+        self.log_weighted(loss_terms[20], iteration, section=f'{prepend}AuxClassicationLoss', name='NCE')
+        
+        self.add_scalar(f'{prepend}ClassicationTop1Acc', loss_terms[21][0], iteration)
+        
+        #[loss.item(), 1.0],                                                  00
+        #[spec_MSE.item(), self.melout_MSE_scalar],                           01
+        #[spec_MAE.item(), self.melout_MAE_scalar],                           02
+        #[spec_SMAE.item(), self.melout_SMAE_scalar],                         03
+        #[postnet_MSE.item(), self.postnet_MSE_scalar],                       04
+        #[postnet_MAE.item(), self.postnet_MAE_scalar],                       05
+        #[postnet_SMAE.item(), self.postnet_SMAE_scalar],                     06
+        #[gate_loss.item(), 1.0],                                             07
+        #[sylKLD.item(), self.syl_KDL_weight],                                08
+        #[sylps_MSE.item(), self.pred_sylps_MSE_weight],                      09
+        #[sylps_MAE.item(), self.pred_sylps_MAE_weight],                      10
+        #[SupervisedLoss.item(), 1.0],                                        11
+        #[SupervisedKDL.item(), em_kl_weight*0.5],                            12
+        #[UnsupervisedLoss.item(), 1.0],                                      13
+        #[UnsupervisedKDL.item(), em_kl_weight*0.5],                          14
+        #[ClassicationMSELoss.item(), self.zsClassificationMSELoss],          15
+        #[ClassicationMAELoss.item(), self.zsClassificationMAELoss],          16
+        #[ClassicationNCELoss.item(), self.zsClassificationNCELoss],          17
+        #[AuxClassicationMSELoss.item(), self.auxClassificationMSELoss],      18
+        #[AuxClassicationMAELoss.item(), self.auxClassificationMAELoss],      19
+        #[AuxClassicationNCELoss.item(), self.auxClassificationNCELoss],      20
+        #[Top1ClassificationAcc, 1.0],                                        21

@@ -224,6 +224,28 @@ def save_checkpoint(model, optimizer, learning_rate, iteration, hparams, best_va
     tqdm.write("Saving Complete")
 
 
+def average_loss_terms(loss_terms_arr):
+    # [
+    #    [
+    #       [1.12, mse_scalar],
+    #       [0.75, mae_scalar],
+    #    ],
+    #    [
+    #       [1.51, mse_scalar],
+    #       [0.84, mae_scalar],
+    #    ]
+    # ]
+    total = len(loss_terms_arr)
+    loss_terms = loss_terms_arr[0]
+    for terms in loss_terms_arr[1:]:
+        for i in range(len(loss_terms)):
+            loss_terms[i][0] = loss_terms[i][0] + terms[i][0]
+    
+    for i in range(len(loss_terms)):
+        loss_terms[i][0] = loss_terms[i][0]/total
+    return loss_terms
+
+
 def validate(model, criterion, valset, iteration, batch_size, n_gpus,
              collate_fn, logger, distributed_run, rank, val_teacher_force_till, val_p_teacher_forcing, teacher_force=1):
     """Handles all the validation scoring and printing"""
@@ -242,13 +264,15 @@ def validate(model, criterion, valset, iteration, batch_size, n_gpus,
         val_loss = 0.0
         diagonality = torch.zeros(1)
         avg_prob = torch.zeros(1)
+        loss_terms_arr = []
         for i, batch in tqdm(enumerate(val_loader), desc="Validation", total=len(val_loader), smoothing=0): # i = index, batch = stuff in array[i]
             x, y = model.parse_batch(batch)
             y_pred = model(x, teacher_force_till=val_teacher_force_till, p_teacher_forcing=val_p_teacher_forcing)
             rate, prob = alignment_metric(x, y_pred)
             diagonality += rate
             avg_prob += prob
-            loss, gate_loss = criterion(y_pred, y, 0)
+            loss, gate_loss, loss_terms = criterion(y_pred, y, 0)
+            loss_terms_arr.append(loss_terms)
             if distributed_run:
                 reduced_val_loss = reduce_tensor(loss.data, n_gpus).item()
             else:
@@ -262,14 +286,14 @@ def validate(model, criterion, valset, iteration, batch_size, n_gpus,
     model.train()
     if rank == 0:
         tqdm.write("Validation loss {}: {:9f}  Average Max Attention: {:9f}".format(iteration, val_loss, avg_prob))
-        #logger.log_validation(val_loss, model, y, y_pred, iteration)
-        if True:#iteration != 0:
+        if iteration != 0:
             if teacher_force == 1:
                 logger.log_teacher_forced_validation(val_loss, model, y, y_pred, iteration, val_teacher_force_till, val_p_teacher_forcing, diagonality, avg_prob)
             elif teacher_force == 2:
                 logger.log_infer(val_loss, model, y, y_pred, iteration, val_teacher_force_till, val_p_teacher_forcing, diagonality, avg_prob)
             else:
-                logger.log_validation(val_loss, model, y, y_pred, iteration, val_teacher_force_till, val_p_teacher_forcing, diagonality, avg_prob)
+                loss_terms = average_loss_terms(loss_terms_arr)
+                logger.log_validation(val_loss, model, y, y_pred, iteration, loss_terms, val_teacher_force_till, val_p_teacher_forcing, diagonality, avg_prob)
     return val_loss
 
 
@@ -365,7 +389,7 @@ def train(output_directory, log_directory, checkpoint_path, warm_start, warm_sta
                 checkpoint_path, model, optimizer)
             if hparams.use_saved_learning_rate:
                 learning_rate = _learning_rate
-        iteration += 1  # next iteration is iteration + 1
+            iteration += 1  # next iteration is iteration + 1
         print('Model Loaded')
     
     # define datasets/dataloaders
@@ -455,7 +479,7 @@ def train(output_directory, log_directory, checkpoint_path, warm_start, warm_sta
             x, y = model.parse_batch(batch) # move batch to GPU (async)
             y_pred = model(x, teacher_force_till=teacher_force_till, p_teacher_forcing=p_teacher_forcing, drop_frame_rate=drop_frame_rate)
             
-            loss, gate_loss = criterion(y_pred, y, iteration)
+            loss, gate_loss, loss_terms = criterion(y_pred, y, iteration)
             
             if hparams.distributed_run:
                 reduced_loss = reduce_tensor(loss.data, n_gpus).item()
@@ -501,10 +525,10 @@ def train(output_directory, log_directory, checkpoint_path, warm_start, warm_sta
                 if iteration % 20 == 0:
                     diagonality, avg_prob = alignment_metric(x, y_pred)
                     logger.log_training(
-                        reduced_loss, grad_norm, learning_rate, duration, iteration, teacher_force_till, p_teacher_forcing, diagonality=diagonality, avg_prob=avg_prob)
+                        reduced_loss, grad_norm, learning_rate, duration, iteration, loss_terms, teacher_force_till, p_teacher_forcing, diagonality=diagonality, avg_prob=avg_prob)
                 else:
                     logger.log_training(
-                        reduced_loss, grad_norm, learning_rate, duration, iteration, teacher_force_till, p_teacher_forcing)
+                        reduced_loss, grad_norm, learning_rate, duration, iteration, loss_terms, teacher_force_till, p_teacher_forcing)
                 start_time = time.time()
             if is_overflow and rank == 0:
                 tqdm.write("Gradient Overflow, Skipping Step")
@@ -520,12 +544,13 @@ def train(output_directory, log_directory, checkpoint_path, warm_start, warm_sta
                 if rank == 0 and os.path.exists(save_file_check_path):
                     os.remove(save_file_check_path)
                 # perform validation and save "best_model" depending on validation loss
-                val_loss = validate(model, criterion, valset, iteration,
-                         hparams.val_batch_size, n_gpus, collate_fn, logger,
-                         hparams.distributed_run, rank, val_teacher_force_till, val_p_teacher_forcing, teacher_force=1) #teacher_force
-                val_loss = validate(model, criterion, valset, iteration,
-                         hparams.val_batch_size, n_gpus, collate_fn, logger,
-                         hparams.distributed_run, rank, val_teacher_force_till, val_p_teacher_forcing, teacher_force=2) #infer
+                if iteration > 0:
+                    val_loss = validate(model, criterion, valset, iteration,
+                             hparams.val_batch_size, n_gpus, collate_fn, logger,
+                             hparams.distributed_run, rank, val_teacher_force_till, val_p_teacher_forcing, teacher_force=1) #teacher_force
+                    val_loss = validate(model, criterion, valset, iteration,
+                             hparams.val_batch_size, n_gpus, collate_fn, logger,
+                             hparams.distributed_run, rank, val_teacher_force_till, val_p_teacher_forcing, teacher_force=2) #infer
                 val_loss = validate(model, criterion, valset, iteration,
                          hparams.val_batch_size, n_gpus, collate_fn, logger,
                          hparams.distributed_run, rank, val_teacher_force_till, val_p_teacher_forcing, teacher_force=0) #validate (0.8 forcing)
@@ -554,6 +579,8 @@ if __name__ == '__main__':
                         help='load model weights only, ignore specified layers')
     parser.add_argument('--warm_start_force', action='store_true',
                         help='load model weights only, ignore all missing/non-matching layers')
+    parser.add_argument('--detect_anomaly', action='store_true',
+                        help='load model weights only, ignore all missing/non-matching layers')
     parser.add_argument('--gen_mels', action='store_true',
                         help='Generate mel spectrograms. This will help reduce the memory required.')
     parser.add_argument('--n_gpus', type=int, default=1,
@@ -581,6 +608,10 @@ if __name__ == '__main__':
         print("Generating Mels...")
         create_mels(hparams)
         print("Finished Generating Mels")
+    
+    if args.detect_anomaly: # checks backprop for NaN/Infs and outputs very useful stack-trace. Runs slowly while enabled.
+        torch.autograd.set_detect_anomaly(True)
+        print("Autograd Anomaly Detection Enabled!\n(Code will run slower but backward pass will output useful info if crashing or NaN/inf values)")
     
     # these are needed for fp16 training, not inference
     if hparams.fp16_run:

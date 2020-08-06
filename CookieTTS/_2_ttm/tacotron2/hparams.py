@@ -106,7 +106,7 @@ def create_hparams(hparams_string=None, verbose=False):
         speaker_embedding_dim=256, # speaker embedding size # 128 baseline
         
         # (Decoder) DecoderRNN
-        decoder_rnn_dim=1792,   # 1024 baseline
+        decoder_rnn_dim=1536,   # 1024 baseline
         extra_projection=False, # another linear between decoder_rnn and the linear projection layer (hopefully helps with high sampling rates and hopefully doesn't help decoder_rnn overfit)
         DecRNN_hidden_dropout_type='zoneout',# options ('dropout','zoneout')
         p_DecRNN_hidden_dropout=0.2,     # 0.1 baseline
@@ -167,8 +167,12 @@ def create_hparams(hparams_string=None, verbose=False):
         # Optimization Hyperparameters #
         ################################
         use_saved_learning_rate=False,
-        melout_loss_func = 'MSELoss', # options 'MSELoss','SmoothL1Loss','L1Loss'
-        postnet_melout_loss_func = 'MSELoss', # options 'MSELoss','SmoothL1Loss','L1Loss'
+        melout_MSE_scalar = 1.0,
+        melout_MAE_scalar = 0.0,
+        melout_SMAE_scalar = 0.0,
+        postnet_MSE_scalar = 1.0,
+        postnet_MAE_scalar = 0.0,
+        postnet_SMAE_scalar = 0.0,
         learning_rate=0.1e-5,
         weight_decay=1e-6,
         grad_clip_thresh=1.0,
