@@ -182,8 +182,10 @@ class Tacotron2Logger(SummaryWriter):
         self.log_weighted(loss_terms[18], iteration, section=f'{prepend}AuxClassicationLoss', name='MSE')
         self.log_weighted(loss_terms[19], iteration, section=f'{prepend}AuxClassicationLoss', name='MAE')
         self.log_weighted(loss_terms[20], iteration, section=f'{prepend}AuxClassicationLoss', name='NCE')
+        self.log_weighted(loss_terms[21], iteration, section=f'{prepend}PredEmotionNetZuLoss', name='MSE')
+        self.log_weighted(loss_terms[22], iteration, section=f'{prepend}PredEmotionNetZuLoss', name='MAE')
         
-        self.add_scalar(f'{prepend}ClassicationTop1Acc', loss_terms[21][0], iteration)
+        self.add_scalar(f'{prepend}ClassicationTop1Acc', loss_terms[23][0], iteration)
         
         #[loss.item(), 1.0],                                                  00
         #[spec_MSE.item(), self.melout_MSE_scalar],                           01
@@ -206,4 +208,6 @@ class Tacotron2Logger(SummaryWriter):
         #[AuxClassicationMSELoss.item(), self.auxClassificationMSELoss],      18
         #[AuxClassicationMAELoss.item(), self.auxClassificationMAELoss],      19
         #[AuxClassicationNCELoss.item(), self.auxClassificationNCELoss],      20
-        #[Top1ClassificationAcc, 1.0],                                        21
+        #[PredDistMSE.item(), self.predzu_MSE_weight],                        21
+        #[PredDistMAE.item(), self.predzu_MAE_weight],                        22
+        #[Top1ClassificationAcc, 1.0],                                        23

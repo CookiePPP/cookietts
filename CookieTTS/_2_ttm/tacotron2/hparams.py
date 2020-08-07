@@ -10,8 +10,8 @@ def create_hparams(hparams_string=None, verbose=False):
         # Experiment Parameters        #
         ################################
         epochs=1000,
-        iters_per_checkpoint=2000,
-        iters_per_validation=2000,
+        iters_per_checkpoint=1000,
+        iters_per_validation=500,
         seed=1234,
         dynamic_loss_scaling=True,
         fp16_run=False,
@@ -148,17 +148,20 @@ def create_hparams(hparams_string=None, verbose=False):
         # (EmotionNet) Semi-supervised VAE/Classifier
         emotion_classes = ['neutral','anxious','happy','annoyed','sad','confused','smug','angry','whispering','shouting','sarcastic','amused','surprised','singing','fear','serious'],
         emotionnet_latent_dim=32,# unsupervised Latent Dim
+        emotionnet_RNN_dim=128, # summarise Encoder Outputs
         
         # (EmotionNet) Reference encoder
         emotionnet_ref_enc_convs=[32, 32, 64, 64, 128, 128],
-        emotionnet_ref_enc_rnn_dim=128,
+        emotionnet_ref_enc_rnn_dim=64,
         emotionnet_ref_enc_use_bias=False,
+        emotionnet_ref_enc_droprate=0.2,
         
         # (TorchMoji)
         torchMoji_attDim=2304,# published model uses 2304
         
         # (AuxEmotionNet)
         auxemotionnet_layer_dims=[256,],# width of each layer, LeakyReLU() is used between hiddens
+        auxemotionnet_RNN_dim=64,
         
         # Experimental/Ignore
         use_postnet_discriminator = False,
@@ -176,7 +179,7 @@ def create_hparams(hparams_string=None, verbose=False):
         learning_rate=0.1e-5,
         weight_decay=1e-6,
         grad_clip_thresh=1.0,
-        batch_size=16,
+        batch_size=16,     # controls num of files processed in parallel per GPU
         val_batch_size=16, # for more precise comparisons between models, constant batch_size is useful
         use_TBPTT=True,
         truncated_length=1000, # max mel length till truncation.

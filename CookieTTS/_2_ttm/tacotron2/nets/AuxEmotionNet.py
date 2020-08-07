@@ -21,10 +21,10 @@ class AuxEmotionNet(nn.Module):
         self.seq_layers = nn.Sequential( *layers )
         
         self.n_classes = len(hparams.emotion_classes)
-        input_dim = hparams.speaker_embedding_dim + hparams.torchMoji_attDim + hparams.encoder_LSTM_dim
+        input_dim = hparams.speaker_embedding_dim + hparams.torchMoji_attDim + hparams.auxemotionnet_RNN_dim
         self.latent_classifier_layer = LinearNorm(input_dim, hparams.emotionnet_latent_dim*2+self.n_classes)
         
-        self.text_rnn = nn.GRU(hparams.encoder_LSTM_dim, hparams.encoder_LSTM_dim, batch_first=True)
+        self.text_rnn = nn.GRU(hparams.encoder_LSTM_dim, hparams.auxemotionnet_RNN_dim, batch_first=True)
     
     def reparameterize(self, mu, logvar, rand_sample=None):
         # use for VAE sampling

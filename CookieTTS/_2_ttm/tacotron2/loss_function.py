@@ -50,18 +50,18 @@ class Tacotron2Loss(nn.Module):
         self.zsClassificationMAELoss = 0.0 # EmotionNet Classification Loss (Mean Absolute Error)
         self.zsClassificationMSELoss = 1.0 # EmotionNet Classification Loss (Mean Squared Error)
         
-        self.em_kl_weight = 0.001 # EmotionNet KDL weight
-        self.syl_KDL_weight = 0.002 # SylNet KDL Weight
-        
-        self.pred_sylpsMSE_weight = 0.1# Encoder Pred Sylps MSE weight
-        self.pred_sylpsMAE_weight = 0.0# Encoder Pred Sylps MAE weight
-        
-        self.predzu_MSE_weight = 0.2 # AuxEmotionNet Pred Zu MSE weight
-        self.predzu_MAE_weight = 0.0 # AuxEmotionNet Pred Zu MAE weight
-        
         self.auxClassificationMAELoss = 1.0 # AuxEmotionNet MAE Classification Loss
         self.auxClassificationMSELoss = 0.0 # AuxEmotionNet MSE Classification Loss
         self.auxClassificationNCELoss = 1.0 # AuxEmotionNet NCE Classification Loss
+        
+        self.em_kl_weight   = 0.0005 # EmotionNet KDL weight
+        self.syl_KDL_weight = 0.0020 # SylNet KDL Weight
+        
+        self.pred_sylpsMSE_weight = 0.005# Encoder Pred Sylps MSE weight
+        self.pred_sylpsMAE_weight = 0.000# Encoder Pred Sylps MAE weight
+        
+        self.predzu_MSE_weight = 0.05 # AuxEmotionNet Pred Zu MSE weight
+        self.predzu_MAE_weight = 0.00 # AuxEmotionNet Pred Zu MAE weight
         # debug/fun
         self.AvgClassAcc = 0.0
     
@@ -107,7 +107,7 @@ class Tacotron2Loss(nn.Module):
         
         loglik_y = -self.log_standard_categorical(y).sum()/B # [] log p(y)
         
-        return -(loglik_y + KLD), -KLD
+        return -(loglik_y + KLD), -KLD_
     
     # -U(x), elbo for unlabeled data
     def _U(self, log_prob, mu, logvar, beta=1.0):
@@ -282,6 +282,8 @@ class Tacotron2Loss(nn.Module):
             "AuxClassicationMSELoss = ", AuxClassicationMSELoss.item(), '\n',
             "AuxClassicationMAELoss = ", AuxClassicationMAELoss.item(), '\n',
             "AuxClassicationNCELoss = ", AuxClassicationNCELoss.item(), '\n',
+            "      Predicted Zu MSE = ", PredDistMSE.item(), '\n',
+            "      Predicted Zu MAE = ", PredDistMAE.item(), '\n',
             "      ClassicationAcc  = ", ClassicationAccStr, '%\n',
             "      AvgClassicatAcc  = ", round(self.AvgClassAcc*100, 2), '%\n',
             "      Total Batch Size = ", Bsz, '\n',
@@ -311,6 +313,8 @@ class Tacotron2Loss(nn.Module):
             [AuxClassicationMSELoss.item(), self.auxClassificationMSELoss],
             [AuxClassicationMAELoss.item(), self.auxClassificationMAELoss],
             [AuxClassicationNCELoss.item(), self.auxClassificationNCELoss],
+            [PredDistMSE.item(), self.predzu_MSE_weight],
+            [PredDistMAE.item(), self.predzu_MAE_weight],
             [Top1ClassificationAcc, 1.0],
             ]
         return loss, gate_loss, loss_terms

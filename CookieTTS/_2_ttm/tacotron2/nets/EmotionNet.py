@@ -18,14 +18,14 @@ class ReferenceEncoder(nn.Module):
     :param conv_act_func: Conv2d activation function
     :param out_activation_fn: output Linear activation function
     """
-    def __init__(self, hparams, conv_filters, rnn_dim, bias=False, conv_act_func=torch.relu, out_activation_fn=torch.tanh):
+    def __init__(self, hparams, conv_filters, rnn_dim, bias=False, conv_act_func=torch.relu, out_activation_fn=torch.tanh, drop_rate=0.):
         super(ReferenceEncoder, self).__init__()
         self.in_channels = hparams.n_frames_per_step
         # ref_enc_filters
         
         channels = [self.in_channels] + conv_filters + [rnn_dim]
         self.convs = nn.ModuleList([
-            mm.Conv2d(channels[c], channels[c+1], 3, stride=2, bn=True, bias=bias, activation_fn=conv_act_func)
+            mm.Conv2d(channels[c], channels[c+1], 3, stride=2, bn=True, bias=bias, activation_fn=conv_act_func, drop_rate=drop_rate)
             for c in range(len(channels)-1)
         ]) # [B, dec_T/r, 128]
         self.gru = nn.GRU(rnn_dim*2, rnn_dim, batch_first=True)
@@ -67,15 +67,16 @@ class EmotionNet(nn.Module):
         
         self.ref_enc = ReferenceEncoder(hparams, hparams.emotionnet_ref_enc_convs,
                                                hparams.emotionnet_ref_enc_rnn_dim,
-                                               hparams.emotionnet_ref_enc_use_bias)
+                                               hparams.emotionnet_ref_enc_use_bias,
+                                               drop_rate=hparams.emotionnet_ref_enc_droprate,)
         
-        input_dim = hparams.speaker_embedding_dim + hparams.emotionnet_ref_enc_rnn_dim + hparams.encoder_LSTM_dim
+        input_dim = hparams.speaker_embedding_dim + hparams.emotionnet_ref_enc_rnn_dim + hparams.emotionnet_RNN_dim
         self.classifier_layer = LinearNorm(input_dim, len(hparams.emotion_classes))
         
         input_dim = input_dim + len(hparams.emotion_classes)
         self.latent_layer = LinearNorm(input_dim, hparams.emotionnet_latent_dim*2)
         
-        self.text_rnn = nn.GRU(hparams.encoder_LSTM_dim, hparams.encoder_LSTM_dim, batch_first=True)
+        self.text_rnn = nn.GRU(hparams.encoder_LSTM_dim, hparams.emotionnet_RNN_dim, batch_first=True)
     
     def reparameterize(self, mu, logvar, rand_sample=None):
         # use for VAE sampling

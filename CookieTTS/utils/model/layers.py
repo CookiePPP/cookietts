@@ -265,41 +265,51 @@ class LSTMCellWithZoneout(nn.LSTMCell):
 
 
 class LinearNorm(torch.nn.Module):
-    def __init__(self, in_dim, out_dim, bias=True, w_init_gain='linear'):
+    def __init__(self, in_dim, out_dim, bias=True, w_init_gain='linear', dropout=0.):
         super(LinearNorm, self).__init__()
         self.linear_layer = torch.nn.Linear(in_dim, out_dim, bias=bias)
-
+        self.dropout = dropout
+        
         torch.nn.init.xavier_uniform_(
             self.linear_layer.weight,
             gain=torch.nn.init.calculate_gain(w_init_gain))
-
+    
     def forward(self, x):
-        return self.linear_layer(x)
+        x = self.linear_layer(x)
+        if self.training and self.dropout > 0.:
+            x = F.dropout(x, p=self.dropout)
+        return x
 
 
 class ConvNorm(torch.nn.Module):
     def __init__(self, in_channels, out_channels, kernel_size=1, stride=1,
-                 padding=None, dilation=1, bias=True, w_init_gain='linear'):
+                 padding=None, dilation=1, bias=True, w_init_gain='linear', dropout=0.):
         super(ConvNorm, self).__init__()
         if padding is None:
             assert(kernel_size % 2 == 1)
             padding = int(dilation * (kernel_size - 1) / 2)
-
+        
+        self.dropout = dropout
+        
         self.conv = torch.nn.Conv1d(in_channels, out_channels,
                                     kernel_size=kernel_size, stride=stride,
                                     padding=padding, dilation=dilation,
                                     bias=bias)
         torch.nn.init.xavier_uniform_(
             self.conv.weight, gain=torch.nn.init.calculate_gain(w_init_gain))
+    
     def forward(self, signal):
         conv_signal = self.conv(signal)
+        if self.training and self.dropout > 0.:
+            conv_signal = F.dropout(conv_signal, p=self.dropout)
         return conv_signal
 
 
 class ConvNorm2D(torch.nn.Module):
     def __init__(self, in_channels, out_channels, kernel_size=1, stride=1,
-                 padding=None, dilation=1, bias=True, w_init_gain='linear'):
+                 padding=None, dilation=1, bias=True, w_init_gain='linear', dropout=0.):
         super(ConvNorm2D, self).__init__()
+        self.dropout = dropout
         self.conv = torch.nn.Conv2d(in_channels=in_channels, out_channels=out_channels,
                                     kernel_size=kernel_size, stride=stride,
                                     padding=padding, dilation=dilation,
@@ -309,6 +319,8 @@ class ConvNorm2D(torch.nn.Module):
 
     def forward(self, signal):
         conv_signal = self.conv(signal)
+        if self.training and self.dropout > 0.:
+            conv_signal = F.dropout(conv_signal, p=self.dropout)
         return conv_signal
 
 
@@ -324,4 +336,6 @@ class ConvReLUNorm(torch.nn.Module):
     def forward(self, signal):
         out = F.relu(self.conv(signal))
         out = self.norm(out.transpose(1, 2)).transpose(1, 2)
-        return self.dropout(out)
+        if self.dropout > 0.:
+            out = self.dropout(out)
+        return out
