@@ -619,7 +619,7 @@ if __name__ == '__main__':
     if gen_new_mels:
         print("Generating Mels"); create_mels(); print("Finished Generating Mels")
     
-    if args.detect_anomaly: # checks backprop for NaN/Infs and outputs very useful stack-trace. Runs slowly while enabled.
+    if args.detect_anomaly: # checks backprop for NaN/Infs and outputs very useful stack-trace. Runs slower while enabled.
         torch.autograd.set_detect_anomaly(True)
         print("Autograd Anomaly Detection Enabled!\n(Code will run slower but backward pass will output useful info if crashing or NaN/inf values)")
     

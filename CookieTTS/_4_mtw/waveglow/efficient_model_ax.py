@@ -1,12 +1,20 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from efficient_util import add_weight_norms
 import numpy as np
+
+# utils
+from waveglow_utils import PreEmphasis
+from scipy import signal
+
+@torch.jit.script
+def ignore_nan(input):
+    """Replace NaN values with 0.0"""
+    input[torch.isnan(input)] = torch.zeros(1, device=input.device, dtype=input.dtype)
 
 class WaveGlow(nn.Module):
     def __init__(self, n_mel_channels, n_flows, n_group, n_early_every,
-                n_early_size, memory_efficient, spect_scaling, upsample_mode, upsample_first, speaker_embed, cond_layers, cond_hidden_channels, cond_output_channels, cond_kernel_size, cond_residual, cond_padding_mode, WN_config, win_length, hop_length, cond_res_rezero=False, cond_activation_func='none', negative_slope=None, channel_mixing='1x1conv', mix_first=True, preceived_vol_scaling=False, waveflow=True, yoyo='depreciated', yoyo_WN='depreciated'):
+                n_early_size, memory_efficient, spect_scaling, upsample_mode, upsample_first, speaker_embed, cond_layers, cond_hidden_channels, cond_output_channels, cond_kernel_size, cond_residual, cond_padding_mode, WN_config, win_length, hop_length, cond_res_rezero=False, cond_activation_func='none', negative_slope=None, channel_mixing='1x1conv', mix_first=True, preceived_vol_scaling=False, waveflow=True, yoyo='depreciated', yoyo_WN='depreciated', shift_spect=0., scale_spect=1., preempthasis=None):
         super(WaveGlow, self).__init__()
         assert(n_group % 2 == 0)
         assert(hop_length % n_group == 0), "hop_length is not int divisible by n_group"
@@ -17,12 +25,21 @@ class WaveGlow(nn.Module):
         self.n_group = n_group
         self.n_early_every = n_early_every
         self.n_early_size = n_early_size
+        
         self.win_size = win_length
         self.hop_length = hop_length
         self.n_mel_channels = n_mel_channels
         self.vol_scaling = preceived_vol_scaling
+        self.preempthasis = preempthasis
+        if preempthasis:
+            self.preempthasise = PreEmphasis(preempthasis)
+        self.shift_spect = shift_spect
+        self.scale_spect = scale_spect
+        
         self.upsample_early = WN_config['upsample_first'] = upsample_first
         self.upsample_mode = WN_config['upsample_mode']
+        self.nan_asserts = False # check audio Tensor is finite
+        self.ignore_nan = True # replace NaNs in audio tensor with 0.0
         
         self.speaker_embed_dim = speaker_embed
         self.multispeaker = self.speaker_embed_dim > 0 or WN_config['speaker_embed_dim'] > 0
@@ -126,8 +143,16 @@ class WaveGlow(nn.Module):
         forward_input[0] = mel_spectrogram:  batch x n_mel_channels x frames
         forward_input[1] = audio: batch x time
         """
-        if self.vol_scaling:
-            with torch.no_grad():
+        with torch.no_grad():
+            if hasattr(self, 'preempthasise'):# apply preempthasis to audio signal (if used)
+                audio = self.preempthasise(audio)
+            
+            if self.shift_spect != 0.:
+                cond = cond + self.shift_spect
+            if self.scale_spect != 1.:
+                cond = cond * self.scale_spect
+            
+            if self.vol_scaling:
                 audio[audio>0] = 2**(audio[audio>0].log10())
                 audio[audio<0] = -(2**((-audio[audio<0]).log10()))
         
@@ -173,17 +198,24 @@ class WaveGlow(nn.Module):
             
             if self.mix_first:
                 audio, log_det_W = convinv(audio)
-                assert not torch.isnan(audio).any(), f'Flow {k} NaN Exception'
-                assert not torch.isinf(audio).any(), f'Flow {k} inf Exception'
+                if self.nan_asserts:
+                    assert not torch.isnan(audio).any(), f'Flow {k} NaN Exception'
+                    assert not torch.isinf(audio).any(), f'Flow {k} inf Exception'
             
             audio, log_s = affine_coup(audio, cond, speaker_ids=speaker_ids)
-            assert not torch.isnan(audio).any(), f'Flow {k} NaN Exception'
-            assert not torch.isinf(audio).any(), f'Flow {k} inf Exception'
+            
+            if self.ignore_nan:
+                ignore_nan(audio)
+            
+            if self.nan_asserts:
+                assert not torch.isnan(audio).any(), f'Flow {k} NaN Exception'
+                assert not torch.isinf(audio).any(), f'Flow {k} inf Exception'
             
             if not self.mix_first:
                 audio, log_det_W = convinv(audio)
-                assert not torch.isnan(audio).any(), f'Flow {k} NaN Exception'
-                assert not torch.isinf(audio).any(), f'Flow {k} inf Exception'
+                if self.nan_asserts:
+                    assert not torch.isnan(audio).any(), f'Flow {k} NaN Exception'
+                    assert not torch.isinf(audio).any(), f'Flow {k} inf Exception'
             
             if k:
                 logdet += log_det_W + log_s.float().sum((1, 2))
@@ -203,9 +235,16 @@ class WaveGlow(nn.Module):
         #cond = F.interpolate(cond, scale_factor=600, mode=self.upsample_mode, align_corners=True if self.upsample_mode == 'linear' else None) # upsample by hop_length
         return cond
     
-    def inverse(self, z, cond, speaker_ids=None):
+    def inverse(self, z, cond, speaker_ids=None, return_CPU=True):
+        if self.shift_spect != 0.:
+            cond = cond + self.shift_spect
+        if self.scale_spect != 1.:
+            cond = cond * self.scale_spect
+        
         # Add speaker conditioning
         if self.speaker_embed_dim:
+            if speaker_ids is None:
+                raise Exception("This WaveFlow/WaveGlow model requires speaker ids or speaker embeddings.")
             speaker_embeddings = self.speaker_embed(speaker_ids)
             speaker_embeddings = speaker_embeddings.unsqueeze(-1).repeat(1, 1, cond.shape[2]) # shape like cond
             cond = torch.cat([cond, speaker_embeddings], dim=1) # and concat them
@@ -247,6 +286,9 @@ class WaveGlow(nn.Module):
             
             z, log_s = affine_coup.inverse(z, cond, speaker_ids=speaker_ids)
             
+            if self.ignore_nan:
+                ignore_nan(z)
+            
             if self.mix_first:
                 z, log_det_W = invconv.inverse(z)
             
@@ -259,14 +301,24 @@ class WaveGlow(nn.Module):
                 z = torch.cat((remained_z.pop(), z), 1)
         
         if self.vol_scaling:
-            z[z>0] = 10**(z[z>0].log()/0.69314718056)
-            z[z<0] = -(10**((-z[z<0]).log()/0.69314718056))
+            z[z>0] = 10**(z[z>0].log2())
+            z[z<0] = -(10**((-z[z<0]).log2()))
         
         z = z.transpose(1, 2).contiguous().view(batch_dim, -1)
+        
+        if hasattr(self, 'preempthasise') or return_CPU:
+            z = z.cpu()
+        
+        if hasattr(self, 'preempthasise'):# apply inverse-preempthasis to audio signal (if used)
+            for i in range(z.shape[0]): # (scipy signal is faster than pytorch implementation for some reason /shrug )
+                z[i] = torch.from_numpy(signal.lfilter([1], [1, -float(self.preempthasis)], z[i].numpy())).to(z)
+            if not return_CPU:
+                z = z.cuda()
+        
         return z, logdet
     
     @torch.no_grad()
-    def infer(self, spect, speaker_ids=None, artifact_trimming=1, sigma=1., t_scaler=1.0):
+    def infer(self, spect, speaker_ids=None, artifact_trimming=1, sigma=1., t_scaler=1.0, return_CPU=True):
         if len(spect.shape) == 2:
             spect = spect[None, ...] # [n_mel, T//hop_length] -> [B, n_mel, T//hop_length]
         if artifact_trimming > 0:
@@ -279,7 +331,7 @@ class WaveGlow(nn.Module):
         z = spect.new_empty((batch_dim, samples)) # [B, T]
         if sigma > 0:
             z.normal_(std=sigma)
-        audio, _ = self.inverse(z, spect, speaker_ids)
+        audio, _ = self.inverse(z, spect, speaker_ids, return_CPU=return_CPU)
         if artifact_trimming > 0:
             audio_trim = artifact_trimming*self.hop_length # amount of audio to trim
             audio = audio[:, :-audio_trim]

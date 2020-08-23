@@ -5,6 +5,79 @@ import numpy as np
 from torch import nn
 from CookieTTS.utils.model.utils import get_mask_from_lengths
 
+# https://github.com/gothiswaysir/Transformer_Multi_encoder/blob/952868b01d5e077657a036ced04933ce53dcbf4c/nets/pytorch_backend/e2e_tts_tacotron2.py#L28-L156
+class GuidedAttentionLoss(torch.nn.Module):
+    """Guided attention loss function module.
+    This module calculates the guided attention loss described in `Efficiently Trainable Text-to-Speech System Based
+    on Deep Convolutional Networks with Guided Attention`_, which forces the attention to be diagonal.
+    .. _`Efficiently Trainable Text-to-Speech System Based on Deep Convolutional Networks with Guided Attention`:
+        https://arxiv.org/abs/1710.08969
+    """
+    def __init__(self, sigma=0.4, reset_always=True):
+        """Initialize guided attention loss module.
+        Args:
+            sigma (float, optional): Standard deviation to control how close attention to a diagonal.
+            reset_always (bool, optional): Whether to always reset masks.
+        """
+        super(GuidedAttentionLoss, self).__init__()
+        self.sigma = sigma
+        self.reset_always = reset_always
+        self.guided_attn_masks = None
+        self.masks = None
+    
+    def _reset_masks(self):
+        self.guided_attn_masks = None
+        self.masks = None
+    
+    def forward(self, att_ws, ilens, olens):
+        """Calculate forward propagation.
+        Args:
+            att_ws (Tensor): Batch of attention weights (B, T_max_out, T_max_in).
+            ilens (LongTensor): Batch of input lenghts (B,).
+            olens (LongTensor): Batch of output lenghts (B,).
+        Returns:
+            Tensor: Guided attention loss value.
+        """
+        if self.guided_attn_masks is None:
+            self.guided_attn_masks = self._make_guided_attention_masks(ilens, olens).to(att_ws.device)
+        if self.masks is None:
+            self.masks = self._make_masks(ilens, olens).to(att_ws.device)
+        B, dec_T, enc_T = self.guided_attn_masks.shape
+        losses = self.guided_attn_masks * att_ws[:, :dec_T, :enc_T]
+        loss = torch.sum(losses.masked_select(self.masks)) / torch.sum(olens) # get mean along B and dec_T
+        if self.reset_always:
+            self._reset_masks()
+        return loss
+
+    def _make_guided_attention_masks(self, ilens, olens):
+        n_batches = ilens.shape[0]
+        max_ilen = int(ilens.max().item())
+        max_olen = int(olens.max().item())
+        guided_attn_masks = torch.zeros((n_batches, max_olen, max_ilen))
+        for idx, (ilen, olen) in enumerate(zip(ilens, olens)):
+            guided_attn_masks[idx, :olen, :ilen] = self._make_guided_attention_mask(ilen, olen, self.sigma)
+        return guided_attn_masks
+
+    @staticmethod
+    def _make_guided_attention_mask(ilen, olen, sigma):
+        """Make guided attention mask.
+        """
+        grid_x, grid_y = torch.meshgrid(torch.arange(olen), torch.arange(ilen))
+        grid_x, grid_y = grid_x.float(), grid_y.float()
+        return 1.0 - torch.exp(-(grid_y / ilen - grid_x / olen) ** 2 / (2 * (sigma ** 2)))
+
+    @staticmethod
+    def _make_masks(ilens, olens):
+        """Make masks indicating non-padded part.
+        Args:
+            ilens (LongTensor or List): Batch of lengths (B,).
+            olens (LongTensor or List): Batch of lengths (B,).
+        Returns:
+            Tensor: Mask tensor indicating non-padded part.
+        """
+        in_masks = get_mask_from_lengths(ilens)  # (B, T_in)
+        out_masks = get_mask_from_lengths(olens)  # (B, T_out)
+        return out_masks.unsqueeze(-1) & in_masks.unsqueeze(-2)  # (B, T_out, T_in)
 
 class Tacotron2Loss(nn.Module):
     def __init__(self, hparams):
@@ -37,31 +110,35 @@ class Tacotron2Loss(nn.Module):
             self.upper = 0.5 # weight
         else:
             self.anneal_function = 'cycle'
-            self.lag = 500#   dead_steps
-            self.k = 2500 #  warmup_steps
-            self.x0 = 5000 # cycle_steps
+            self.lag = 50#      dead_steps
+            self.k = 7950#   warmup_steps
+            self.x0 = 10000#   cycle_steps
             self.upper = 1.0 # aux weight
             assert (self.lag+self.k) <= self.x0
         
         # SylNet / EmotionNet / AuxEmotionNet Params
         self.n_classes = len(hparams.emotion_classes)
         
-        self.zsClassificationNCELoss = 1.0 # EmotionNet Classification Loss (Negative Cross Entropy)
-        self.zsClassificationMAELoss = 0.0 # EmotionNet Classification Loss (Mean Absolute Error)
-        self.zsClassificationMSELoss = 1.0 # EmotionNet Classification Loss (Mean Squared Error)
+        self.zsClassificationNCELoss = hparams.zsClassificationNCELoss # EmotionNet Classification Loss (Negative Cross Entropy)
+        self.zsClassificationMAELoss  = hparams.zsClassificationMAELoss  # EmotionNet Classification Loss (Mean Absolute Error)
+        self.zsClassificationMSELoss  = hparams.zsClassificationMSELoss  # EmotionNet Classification Loss (Mean Squared Error)
+                                        
+        self.auxClassificationNCELoss = hparams.auxClassificationNCELoss # AuxEmotionNet NCE Classification Loss
+        self.auxClassificationMAELoss = hparams.auxClassificationMAELoss # AuxEmotionNet MAE Classification Loss
+        self.auxClassificationMSELoss = hparams.auxClassificationMSELoss # AuxEmotionNet MSE Classification Loss
         
-        self.auxClassificationMAELoss = 1.0 # AuxEmotionNet MAE Classification Loss
-        self.auxClassificationMSELoss = 0.0 # AuxEmotionNet MSE Classification Loss
-        self.auxClassificationNCELoss = 1.0 # AuxEmotionNet NCE Classification Loss
+        self.em_kl_weight   = hparams.em_kl_weight # EmotionNet KDL weight
+        self.syl_KDL_weight = hparams.syl_KDL_weight # SylNet KDL Weight
         
-        self.em_kl_weight   = 0.0005 # EmotionNet KDL weight
-        self.syl_KDL_weight = 0.0020 # SylNet KDL Weight
+        self.pred_sylpsMSE_weight = hparams.pred_sylpsMSE_weight # Encoder Pred Sylps MSE weight
+        self.pred_sylpsMAE_weight = hparams.pred_sylpsMAE_weight # Encoder Pred Sylps MAE weight
         
-        self.pred_sylpsMSE_weight = 0.005# Encoder Pred Sylps MSE weight
-        self.pred_sylpsMAE_weight = 0.000# Encoder Pred Sylps MAE weight
+        self.predzu_MSE_weight = hparams.predzu_MSE_weight # AuxEmotionNet Pred Zu MSE weight
+        self.predzu_MAE_weight = hparams.predzu_MAE_weight # AuxEmotionNet Pred Zu MAE weight
         
-        self.predzu_MSE_weight = 0.05 # AuxEmotionNet Pred Zu MSE weight
-        self.predzu_MAE_weight = 0.00 # AuxEmotionNet Pred Zu MAE weight
+        self.DiagonalGuidedAttention_scalar = hparams.DiagonalGuidedAttention_scalar
+        self.guided_att = GuidedAttentionLoss(sigma=hparams.DiagonalGuidedAttention_sigma)
+        
         # debug/fun
         self.AvgClassAcc = 0.0
     
@@ -136,8 +213,11 @@ class Tacotron2Loss(nn.Module):
         return -(q_Lxy + H), -KLD_bmean # [] + [], []
     
     
-    def forward(self, model_output, targets, iter):
-        mel_target, gate_target, output_lengths, emotion_id_target, emotion_onehot_target, sylps_target, *_ = targets
+    def forward(self, model_output, targets, iter, em_kl_weight=None, DiagonalGuidedAttention_scalar=None):
+        self.em_kl_weight = self.em_kl_weight if em_kl_weight is None else em_kl_weight
+        self.DiagonalGuidedAttention_scalar = self.DiagonalGuidedAttention_scalar if DiagonalGuidedAttention_scalar is None else DiagonalGuidedAttention_scalar
+        
+        mel_target, gate_target, output_lengths, text_lengths, emotion_id_target, emotion_onehot_target, sylps_target, preserve_decoder, *_ = targets
         mel_target.requires_grad = False
         gate_target.requires_grad = False
         mel_out, mel_out_postnet, gate_out, alignments, pred_sylps, syl_package, em_package, aux_em_package, *_ = model_output
@@ -250,6 +330,12 @@ class Tacotron2Loss(nn.Module):
                 AuxClassicationNCELoss = -torch.sum(y_onehot * log_prob_labeled, dim=1).mean()
                 loss += (AuxClassicationNCELoss*self.auxClassificationNCELoss)
         
+        if True:# Diagonal Attention Guiding
+            AttentionLoss = self.guided_att(alignments[preserve_decoder==0.0],
+                                          text_lengths[preserve_decoder==0.0],
+                                        output_lengths[preserve_decoder==0.0])
+            loss += (AttentionLoss*self.DiagonalGuidedAttention_scalar)
+        
         # debug/fun
         S_Bsz = supervised_mask.sum().item()
         U_Bsz = unsupervised_mask.sum().item()
@@ -284,6 +370,7 @@ class Tacotron2Loss(nn.Module):
             "AuxClassicationNCELoss = ", AuxClassicationNCELoss.item(), '\n',
             "      Predicted Zu MSE = ", PredDistMSE.item(), '\n',
             "      Predicted Zu MAE = ", PredDistMAE.item(), '\n',
+            "     DiagAttentionLoss = ", AttentionLoss.item(), '\n',
             "      ClassicationAcc  = ", ClassicationAccStr, '%\n',
             "      AvgClassicatAcc  = ", round(self.AvgClassAcc*100, 2), '%\n',
             "      Total Batch Size = ", Bsz, '\n',

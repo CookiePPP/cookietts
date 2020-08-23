@@ -34,10 +34,10 @@ class WaveFlowCoupling(nn.Module):
             log_s, t = checkpoint_grads(self.WN.__call__, z_shifted, spect, speaker_ids)
         else:
             log_s, t = self.WN(z_shifted, spect, speaker_ids)
-        assert not torch.isnan(log_s).any(), "log_s has NaN elements"
-        assert not torch.isnan(t).any(), "t has NaN elements"
+        #assert not torch.isnan(log_s).any(), "log_s has NaN elements"
+        #assert not torch.isnan(t).any(), "t has NaN elements"
         audio_out = torch.cat((z[:,:1], (z[:,1:] * log_s.exp()) + t), dim=1) # ignore changes to first sample since that conv has only padded information (which will not happen during inference)
-        assert not torch.isnan(audio_out).any(), "audio_out has NaN elements"
+        #assert not torch.isnan(audio_out).any(), "audio_out has NaN elements"
         return audio_out, log_s
     
     def inverse(self, audio_out, spect, speaker_ids):
@@ -62,7 +62,7 @@ class WaveFlowCoupling(nn.Module):
                 
                 log_s, t = acts[:,:,-1:] # [2, B, 1, T//n_group] -> [B, 1, T//n_group], [B, 1, T//n_group]
                 z.append( (next_audio_samp - t) / log_s.exp() ) # [B, 1, T//n_group] save predicted next sample
-            z = torch.cat(z, dim=1)
+            z = torch.cat(z, dim=1)# [B, n_group, T//n_group]
             return z, -log_s
 
 

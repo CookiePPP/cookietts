@@ -32,6 +32,7 @@ ipython_config.py
 /CookieTTS/_2_ttm/untts/logs/
 /CookieTTS/_2_ttm/untts/old_logs/
 /CookieTTS/_2_ttm/tacotron2/logs/
+/CookieTTS/_2_ttm/tacotron2/GTA_flist/
 
 # megatools folders
 megatools-*-git-*-win64/

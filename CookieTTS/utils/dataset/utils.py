@@ -1,3 +1,5 @@
+import numpy as np
+import torch
 from scipy.io.wavfile import read
 import soundfile as sf
 

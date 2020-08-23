@@ -35,7 +35,7 @@ class Tacotron2Logger(SummaryWriter):
         
         _, mel_outputs, gate_outputs, alignments, *_ = y_pred
         mel_targets, gate_targets, *_ = y
-    
+        
         # plot distribution of parameters
         for tag, value in model.named_parameters():
             tag = tag.replace('.', '/')
@@ -108,52 +108,40 @@ class Tacotron2Logger(SummaryWriter):
         self.add_scalar("teacher_forced_validation.average_max_attention_weight", avg_prob, iteration)
         _, mel_outputs, gate_outputs, alignments, *_ = y_pred
         mel_targets, gate_targets, *_ = y
-
+        mel_MSE_map = torch.nn.MSELoss(reduction='none')(mel_outputs, mel_targets)
+        mel_MSE_map[:, -1, -1] = 20.0 # because otherwise the color map scale is crap
+        
         # plot distribution of parameters
         for tag, value in model.named_parameters():
             tag = tag.replace('.', '/')
             self.add_histogram(tag, value.data.cpu().numpy(), iteration)
         
+        plot_n_files = 5
         # plot alignment, mel target and predicted, gate target and predicted
-        idx = 0 # plot longest audio file
-        self.add_image(
-            "teacher_forced_alignment",
-            plot_alignment_to_numpy(alignments[idx].data.cpu().numpy().T),
-            iteration, dataformats='HWC')
-        self.add_image(
-            "mel_target",
-            plot_spectrogram_to_numpy(mel_targets[idx].data.cpu().numpy()),
-            iteration, dataformats='HWC')
-        self.add_image(
-            "mel_predicted",
-            plot_spectrogram_to_numpy(mel_outputs[idx].data.cpu().numpy()),
-            iteration, dataformats='HWC')
-        self.add_image(
-            "gate",
-            plot_gate_outputs_to_numpy(
-                gate_targets[idx].data.cpu().numpy(),
-                torch.sigmoid(gate_outputs[idx]).data.cpu().numpy()),
-            iteration, dataformats='HWC')
-        
-        idx = 1 # and plot 2nd longest audio file
-        self.add_image(
-            "teacher_forced_alignment2",
-            plot_alignment_to_numpy(alignments[idx].data.cpu().numpy().T),
-            iteration, dataformats='HWC')
-        self.add_image(
-            "mel_target2",
-            plot_spectrogram_to_numpy(mel_targets[idx].data.cpu().numpy()),
-            iteration, dataformats='HWC')
-        self.add_image(
-            "mel_predicted2",
-            plot_spectrogram_to_numpy(mel_outputs[idx].data.cpu().numpy()),
-            iteration, dataformats='HWC')
-        self.add_image(
-            "gate2",
-            plot_gate_outputs_to_numpy(
-                gate_targets[idx].data.cpu().numpy(),
-                torch.sigmoid(gate_outputs[idx]).data.cpu().numpy()),
-            iteration, dataformats='HWC')
+        for idx in range(plot_n_files):# plot longest x audio files
+            str_idx = '' if idx == 0 else idx
+            self.add_image(
+                f"teacher_forced_alignment{str_idx}",
+                plot_alignment_to_numpy(alignments[idx].data.cpu().numpy().T),
+                iteration, dataformats='HWC')
+            self.add_image(
+                f"mel_target{str_idx}",
+                plot_spectrogram_to_numpy(mel_targets[idx].data.cpu().numpy()),
+                iteration, dataformats='HWC')
+            self.add_image(
+                f"mel_predicted{str_idx}",
+                plot_spectrogram_to_numpy(mel_outputs[idx].data.cpu().numpy()),
+                iteration, dataformats='HWC')
+            self.add_image(
+                f"mel_squared_error{str_idx}",
+                plot_spectrogram_to_numpy(mel_MSE_map[idx].data.cpu().numpy()),
+                iteration, dataformats='HWC')
+            self.add_image(
+                f"gate{str_idx}",
+                plot_gate_outputs_to_numpy(
+                    gate_targets[idx].data.cpu().numpy(),
+                    torch.sigmoid(gate_outputs[idx]).data.cpu().numpy()),
+                iteration, dataformats='HWC')
     
     def log_weighted(self, term, iteration, section='', name=''):
         if len(section) and section[-1] != '/':

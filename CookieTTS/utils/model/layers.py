@@ -254,7 +254,7 @@ class LSTMCellWithZoneout(nn.LSTMCell):
     def forward(self, input, hx):
         old_h, old_c = hx
         new_h, new_c = super(LSTMCellWithZoneout, self).forward(input, hx)
-        if self.training:
+        if self.training and self._zoneout_prob > 0.0:
             c_mask = torch.empty_like(new_c).bernoulli_(p=self._zoneout_prob).bool().data
             h_mask = torch.empty_like(new_h).bernoulli_(p=self._zoneout_prob).bool().data
             h = torch.where(h_mask, old_h, new_h)
@@ -331,11 +331,12 @@ class ConvReLUNorm(torch.nn.Module):
                                     kernel_size=kernel_size,
                                     padding=(kernel_size // 2))
         self.norm = torch.nn.LayerNorm(out_channels)
+        self.dropout_val = dropout
         self.dropout = torch.nn.Dropout(dropout)
 
     def forward(self, signal):
         out = F.relu(self.conv(signal))
         out = self.norm(out.transpose(1, 2)).transpose(1, 2)
-        if self.dropout > 0.:
+        if self.dropout_val > 0.:
             out = self.dropout(out)
         return out

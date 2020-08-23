@@ -1,41 +1,66 @@
 import sys
 sys.path.append('tacotron2')
 import torch
-from layers import STFT
+from CookieTTS.utils.audio.stft import STFT
 
 
 class Denoiser(torch.nn.Module):
     """ Removes model bias from audio produced with waveglow """
 
-    def __init__(self, waveglow, filter_length=2400, n_overlap=4,
-                 win_length=2400, mode='zeros'):
+    def __init__(self, waveglow, filter_length=2400, hop_length=600,
+                 win_length=2400, n_mel_channels=160, n_frames=88, mu=0, var=0, stft_device='cpu', speaker_dependant=False, speaker_id=0):
         super(Denoiser, self).__init__()
+        self.stft_device = stft_device
         self.stft = STFT(filter_length=filter_length,
-                         hop_length=int(filter_length/n_overlap),
-                         win_length=win_length).cuda()
-        if mode == 'zeros':
-            mel_input = torch.zeros(
-                (1, 160, 88),
-                dtype=next(waveglow.parameters()).dtype,
-                device=next(waveglow.parameters()).device)
-        elif mode == 'normal':
-            mel_input = torch.randn(
-                (1, 160, 88),
-                dtype=next(waveglow.parameters()).dtype,
-                device=next(waveglow.parameters()).device)
-        else:
-            raise Exception("Mode {} if not supported".format(mode))
-
+                         hop_length=hop_length,
+                         win_length=win_length).to(device=self.stft_device)
+        
+        mel_input = torch.randn(
+            (1, n_mel_channels, n_frames),
+            dtype=next(waveglow.parameters()).dtype,
+            device=next(waveglow.parameters()).device)
+        mel_input = mel_input * float(var) + float(mu)
+        
         with torch.no_grad():
-            speaker_id = torch.zeros(1, device=mel_input.device, dtype=torch.int64)
-            bias_audio = waveglow.infer(mel_input, speaker_ids=speaker_id, sigma=0.0).float()
-            bias_spec, _ = self.stft.transform(bias_audio)
-
-        self.register_buffer('bias_spec', bias_spec[:, :, 0][:, :, None])
+            if speaker_dependant:# calculate a seperate bias for each speaker
+                if hasattr(waveglow, 'speaker_embed'):
+                    n_speakers = waveglow.speaker_embed.num_embeddings
+                elif hasattr(waveglow, 'WN') and hasattr(waveglow.WN[0].WN, 'speaker_embed'):
+                    n_speakers = waveglow.WN[0].WN.speaker_embed.num_embeddings
+                else:
+                    n_speakers = 1
+                speaker_id = torch.zeros(1, device=mel_input.device, dtype=torch.int64)
+                bias_audio = waveglow.infer(mel_input, speaker_ids=speaker_id, sigma=0.0)
+                bias_audio = bias_audio.to(device=self.stft_device, dtype=torch.float).repeat(n_speakers, 1)# [1, T] -> [n_speakers, T]
+                for speaker_id in range(1, n_speakers):
+                    speaker_id = torch.tensor([speaker_id,], device=mel_input.device, dtype=torch.int64)
+                    bias_audio_ = waveglow.infer(mel_input, speaker_ids=speaker_id, sigma=0.0).to(device=self.stft_device, dtype=torch.float)
+                    assert not torch.isinf(bias_audio_).any(), 'Inf elements found in Vocoder Output'
+                    assert not torch.isnan(bias_audio_).any(), 'NaN elements found in Vocoder Output'
+                    bias_audio[speaker_id] = bias_audio_
+                bias_spec = self.stft.transform(bias_audio)[0]# -> [n_speakers, n_mel, dec_T]
+            else:# use the same bias for each speaker
+                speaker_id = torch.tensor([speaker_id,], device=mel_input.device, dtype=torch.int64)
+                bias_audio = waveglow.infer(mel_input, speaker_ids=speaker_id, sigma=0.0).to(device=self.stft_device, dtype=torch.float)
+                assert not torch.isinf(bias_audio).any(), 'Inf elements found in Vocoder Output'
+                assert not torch.isnan(bias_audio).any(), 'NaN elements found in Vocoder Output'
+                bias_spec, _ = self.stft.transform(bias_audio)
+            assert not torch.isinf(bias_spec).any(), 'Inf elements found in bias_spec'
+            assert not torch.isnan(bias_spec).any(), 'NaN elements found in bias_spec'
+        
+        self.register_buffer('bias_spec', bias_spec.mean(dim=2, keepdim=True))# [n_speakers, n_mel, 1]
     
-    def forward(self, audio, strength=0.1):
-        audio_spec, audio_angles = self.stft.transform(audio.cuda().float())
-        audio_spec_denoised = audio_spec - self.bias_spec * strength
-        audio_spec_denoised = torch.clamp(audio_spec_denoised, 0.0)
-        audio_denoised = self.stft.inverse(audio_spec_denoised, audio_angles)
-        return audio_denoised
+    def forward(self, wg_audio, speaker_ids=None, strength=0.1):
+        with torch.no_grad():
+            wg_audio_device = wg_audio.device
+            audio = wg_audio.to(self.stft_device).float()
+            audio_spec, audio_angles = self.stft.transform(audio)
+            if speaker_ids is None or self.bias_spec.shape[0] == 1:
+                audio_spec_denoised = audio_spec - self.bias_spec * strength
+            else:
+                audio_spec_denoised = audio_spec - self.bias_spec[speaker_ids] * strength
+            audio_spec_denoised = torch.clamp(audio_spec_denoised, 0.0)
+            audio_denoised = self.stft.inverse(audio_spec_denoised, audio_angles)
+            if wg_audio_device != self.stft_device:
+                audio_denoised.to(wg_audio)
+            return audio_denoised

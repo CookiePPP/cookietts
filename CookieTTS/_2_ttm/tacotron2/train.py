@@ -1,4 +1,5 @@
 import os
+os.environ["LRU_CACHE_CAPACITY"] = "3"# reduces RAM usage massively with pytorch 1.4 or older
 import time
 import argparse
 import math
@@ -41,11 +42,11 @@ def create_mels(hparams):
                 hparams.filter_length, hparams.hop_length, hparams.win_length,
                 hparams.n_mel_channels, hparams.sampling_rate, hparams.mel_fmin,
                 hparams.mel_fmax)
-    
+
     def save_mel(file):
         audio, sampling_rate = load_wav_to_torch(file)
         if sampling_rate != stft.sampling_rate:
-            raise ValueError("{} {} SR doesn't match target {} SR".format(file, 
+            raise ValueError("{} {} SR doesn't match target {} SR".format(file,
                 sampling_rate, stft.sampling_rate))
         audio_norm = audio / hparams.max_wav_value
         audio_norm = audio_norm.unsqueeze(0)
@@ -53,10 +54,10 @@ def create_mels(hparams):
         melspec = stft.mel_spectrogram(audio_norm)
         melspec = torch.squeeze(melspec, 0).cpu().numpy()
         np.save(file.replace('.wav', '.npy'), melspec)
-    
+
     # Get the filepath for training and validation files
     wavs = [x[0] for x in load_filepaths_and_text(hparams.training_files) + load_filepaths_and_text(hparams.validation_files)]
-    
+
     print(str(len(wavs))+" files being converted to mels")
     for audiopath in tqdm(wavs):
         try:
@@ -118,7 +119,7 @@ def prepare_dataloaders(hparams, saved_lookup):
     else:
         train_sampler = None
         shuffle = False#True
-    
+
     train_loader = DataLoader(trainset, num_workers=num_workers_, shuffle=shuffle,
                               sampler=train_sampler,
                               batch_size=hparams.batch_size, pin_memory=False,
@@ -180,12 +181,12 @@ def load_checkpoint(checkpoint_path, model, optimizer):
     assert os.path.isfile(checkpoint_path)
     print("Loading checkpoint '{}'".format(checkpoint_path))
     checkpoint_dict = torch.load(checkpoint_path, map_location='cpu')
-    
+
     #state_dict = {k.replace("encoder_speaker_embedding.weight","encoder.encoder_speaker_embedding.weight"): v for k,v in torch.load(checkpoint_path)['state_dict'].items()}
     #model.load_state_dict(state_dict) # tmp for updating old models
-    
+
     model.load_state_dict(checkpoint_dict['state_dict']) # original
-    
+
     #if 'optimizer' in checkpoint_dict.keys(): optimizer.load_state_dict(checkpoint_dict['optimizer'])
     if 'amp' in checkpoint_dict.keys(): amp.load_state_dict(checkpoint_dict['amp'])
     if 'learning_rate' in checkpoint_dict.keys(): learning_rate = checkpoint_dict['learning_rate']
@@ -206,11 +207,11 @@ def save_checkpoint(model, optimizer, learning_rate, iteration, hparams, best_va
     from CookieTTS.utils.dataset.utils import load_filepaths_and_text
     tqdm.write("Saving model and optimizer state at iteration {} to {}".format(
         iteration, filepath))
-    
+
     # get speaker names to ID
     speakerlist = load_filepaths_and_text(hparams.speakerlist)
     speaker_name_lookup = {x[1]: speaker_id_lookup[x[2]] for x in speakerlist if x[2] in speaker_id_lookup.keys()}
-    
+
     torch.save({'iteration': iteration,
                 'state_dict': model.state_dict(),
                 'optimizer': optimizer.state_dict(),
@@ -225,6 +226,7 @@ def save_checkpoint(model, optimizer, learning_rate, iteration, hparams, best_va
 
 
 def average_loss_terms(loss_terms_arr):
+    # loss_terms_arr =
     # [
     #    [
     #       [1.12, mse_scalar],
@@ -240,7 +242,7 @@ def average_loss_terms(loss_terms_arr):
     for terms in loss_terms_arr[1:]:
         for i in range(len(loss_terms)):
             loss_terms[i][0] = loss_terms[i][0] + terms[i][0]
-    
+
     for i in range(len(loss_terms)):
         loss_terms[i][0] = loss_terms[i][0]/total
     return loss_terms
@@ -335,42 +337,42 @@ def train(output_directory, log_directory, checkpoint_path, warm_start, warm_sta
     hparams.rank = rank
     if hparams.distributed_run:
         init_distributed(hparams, n_gpus, rank, group_name)
-    
+
     # reproducablilty stuffs
     torch.manual_seed(hparams.seed)
     torch.cuda.manual_seed(hparams.seed)
-    
+
     # initialize blank model
     model = load_model(hparams)
     model.eval()
     learning_rate = hparams.learning_rate
-    
+
     # (optional) show the names of each layer in model, mainly makes it easier to copy/paste what you want to adjust
     if hparams.print_layer_names_during_startup:
         print(*[f"Layer{i} = "+str(x[0])+" "+str(x[1].shape) for i,x in enumerate(list(model.named_parameters()))], sep="\n")
-    
+
     # (optional) Freeze layers by disabling grads
     if len(hparams.frozen_modules):
         for layer, params in list(model.named_parameters()):
             if any(layer.startswith(module) for module in hparams.frozen_modules):
                 params.requires_grad = False
                 print(f"Layer: {layer} has been frozen")
-    
+
     # define optimizer (any params without requires_grad are ignored)
-    optimizer = torch.optim.Adam(filter(lambda p: p.requires_grad, model.parameters()), lr=learning_rate, weight_decay=hparams.weight_decay)
-    #optimizer = apexopt.FusedAdam(model.parameters(), lr=learning_rate, weight_decay=hparams.weight_decay)
-    
+    #optimizer = torch.optim.Adam(filter(lambda p: p.requires_grad, model.parameters()), lr=learning_rate, weight_decay=hparams.weight_decay)
+    optimizer = apexopt.FusedAdam(filter(lambda p: p.requires_grad, model.parameters()), lr=learning_rate, weight_decay=hparams.weight_decay)
+
     if hparams.fp16_run:
         model, optimizer = amp.initialize(model, optimizer, opt_level='O2')
-    
+
     if hparams.distributed_run:
         model = apply_gradient_allreduce(model)
-    
+
     criterion = Tacotron2Loss(hparams)
-    
+
     logger = prepare_directories_and_logger(
         output_directory, log_directory, rank)
-    
+
     # Load checkpoint if one exists
     best_validation_loss = 0.8 # used to see when "best_model" should be saved, default = 0.4, load_checkpoint will update to last best value.
     iteration = 0
@@ -391,12 +393,12 @@ def train(output_directory, log_directory, checkpoint_path, warm_start, warm_sta
                 learning_rate = _learning_rate
             iteration += 1  # next iteration is iteration + 1
         print('Model Loaded')
-    
+
     # define datasets/dataloaders
     train_loader, valset, collate_fn, train_sampler, trainset = prepare_dataloaders(hparams, saved_lookup)
     epoch_offset = max(0, int(iteration / len(train_loader)))
     speaker_lookup = trainset.speaker_ids
-    
+
     # load and/or generate global_mean
     if hparams.drop_frame_rate > 0.:
         if rank != 0: # if global_mean not yet calcuated, wait for main thread to do it
@@ -404,12 +406,12 @@ def train(output_directory, log_directory, checkpoint_path, warm_start, warm_sta
         global_mean = calculate_global_mean(train_loader, hparams.global_mean_npy, hparams)
         hparams.global_mean = global_mean
         model.global_mean = global_mean
-    
+
     # define scheduler
     use_scheduler = 0
     if use_scheduler:
         scheduler = ReduceLROnPlateau(optimizer, factor=0.1**(1/5), patience=10)
-    
+
     model.train()
     is_overflow = False
     validate_then_terminate = 0
@@ -418,68 +420,50 @@ def train(output_directory, log_directory, checkpoint_path, warm_start, warm_sta
             hparams.batch_size, n_gpus, collate_fn, logger,
             hparams.distributed_run, rank)
         raise Exception("Finished Validation")
-    
+
     for param_group in optimizer.param_groups:
         param_group['lr'] = learning_rate
-    
+
     rolling_loss = StreamingMovingAverage(min(int(len(train_loader)), 200))
     # ================ MAIN TRAINNIG LOOP! ===================
     for epoch in tqdm(range(epoch_offset, hparams.epochs), initial=epoch_offset, total=hparams.epochs, desc="Epoch:", position=1, unit="epoch"):
         tqdm.write("Epoch:{}".format(epoch))
-        
+
         if hparams.distributed_run: # shuffles the train_loader when doing multi-gpu training
             train_sampler.set_epoch(epoch)
         start_time = time.time()
         # start iterating through the epoch
         for i, batch in tqdm(enumerate(train_loader), desc="Iter:  ", smoothing=0, total=len(train_loader), position=0, unit="iter"):
-            # run external code every epoch, allows the run to be adjusting without restarts
-            if (iteration % 1000 == 0 or i==0):
+            # run external code every epoch or 1000 iters, allows the run to be adjusted without restarts
+            if (iteration % 10 == 0 or i==0):
                 try:
                     with open("run_every_epoch.py") as f:
                         internal_text = str(f.read())
                         if len(internal_text) > 0:
-                            print(internal_text)
                             #code = compile(internal_text, "run_every_epoch.py", 'exec')
                             ldict = {'iteration': iteration}
                             exec(internal_text, globals(), ldict)
-                            print("Custom code excecuted\nPlease remove code if it was intended to be ran once.")
                         else:
-                            print("No Custom code found, continuing without changes.")
+                            print("[info] tried to execute 'run_every_epoch.py' but it is empty")
                 except Exception as ex:
-                    print(f"Custom code FAILED to run!\n{ex}")
+                    print(f"[warning] 'run_every_epoch.py' FAILED to execute!\nException:\n{ex}")
                 globals().update(ldict)
                 locals().update(ldict)
-                print("decay_start is ",decay_start)
-                print("A_ is ",A_)
-                print("B_ is ",B_)
-                print("C_ is ",C_)
-                print("min_learning_rate is ",min_learning_rate)
-                print("epochs_between_updates is ",epochs_between_updates)
-                print("drop_frame_rate is ",drop_frame_rate)
-                print("p_teacher_forcing is ",p_teacher_forcing)
-                print("teacher_force_till is ",teacher_force_till)
-                print("val_p_teacher_forcing is ",val_p_teacher_forcing)
-                print("val_teacher_force_till is ",val_teacher_force_till)
-                print("grad_clip_thresh is ",grad_clip_thresh)
-                if epoch % epochs_between_updates == 0 or epoch_offset == epoch:
-                #if None:
-                    tqdm.write("Old learning rate [{:.6f}]".format(learning_rate))
-                    if iteration < decay_start:
-                        learning_rate = A_ + C_
-                    else:
-                        iteration_adjusted = iteration - decay_start
-                        learning_rate = (A_*(e**(-iteration_adjusted/B_))) + C_
-                    learning_rate = max(min_learning_rate, learning_rate) # output the largest number
-                    tqdm.write("Changing Learning Rate to [{:.6f}]".format(learning_rate))
-                    for param_group in optimizer.param_groups:
-                        param_group['lr'] = learning_rate
+                if iteration < decay_start:
+                    learning_rate = A_ + C_
+                else:
+                    iteration_adjusted = iteration - decay_start
+                    learning_rate = (A_*(e**(-iteration_adjusted/B_))) + C_
+                learning_rate = max(min_learning_rate, learning_rate) # output the largest number
+                for param_group in optimizer.param_groups:
+                    param_group['lr'] = learning_rate
             # /run external code every epoch, allows the run to be adjusting without restarts/
             
             model.zero_grad()
             x, y = model.parse_batch(batch) # move batch to GPU (async)
             y_pred = model(x, teacher_force_till=teacher_force_till, p_teacher_forcing=p_teacher_forcing, drop_frame_rate=drop_frame_rate)
             
-            loss, gate_loss, loss_terms = criterion(y_pred, y, iteration)
+            loss, gate_loss, loss_terms = criterion(y_pred, y, iteration, em_kl_weight=em_kl_weight, DiagonalGuidedAttention_scalar=DiagonalGuidedAttention_scalar)
             
             if hparams.distributed_run:
                 reduced_loss = reduce_tensor(loss.data, n_gpus).item()
@@ -515,7 +499,7 @@ def train(output_directory, log_directory, checkpoint_path, warm_start, warm_sta
             learning_rate = max(min_learning_rate, learning_rate) # output the largest number
             for param_group in optimizer.param_groups:
                 param_group['lr'] = learning_rate
-            
+
             if not is_overflow and rank == 0:
                 duration = time.time() - start_time
                 average_loss = rolling_loss.process(reduced_loss)
@@ -532,14 +516,14 @@ def train(output_directory, log_directory, checkpoint_path, warm_start, warm_sta
                 start_time = time.time()
             if is_overflow and rank == 0:
                 tqdm.write("Gradient Overflow, Skipping Step")
-            
+
             if not is_overflow and ((iteration % (hparams.iters_per_checkpoint/1) == 0) or (os.path.exists(save_file_check_path))):
                 # save model checkpoint like normal
                 if rank == 0:
                     checkpoint_path = os.path.join(
                         output_directory, "checkpoint_{}".format(iteration))
                     save_checkpoint(model, optimizer, learning_rate, iteration, hparams, best_validation_loss, average_loss, speaker_lookup, checkpoint_path)
-            
+
             if not is_overflow and ((iteration % int((hparams.iters_per_validation)/1) == 0) or (os.path.exists(save_file_check_path)) or (iteration < 1000 and (iteration % 250 == 0))):
                 if rank == 0 and os.path.exists(save_file_check_path):
                     os.remove(save_file_check_path)
@@ -561,7 +545,7 @@ def train(output_directory, log_directory, checkpoint_path, warm_start, warm_sta
                     if rank == 0:
                         checkpoint_path = os.path.join(output_directory, "best_model")
                         save_checkpoint(model, optimizer, learning_rate, iteration, hparams, best_validation_loss, average_loss, speaker_lookup, checkpoint_path)
-            
+
             iteration += 1
             # end of iteration loop
         # end of epoch loop
@@ -608,15 +592,15 @@ if __name__ == '__main__':
         print("Generating Mels...")
         create_mels(hparams)
         print("Finished Generating Mels")
-    
+
     if args.detect_anomaly: # checks backprop for NaN/Infs and outputs very useful stack-trace. Runs slowly while enabled.
         torch.autograd.set_detect_anomaly(True)
         print("Autograd Anomaly Detection Enabled!\n(Code will run slower but backward pass will output useful info if crashing or NaN/inf values)")
-    
+
     # these are needed for fp16 training, not inference
     if hparams.fp16_run:
         from apex import amp
         from apex import optimizers as apexopt
-    
+
     train(args.output_directory, args.log_directory, args.checkpoint_path,
           args.warm_start, args.warm_start_force, args.n_gpus, args.rank, args.group_name, hparams)

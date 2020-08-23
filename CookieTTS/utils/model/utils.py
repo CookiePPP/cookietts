@@ -11,7 +11,6 @@ def get_mask_from_lengths(lengths: torch.Tensor, max_len = None):
     mask = (ids < lengths.unsqueeze(1))
     return mask
 
-
 @torch.jit.script
 def get_mask_3d(widths, heights, max_w: Optional[torch.Tensor] = None, max_h: Optional[torch.Tensor] = None):
     device = widths.device

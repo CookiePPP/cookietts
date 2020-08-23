@@ -30,15 +30,173 @@ import torch.nn as nn
 import torch.nn.functional as F
 from torch.autograd import Variable
 
+# "Gated Convolutional Neural Networks for Domain Adaptation"
+#  https://arxiv.org/pdf/1905.06906.pdf
 
 @torch.jit.script
-def fused_add_tanh_sigmoid_multiply(input_a, input_b, n_channels: int):
+def GTU(input_a, input_b, n_channels: int):
+    """Gated Tanh Unit (GTU)"""
     in_act = input_a+input_b
     t_act = torch.tanh(in_act[:, :n_channels, :])
     s_act = torch.sigmoid(in_act[:, n_channels:, :])
     acts = t_act * s_act
     return acts
 
+@torch.jit.script
+def GTRU(input_a, input_b, n_channels: int):
+    """Gated[?] Tanh ReLU Unit (GTRU)"""
+    in_act = input_a+input_b
+    t_act = torch.tanh(in_act[:, :n_channels, :])
+    r_act = torch.nn.functional.relu(in_act[:, n_channels:, :], inplace=True)
+    acts = t_act * r_act
+    return acts
+
+@torch.jit.script
+def GLU(input_a, input_b, n_channels: int):
+    """Gated Linear Unit (GLU)"""
+    in_act = input_a+input_b
+    l_act = in_act[:, :n_channels, :]
+    s_act = torch.sigmoid(in_act[:, n_channels:, :])
+    acts = l_act * s_act
+    return acts
+
+# Random units I wanted to try
+@torch.jit.script
+def TTU(input_a, input_b, n_channels: int):
+    """Tanh Tanh Unit (TTU)"""
+    in_act = input_a+input_b
+    t_act = torch.tanh(in_act[:, :n_channels, :])
+    t_act2 = torch.tanh(in_act[:, n_channels:, :])
+    acts = t_act * t_act2
+    return acts
+
+@torch.jit.script
+def STU(input_a, input_b, n_channels: int):
+    """SeLU Tanh Unit (STU)"""
+    in_act = input_a+input_b
+    t_act = torch.tanh(in_act[:, :n_channels, :])
+    s_act = torch.nn.functional.selu(in_act[:, n_channels:, :], inplace=True)
+    acts = t_act * s_act
+    return acts
+
+@torch.jit.script
+def GTSU(input_a, input_b, n_channels: int):
+    """Gated TanhShrink Unit (GTSU)"""
+    in_act = input_a+input_b
+    t_act = torch.nn.functional.tanhshrink(in_act[:, :n_channels, :])
+    s_act = torch.sigmoid(in_act[:, n_channels:, :])
+    acts = t_act * s_act
+    return acts
+
+@torch.jit.script
+def SPTU(input_a, input_b, n_channels: int):
+    """Softplus Tanh Unit (SPTU)"""
+    in_act = input_a+input_b
+    t_act = torch.tanh(in_act[:, :n_channels, :])
+    s_act = torch.nn.functional.softplus(in_act[:, n_channels:, :])
+    acts = t_act * s_act
+    return acts
+
+@torch.jit.script
+def GSIU(input_a, input_b, n_channels: int):
+    """Gated Sinusoidal Unit (GSIU)"""
+    in_act = input_a+input_b
+    t_act = torch.sin(in_act[:, :n_channels, :])
+    s_act = torch.sigmoid(in_act[:, n_channels:, :])
+    acts = t_act * s_act
+    return acts
+
+@torch.jit.script
+def GSIRU(input_a, input_b, n_channels: int):
+    """Gated SIREN Unit (GSIRU)"""
+    in_act = input_a+input_b
+    in_act[:, :n_channels, :].detach().mul_(16) # modify tensor WITHOUT telling autograd.
+    t_act = torch.sin(in_act[:, :n_channels, :])
+    s_act = torch.sigmoid(in_act[:, n_channels:, :])
+    acts = t_act * s_act
+    return acts
+
+@torch.jit.script
+def GTSRU(input_a, input_b, n_channels: int):
+    """Gated[?] TanhShrink ReLU Unit (GTSRU)"""
+    in_act = input_a+input_b
+    t_act = torch.nn.functional.tanhshrink(in_act[:, :n_channels, :])
+    r_act = torch.nn.functional.relu(in_act[:, n_channels:, :], inplace=True)
+    acts = t_act * r_act
+    return acts
+
+@torch.jit.script
+def GSIRRU(input_a, input_b, n_channels: int):
+    """Gated[?] SIREN ReLU Unit (GSIRRU)"""
+    in_act = input_a+input_b
+    in_act[:, :n_channels, :].detach().mul_(16) # modify tensor WITHOUT telling autograd.
+    t_act = torch.sin(in_act[:, :n_channels, :])
+    r_act = torch.nn.functional.relu(in_act[:, n_channels:, :], inplace=False)
+    acts = t_act * r_act
+    return acts
+
+@torch.jit.script
+def GSIRLRU(input_a, input_b, n_channels: int):
+    """Gated[?] SIREN Leaky ReLU Unit (GSIRLRU)"""
+    in_act = input_a+input_b
+    in_act[:, :n_channels, :].detach().mul_(16) # modify tensor WITHOUT telling autograd.
+    t_act = torch.sin(in_act[:, :n_channels, :])
+    r_act = torch.nn.functional.leaky_relu(in_act[:, n_channels:, :], negative_slope=0.01, inplace=True)
+    acts = t_act * r_act
+    return acts
+
+@torch.jit.script
+def GSIRRLRU(input_a, input_b, n_channels: int):
+    """Gated[?] SIREN Randomized Leaky ReLU Unit (GSIRRLRU)"""
+    in_act = input_a+input_b
+    in_act[:, :n_channels, :].detach().mul_(16) # modify tensor WITHOUT telling autograd.
+    t_act = torch.sin(in_act[:, :n_channels, :])
+    r_act = torch.nn.functional.rrelu(in_act[:, n_channels:, :], lower=0.01, upper=0.1, inplace=True)
+    acts = t_act * r_act
+    return acts
+
+@torch.jit.script
+def GTLRU(input_a, input_b, n_channels: int):
+    """Gated[?] Tanh Leaky ReLU Unit (GTLRU)"""
+    in_act = input_a+input_b
+    in_act[:, :n_channels, :].detach().mul_(16) # modify tensor WITHOUT telling autograd.
+    t_act = torch.tanh(in_act[:, :n_channels, :])
+    r_act = torch.nn.functional.leaky_relu(in_act[:, n_channels:, :], negative_slope=0.01, inplace=True)
+    acts = t_act * r_act
+    return acts
+
+
+def get_gate_func(gated_unit_str):
+    if gated_unit_str.upper() == 'GTU':
+        return GTU
+    elif gated_unit_str.upper() == 'GTRU':
+        return GTRU
+    elif gated_unit_str.upper() == 'GTLRU':
+        return GTLRU
+    elif gated_unit_str.upper() == 'GLU':
+        return GLU
+    elif gated_unit_str.upper() == 'TTU':
+        return TTU
+    elif gated_unit_str.upper() == 'STU':
+        return STU
+    elif gated_unit_str.upper() == 'GTSU':
+        return GTSU
+    elif gated_unit_str.upper() == 'SPTU':
+        return SPTU
+    elif gated_unit_str.upper() == 'GSIU':
+        return GSIU
+    elif gated_unit_str.upper() == 'GSIRU':
+        return GSIRU
+    elif gated_unit_str.upper() == 'GTSRU':
+        return GTSRU
+    elif gated_unit_str.upper() == 'GSIRRU':
+        return GSIRRU
+    elif gated_unit_str.upper() == 'GSIRLRU':
+        return GSIRLRU
+    elif gated_unit_str.upper() == 'GSIRRLRU':
+        return GSIRRLRU
+    else:
+        raise Exception("gated_unit is invalid\nOptions are ('GTU','GTRU','GLU').")
 
 class WN(nn.Module):
     """
@@ -47,7 +205,7 @@ class WN(nn.Module):
     size reset.  The dilation only doubles on each layer
     """
     def __init__(self, n_in_channels, cond_in_channels, cond_layers, cond_hidden_channels, cond_kernel_size, cond_padding_mode, seperable_conv, merge_res_skip, upsample_mode, n_layers, n_channels, # audio_channels, mel_channels*n_group, n_layers, n_conv_channels
-                 speaker_embed_dim, rezero, cond_activation_func='none', negative_slope=None, kernel_size=None, kernel_size_w=None, n_layers_dilations_w=None, n_layers_dilations_h=None, res_skip=True, cond_out_activation_func=True, upsample_first=None): # bool: ReZero
+                 speaker_embed_dim, rezero, cond_activation_func='none', negative_slope=None, kernel_size=None, kernel_size_w=None, n_layers_dilations_w=None, n_layers_dilations_h=None, res_skip=True, cond_out_activation_func=True, upsample_first=None, gated_unit='GTU'): # bool: ReZero
         super(WN, self).__init__()
         kernel_size = kernel_size_w or kernel_size
         assert(kernel_size % 2 == 1)
@@ -59,6 +217,7 @@ class WN(nn.Module):
         self.merge_res_skip = merge_res_skip
         self.upsample_first = upsample_first
         self.upsample_mode = upsample_mode
+        self.gated_unit = get_gate_func(gated_unit)
         
         self.in_layers = nn.ModuleList()
         self.res_skip_layers = nn.ModuleList()
@@ -123,11 +282,11 @@ class WN(nn.Module):
             padding = int((kernel_size*dilation - dilation)/2)
             if (not seperable_conv) or (kernel_size == 1):
                 in_layer = nn.Conv1d(n_channels, 2*n_channels, kernel_size,
-                                           dilation=dilation, padding=padding, padding_mode=cond_padding_mode)
+                                           dilation=dilation, padding=padding, padding_mode='zeros')
                 in_layer = nn.utils.weight_norm(in_layer, name='weight')
             else:
                 depthwise = nn.Conv1d(n_channels, n_channels, kernel_size,
-                                    dilation=dilation, padding=padding, padding_mode=cond_padding_mode, groups=n_channels)
+                                    dilation=dilation, padding=padding, padding_mode='zeros', groups=n_channels)
                 depthwise = nn.utils.weight_norm(depthwise, name='weight')
                 pointwise = nn.Conv1d(n_channels, 2*n_channels, 1,
                                     dilation=dilation, padding=0)
@@ -174,7 +333,7 @@ class WN(nn.Module):
                                        # Since my audio is high-passed at 40Hz, (theoretically) you can expect 48000/(40*2) = 600 samples receptive field minimum required to learn.
             spect_offset = i*2*self.n_channels, (i+1)*2*self.n_channels
             spec = spect[:,spect_offset[0]:spect_offset[1],:]
-            acts = fused_add_tanh_sigmoid_multiply(
+            acts = self.gated_unit(
                 self.in_layers[i](audio),
                 spec,
                 self.n_channels)
@@ -204,7 +363,7 @@ class WN_2d(nn.Module):
     size reset.  The dilation only doubles on each layer
     """
     def __init__(self, n_in_channels, cond_in_channels, cond_layers, cond_hidden_channels, cond_kernel_size, cond_padding_mode, seperable_conv, merge_res_skip, upsample_mode, n_layers, n_channels, # audio_channels, mel_channels*n_group, n_layers, n_conv_channels
-                 kernel_size_w, kernel_size_h, speaker_embed_dim, rezero, cond_activation_func='none', negative_slope=None, n_layers_dilations_w=None, n_layers_dilations_h=1, res_skip=True, upsample_first=None):
+                 kernel_size_w, kernel_size_h, speaker_embed_dim, rezero, cond_activation_func='none', negative_slope=None, n_layers_dilations_w=None, n_layers_dilations_h=1, res_skip=True, upsample_first=None, cond_out_activation_func=True, gated_unit='GTU'):
         super(WN_2d, self).__init__()
         assert(kernel_size_w % 2 == 1)
         assert(n_channels % 2 == 0)
@@ -216,6 +375,7 @@ class WN_2d(nn.Module):
         self.merge_res_skip = merge_res_skip
         self.upsample_first = upsample_first
         self.upsample_mode = upsample_mode
+        self.gated_unit = get_gate_func(gated_unit)
         
         self.in_layers = nn.ModuleList()
         self.res_skip_layers = nn.ModuleList()
@@ -237,6 +397,7 @@ class WN_2d(nn.Module):
             max_speakers = 512
             self.speaker_embed = nn.Embedding(max_speakers, self.speaker_embed_dim)
         
+        self.cond_out_activation_func = cond_out_activation_func
         self.cond_layers = nn.ModuleList()
         if cond_layers:
             cond_in_channels = cond_in_channels + self.speaker_embed_dim
@@ -321,15 +482,16 @@ class WN_2d(nn.Module):
         else:
             output = torch.zeros_like(audio)
         
-        if (spect_queues is None) or ( any([x is None for x in spect_queues]) ): # process spectrograms
+        exec_cond_layer = (spect_queues is None) or ( any([x is None for x in spect_queues]) )
+        if exec_cond_layer: # process spectrograms
             if self.speaker_embed_dim and speaker_id != None: # add speaker embeddings to spectrogram (channel dim)
                 speaker_embeddings = self.speaker_embed(speaker_id)
                 speaker_embeddings = speaker_embeddings.unsqueeze(-1).repeat(1, 1, spect.shape[2]) # shape like spect
                 spect = torch.cat([spect, speaker_embeddings], dim=1) # and concat them
             
-            for layer in self.cond_layers: # [B, cond_channels, T//hop_length] -> [B, n_channels*n_layers, T//hop_length]
+            for i, layer in enumerate(self.cond_layers): # [B, cond_channels, T//hop_length] -> [B, n_channels*n_layers, T//hop_length]
                 spect = layer(spect)
-                if hasattr(self, 'cond_activation_func'):
+                if hasattr(self, 'cond_activation_func') and (self.cond_out_activation_func or (i != len(self.cond_layers)-1)):
                     spect = self.cond_activation_func(spect)
             
             if not self.upsample_first: # if spectrogram hasn't been upsampled in an earlier stage
@@ -338,14 +500,14 @@ class WN_2d(nn.Module):
                 assert audio.size(3) == spect.size(3), f"audio size of {audio.size(3)} != spect size of {spect.size(3)}"
         
         for i in range(self.n_layers):
-            if (spect_queues is None) or ( any([x is None for x in spect_queues]) ): # if training/validation
+            if exec_cond_layer: # if cond layer has been ran.
                 spect_offset = i*2*self.n_channels, (i+1)*2*self.n_channels
                 spec = spect[:,spect_offset[0]:spect_offset[1]] # [B, 2*n_channels*n_layers, 1, T//n_group] -> [B, 2*n_channels, 1, T//n_group]
-            else: # is spect_queues exists...
-                if spect_queues[i] is None: # but this index is empty...
-                    spect_queues[i] = spec # save spec into this index.
-                else:                       # else...
-                    spec = spect_queues[i] # load spec from this index.
+                if spect_queues is not None: # is spect_queues exists...
+                    if spect_queues[i] is None: # but this index is empty...
+                        spect_queues[i] = spec # save spec into this index.
+            else:                       # else...
+                spec = spect_queues[i] # load spec from this index.
             
             if audio_queues is None:# if training/validation...
                 audio_cpad = F.pad(audio, (0,0,self.padding_h[i],0)) # apply causal height padding (left, right, top, bottom)
@@ -359,7 +521,7 @@ class WN_2d(nn.Module):
                 assert audio_cpad.shape[2] == (self.padding_h[i]+1), f"conv queue is wrong length. Found {audio_cpad.shape[2]}, expected {(self.padding_h[i]+1)}"
             
             acts = self.in_layers[i](audio_cpad) # [B, n_channels, n_group//2, T//n_group] -> [B, 2*n_channels, pad+n_group//2, T//n_group]
-            acts = fused_add_tanh_sigmoid_multiply(
+            acts = self.gated_unit(
                 acts, # [B, 2*n_channels, n_group//2, T//n_group]
                 spec, # [B, 2*n_channels, 1, T//n_group]
                 self.n_channels)

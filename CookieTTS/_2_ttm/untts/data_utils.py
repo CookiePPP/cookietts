@@ -32,7 +32,7 @@ class TextMelLoader(torch.utils.data.Dataset):
             if hasattr(hparams, 'raw_speaker_ids') and hparams.raw_speaker_ids:
                 self.speaker_ids = {k:k for k in range(hparams.n_speakers)} # map IDs in files directly to internal IDs
             else:
-                self.speaker_ids = self.create_speaker_lookup_table(self.audiopaths_and_text)
+                self.speaker_ids = self.create_speaker_lookup_table(self.audiopaths_and_text, numeric_sort=hparams.numeric_speaker_ids)
         
         self.load_torchmoji = hparams.torchMoji_training and hparams.torchMoji_linear
         
@@ -52,27 +52,32 @@ class TextMelLoader(torch.utils.data.Dataset):
         self.filter_length = hparams.filter_length
         self.hop_length = hparams.hop_length
         
-        if False:
-            # Apply weighting to MLP Datasets
+        if False:# Apply weighting to MLP Datasets
             duplicated_audiopaths = [x for x in self.audiopaths_and_text if "SlicedDialogue" in x[0]]
             for i in range(3):
                 self.audiopaths_and_text.extend(duplicated_audiopaths)
         
-        # SHUFFLE audiopaths
+        # Shuffle Audiopaths
         random.seed(hparams.seed)
         self.random_seed = hparams.seed
         random.shuffle(self.audiopaths_and_text)
         
+        # Silence Padding
+        self.silence_value = hparams.silence_value
+        self.silence_pad_start = hparams.silence_pad_start# frames to pad the start of each clip
+        self.silence_pad_end = hparams.silence_pad_end  # frames to pad the end of each clip
+        
+        # -------------- PREDICT LENGTH (TBPTT) --------------
         self.batch_size = hparams.batch_size if speaker_ids is None else hparams.val_batch_size
         n_gpus = hparams.n_gpus
         self.rank = hparams.rank
         self.total_batch_size = self.batch_size * n_gpus # number of audio files being processed together
         self.truncated_length = hparams.truncated_length # frames
         
-        # -------------- PREDICT LENGTH (TBPTT) --------------
         if hparams.use_TBPTT and TBPTT:
-            print('Calculating audio lengths of all files')
-            self.audio_lengths = torch.tensor([self.get_mel(x[0]).shape[1] for x in self.audiopaths_and_text]) # get the length of every file (the long way)
+            print('Calculating audio lengths of all files...')
+            self.audio_lengths = torch.tensor([self.get_mel(x[0]).shape[1]+self.silence_pad_start+self.silence_pad_end for x in self.audiopaths_and_text]) # get the length of every file (the long way)
+            print('Done.')
         else:
             self.audio_lengths = torch.tensor([self.truncated_length-1 for x in self.audiopaths_and_text]) # use dummy lengths
         self.update_dataloader_indexes()
@@ -125,7 +130,7 @@ class TextMelLoader(torch.utils.data.Dataset):
     def checkdataset(self, show_warnings=False, show_info=False, max_frames_per_char=80): # TODO, change for list comprehension which is a few magnitudes faster.
         print("Checking dataset files...")
         audiopaths_length = len(self.audiopaths_and_text)
-        filtered_chars=["☺","␤"]
+        filtered_chars = ["☺","␤"]
         banned_strings = ["[","]"]
         banned_paths = []
         music_stuff = True
@@ -207,8 +212,18 @@ class TextMelLoader(torch.utils.data.Dataset):
         print(audiopaths_length, "items in metadata file")
         print(len(self.audiopaths_and_text), "validated and being used.")
     
-    def create_speaker_lookup_table(self, audiopaths_and_text):
-        speaker_ids = np.sort(np.unique([x[2] for x in audiopaths_and_text]))
+    def create_speaker_lookup_table(self, audiopaths_and_text, numeric_sort=False):
+        """
+        if numeric_sort:
+            [10, 9, 8, 7, 6, 5, 4, 3, 2, 1, 0] -> [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10]
+        else:
+            [10, 9, 8, 7, 6, 5, 4, 3, 2, 1, 0] -> [0, 1, 10, 2, 3, 4, 5, 6, 7, 8, 9]
+        """
+        if numeric_sort:
+            speaker_ids_in_filelist = [int(x[2]) for x in audiopaths_and_text]
+        else:
+            speaker_ids_in_filelist = [str(x[2]) for x in audiopaths_and_text]
+        speaker_ids = np.sort(np.unique(speaker_ids_in_filelist))
         d = {int(speaker_ids[i]): i for i in range(len(speaker_ids))}
         return d
     
@@ -236,17 +251,22 @@ class TextMelLoader(torch.utils.data.Dataset):
     def get_mel_text_pair(self, index):
         filelist_index, spectrogram_offset = self.dataloader_indexes[index]
         next_filelist_index, next_spectrogram_offset = self.dataloader_indexes[index+self.total_batch_size] if index+self.total_batch_size < self.len else (None, None)
-        if filelist_index != next_filelist_index:
-            preserve_decoder_state = torch.tensor(False)
-        else:
-            preserve_decoder_state = torch.tensor(True)
+        preserve_decoder_state = torch.tensor(False if (filelist_index != next_filelist_index) else True)
         
         audiopath, text, speaker = self.audiopaths_and_text[filelist_index]
         text = self.get_text(text) # convert text into tensor representation
-        assert not torch.isnan(text).any(), 'text has NaN values.'
         
-        mel = self.get_mel(audiopath) # get mel-spec as tensor from audiofile.
-        mel = mel[..., int(spectrogram_offset):int(spectrogram_offset+self.truncated_length)] # get a segment
+        mel = self.get_mel(audiopath) # get mel
+        
+        # add silence
+        mel = torch.cat((
+            torch.ones(self.stft.n_mel_channels, self.silence_pad_start)*self.silence_value, # add silence to start of file
+            mel,# get mel-spec as tensor from audiofile.
+            torch.ones(self.stft.n_mel_channels, self.silence_pad_end)*self.silence_value, # add silence to end of file
+            ), dim=1)# arr -> [n_mel, dec_T]
+        
+        # take a segment.
+        mel = mel[..., int(spectrogram_offset):int(spectrogram_offset+self.truncated_length)]
         
         speaker_id = self.get_speaker_id(speaker) # get speaker_id as tensor normalized [ 0 -> len(speaker_ids) ]
         
@@ -269,7 +289,7 @@ class TextMelLoader(torch.utils.data.Dataset):
         return text_norm
     
     def __getitem__(self, index):
-        if self.shuffle and index == self.rank*self.batch_size: # [0,1,2,3],[4,5,6,7],[8,9,10,11]
+        if self.shuffle and index == self.rank*self.batch_size: # [0,1,2,3],[4,5,6,7],[8,9,10,11] # shuffle_dataset if first item of this GPU of this epoch
            self.shuffle_dataset()
         return self.get_mel_text_pair(index)
     
@@ -310,16 +330,13 @@ class TextMelCollate():
         gate_padded = torch.zeros(len(batch), max_target_len)
         output_lengths = torch.LongTensor(len(batch))
         speaker_ids = torch.LongTensor(len(batch))
-        if batch[0][3] is not None:
-            torchmoji_hidden = torch.FloatTensor(len(batch), batch[0][3].shape[0])
-        else:
-            torchmoji_hidden = None
+        torchmoji_hidden = torch.FloatTensor(len(batch), batch[0][3].shape[0]) if (batch[0][3] is not None) else None
         preserve_decoder_states = torch.FloatTensor(len(batch))
         
         for i in range(len(ids_sorted_decreasing)):
             mel = batch[ids_sorted_decreasing[i]][1]
             mel_padded[i, :, :mel.size(1)] = mel
-            gate_padded[i, mel.size(1)-1:] = 1
+            gate_padded[i, mel.size(1)-(~batch[ids_sorted_decreasing[i]][4]).long():] = 1# set positive gate to last mel frame and padding when not preserving decoder
             output_lengths[i] = mel.size(1)
             speaker_ids[i] = batch[ids_sorted_decreasing[i]][2]
             if torchmoji_hidden is not None:

@@ -11,7 +11,6 @@ class GuidedAttentionLoss(torch.nn.Module):
     .. _`Efficiently Trainable Text-to-Speech System Based on Deep Convolutional Networks with Guided Attention`:
         https://arxiv.org/abs/1710.08969
     """
-    
     def __init__(self, sigma=0.4, reset_always=True):
         """Initialize guided attention loss module.
         Args:
@@ -23,7 +22,7 @@ class GuidedAttentionLoss(torch.nn.Module):
         self.reset_always = reset_always
         self.guided_attn_masks = None
         self.masks = None
-
+    
     def _reset_masks(self):
         self.guided_attn_masks = None
         self.masks = None

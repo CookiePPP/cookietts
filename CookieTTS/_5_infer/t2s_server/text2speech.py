@@ -236,7 +236,7 @@ class T2S:
         
         with torch.no_grad():
             # init model
-            st = SentenceTokenizer(vocabulary, maxlen, ignore_sentences_with_only_custom=True)
+            st = SentenceTokenizer(vocabulary, maxlen)
             torchmoji = torchmoji_feature_encoding(PRETRAINED_PATH)
         return st, torchmoji
     
