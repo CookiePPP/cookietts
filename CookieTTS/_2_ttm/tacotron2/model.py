@@ -389,7 +389,7 @@ class Decoder(nn.Module):
         
         self.attention_rnn = LSTMCellWithZoneout(
             AttRNN_Dimensions, hparams.attention_rnn_dim, bias=True,
-            zoneout_prob=self.p_DecRNN_hidden_dropout if self.AttRNN_hidden_dropout_type == 'zoneout' else 0.0)
+            zoneout_prob=self.p_AttRNN_hidden_dropout if self.AttRNN_hidden_dropout_type == 'zoneout' else 0.0)
         
         if self.attention_type == 0:
             self.attention_layer = Attention(
