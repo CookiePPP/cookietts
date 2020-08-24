@@ -33,8 +33,7 @@ class Tacotron2Logger(SummaryWriter):
         
         self.log_additional_losses(loss_terms, iteration, prepend='validation.')
         
-        _, mel_outputs, gate_outputs, alignments, *_ = y_pred
-        mel_targets, gate_targets, *_ = y
+        _, _, _, alignments, *_ = y_pred
         
         # plot distribution of parameters
         for tag, value in model.named_parameters():
@@ -60,6 +59,7 @@ class Tacotron2Logger(SummaryWriter):
         self.add_scalar("infer.average_max_attention_weight", avg_prob, iteration)
         _, mel_outputs, gate_outputs, alignments, *_ = y_pred
         mel_targets, gate_targets, *_ = y
+        mel_outputs = mel_outputs[:, :mel_targets.shape[1], :]
         
         # plot alignment, mel target and predicted, gate target and predicted
         idx = 0 # plot longest audio file
@@ -108,7 +108,8 @@ class Tacotron2Logger(SummaryWriter):
         self.add_scalar("teacher_forced_validation.average_max_attention_weight", avg_prob, iteration)
         _, mel_outputs, gate_outputs, alignments, *_ = y_pred
         mel_targets, gate_targets, *_ = y
-        mel_MSE_map = torch.nn.MSELoss(reduction='none')(mel_outputs[:, :mel_targets.shape[1], :], mel_targets)
+        mel_outputs = mel_outputs[:, :mel_targets.shape[1], :]
+        mel_MSE_map = torch.nn.MSELoss(reduction='none')(mel_outputs, mel_targets)
         mel_MSE_map[:, -1, -1] = 20.0 # because otherwise the color map scale is crap
         
         # plot distribution of parameters
