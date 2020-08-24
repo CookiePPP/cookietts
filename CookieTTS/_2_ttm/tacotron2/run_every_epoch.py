@@ -2,7 +2,7 @@ current_iteration = iteration
 
 # Learning Rate / Optimization
 decay_start = 99999999
-A_ = 4e-5
+A_ = 36e-5
 B_ = 40000
 C_ = 0e-5
 min_learning_rate = 1e-6

@@ -269,7 +269,9 @@ def validate(model, criterion, valset, iteration, batch_size, n_gpus,
         loss_terms_arr = []
         for i, batch in tqdm(enumerate(val_loader), desc="Validation", total=len(val_loader), smoothing=0): # i = index, batch = stuff in array[i]
             x, y = model.parse_batch(batch)
-            y_pred = model(x, teacher_force_till=val_teacher_force_till, p_teacher_forcing=val_p_teacher_forcing)
+            with torch.random.fork_rng(devices=[0,]):
+                torch.random.manual_seed(0)# use same seed during validation so results are more consistent and comparable.
+                y_pred = model(x, teacher_force_till=val_teacher_force_till, p_teacher_forcing=val_p_teacher_forcing)
             rate, prob = alignment_metric(x, y_pred)
             diagonality += rate
             avg_prob += prob
@@ -564,7 +566,7 @@ if __name__ == '__main__':
     parser.add_argument('--warm_start_force', action='store_true',
                         help='load model weights only, ignore all missing/non-matching layers')
     parser.add_argument('--detect_anomaly', action='store_true',
-                        help='load model weights only, ignore all missing/non-matching layers')
+                        help='detects NaN/Infs in autograd backward pass and gives additional debug info.')
     parser.add_argument('--gen_mels', action='store_true',
                         help='Generate mel spectrograms. This will help reduce the memory required.')
     parser.add_argument('--n_gpus', type=int, default=1,

@@ -203,8 +203,10 @@ def create_hparams(hparams_string=None, verbose=False):
         learning_rate=0.1e-5,# overriden by 'run_every_epoch.py'
         weight_decay=1e-6,
         grad_clip_thresh=1.0,# overriden by 'run_every_epoch.py'
+        
         batch_size=40,     # controls num of files processed in parallel per GPU
         val_batch_size=40, # for more precise comparisons between models, constant batch_size is useful
+        
         use_TBPTT=True,# continue truncated files into the next training iteration
         truncated_length=1000, # max mel length till truncation.
         mask_padding=True,#mask values by setting them to the same values in target and predicted
@@ -217,6 +219,15 @@ def create_hparams(hparams_string=None, verbose=False):
         ################################
         # Loss Weights/Scalars         #
         ################################
+        LL_SpectLoss=True,# Use Log-likelihood loss on Decoder and Postnet outputs.
+                           # This will cause Tacotron to produce a normal Spectrogram and a logvar Spectrogram.
+                           # The logvar spectrogram will represent the confidence of the model on it's prediction,
+                           # and can be used to calcuate the std (error) tacotron expects that element to have.
+        
+        # if LL_SpectLoss is True:
+        melout_LL_scalar  = 1.0,  # Log-likelihood Loss
+        postnet_LL_scalar = 1.0,  # Log-likelihood Loss
+        # else:
         melout_MSE_scalar = 1.0,  #      MSE Spectrogram Loss Before Postnet
         melout_MAE_scalar = 0.0,  #       L1 Spectrogram Loss Before Postnet
         melout_SMAE_scalar = 0.0, # SmoothL1 Spectrogram Loss Before Postnet

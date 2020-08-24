@@ -4,6 +4,7 @@ import torch.nn.functional as F
 import numpy as np
 from torch import nn
 from CookieTTS.utils.model.utils import get_mask_from_lengths
+from typing import Optional
 
 # https://github.com/gothiswaysir/Transformer_Multi_encoder/blob/952868b01d5e077657a036ced04933ce53dcbf4c/nets/pytorch_backend/e2e_tts_tacotron2.py#L28-L156
 class GuidedAttentionLoss(torch.nn.Module):
@@ -79,6 +80,15 @@ class GuidedAttentionLoss(torch.nn.Module):
         out_masks = get_mask_from_lengths(olens)  # (B, T_out)
         return out_masks.unsqueeze(-1) & in_masks.unsqueeze(-2)  # (B, T_out, T_in)
 
+@torch.jit.script
+def NormalLLLoss(mu, logvar, target):
+    loss = ((mu-target).pow(2)/logvar.exp())+logvar
+    if True:
+        loss = loss.mean()
+    else:
+        pass
+    return loss
+
 class Tacotron2Loss(nn.Module):
     def __init__(self, hparams):
         super(Tacotron2Loss, self).__init__()
@@ -87,6 +97,12 @@ class Tacotron2Loss(nn.Module):
         self.pos_weight = torch.tensor(hparams.gate_positive_weight)
         
         # Spectrogram Loss
+        if hparams.LL_SpectLoss and any(bool(x) for x in [hparams.melout_MSE_scalar, hparams.melout_MAE_scalar, hparams.melout_SMAE_scalar, hparams.postnet_MSE_scalar, hparams.postnet_MAE_scalar, hparams.postnet_SMAE_scalar]):
+            print("Warning! MSE, MAE and SMAE spectrogram losses will not be used when LL_SpectLoss is True")
+        
+        self.use_LL_Loss = hparams.LL_SpectLoss
+        self.melout_LL_scalar  = hparams.melout_LL_scalar
+        self.postnet_LL_scalar = hparams.postnet_LL_scalar
         self.melout_MSE_scalar = hparams.melout_MSE_scalar
         self.melout_MAE_scalar = hparams.melout_MAE_scalar
         self.melout_SMAE_scalar = hparams.melout_SMAE_scalar
@@ -236,22 +252,34 @@ class Tacotron2Loss(nn.Module):
             mask = mask.expand(mel_target.size(1), mask.size(0), mask.size(1))
             mask = mask.permute(1, 0, 2)
             mel_target = torch.masked_select(mel_target, mask)
+            if self.use_LL_Loss:
+                mel_out, mel_logvar = mel_out.chunk(2, dim=1)
+                mel_out_postnet, mel_logvar_postnet = mel_out_postnet.chunk(2, dim=1)
+                mel_logvar = torch.masked_select(mel_logvar, mask)
+                mel_logvar_postnet = torch.masked_select(mel_logvar_postnet, mask)
             mel_out = torch.masked_select(mel_out, mask)
             mel_out_postnet = torch.masked_select(mel_out_postnet, mask)
         
+        # spectrogram / decoder loss
         spec_MSE = nn.MSELoss()(mel_out, mel_target)
-        loss = (spec_MSE*self.melout_MSE_scalar)
         spec_MAE = nn.L1Loss()(mel_out, mel_target)
-        loss += (spec_MAE*self.melout_MAE_scalar)
         spec_SMAE = nn.SmoothL1Loss()(mel_out, mel_target)
-        loss += (spec_SMAE*self.melout_SMAE_scalar)
-        
         postnet_MSE = nn.MSELoss()(mel_out_postnet, mel_target)
-        loss += (postnet_MSE*self.postnet_MSE_scalar)
         postnet_MAE = nn.L1Loss()(mel_out_postnet, mel_target)
-        loss += (postnet_MAE*self.postnet_MAE_scalar)
         postnet_SMAE = nn.SmoothL1Loss()(mel_out_postnet, mel_target)
-        loss += (postnet_SMAE*self.postnet_SMAE_scalar)
+        if self.use_LL_Loss:
+            spec_LL = NormalLLLoss(mel_out, mel_logvar, mel_target)
+            loss = (spec_LL*self.melout_LL_scalar)
+            postnet_LL = NormalLLLoss(mel_out_postnet, mel_logvar_postnet, mel_target)
+            loss += (postnet_LL*self.postnet_LL_scalar)
+        else:
+            spec_LL = postnet_LL = torch.tensor(0.0, device=mel_out.device)
+            loss = (spec_MSE*self.melout_MSE_scalar)
+            loss += (spec_MAE*self.melout_MAE_scalar)
+            loss += (spec_SMAE*self.melout_SMAE_scalar)
+            loss += (postnet_MSE*self.postnet_MSE_scalar)
+            loss += (postnet_MAE*self.postnet_MAE_scalar)
+            loss += (postnet_SMAE*self.postnet_SMAE_scalar)
         
         if True: # gate/stop loss
             gate_loss = nn.BCEWithLogitsLoss(pos_weight=self.pos_weight)(gate_out, gate_target)
@@ -348,6 +376,8 @@ class Tacotron2Loss(nn.Module):
         
         print(
             "            Total loss = ", loss.item(), '\n',
+            "             Spect LLL = ", spec_LL.item(), '\n',
+            "     Postnet Spect LLL = ", postnet_LL.item(), '\n',
             "             Spect MSE = ", spec_MSE.item(), '\n',
             "             Spect MAE = ", spec_MAE.item(), '\n',
             "            Spect SMAE = ", spec_SMAE.item(), '\n',

@@ -176,7 +176,7 @@ def GTA_Synthesis(output_directory, checkpoint_path, n_gpus,
             sorted_speaker_ids.append(sorted_speaker_id)
         
         x, _ = model.parse_batch(batch)
-        _, mel_outputs_postnet, _, *_ = model(x, teacher_force_till=9999, p_teacher_forcing=1.0)
+        _, mel_outputs_postnet, _, *_ = model(x, teacher_force_till=9999, p_teacher_forcing=1.0, drop_frame_rate=0.0)
         mel_outputs_postnet = mel_outputs_postnet.data.cpu()
         
         for k in range(batch_size):
@@ -190,20 +190,25 @@ def GTA_Synthesis(output_directory, checkpoint_path, n_gpus,
             map = f"{wav_path}|{save_path}|{speaker_id}\n"
             f.write(map)
             
-            mel_shape = list(mel.shape)
-            if verify_outputs:# and ( (i%4 == 0) or (i < 2) or (last_batch) ):
-                orig_shape = list(train_set.get_mel(wav_path).shape)
+            mel_shape = list(mel[:model.n_mel_channels, :].shape)
+            
+            if verify_outputs:
+                gt_mel = train_set.get_mel(wav_path)
+                orig_shape = list(gt_mel.shape)
+                MAE = torch.nn.functional.l1_loss(mel[:model.n_mel_channels, :], gt_mel).item()
+                MSE = torch.nn.functional.mse_loss(mel[:model.n_mel_channels, :], gt_mel).item()
                 # check mel from wav_path has same shape as mel just saved
             else:
-                orig_shape = 'N/A'
-            print(f"PATH: '{wav_path}'\nText Length: {input_lengths[k].item()}\nMel Shape:{mel_shape}\nSpeaker_ID: {speaker_id}\nTarget_Size: {orig_shape}")
-            if orig_shape == mel_shape:
+                MSE = MAE = orig_shape = 'N/A'
+            
+            print(f"PATH: '{wav_path}'\nText Length: {input_lengths[k].item()}\nMel Shape:{mel_shape}\nSpeaker_ID: {speaker_id}\nTarget_Size: {orig_shape}\nMSE: {MSE}\nMAE: {MAE}\n")
+            
+            if orig_shape == 'N/A' or orig_shape == mel_shape:
                 processed_files+=1
             else:
                 failed_files+=1
                 print(f"Target shape {orig_shape} does not match generated mel shape {mel_shape}.\nFilepath: '{wav_path}'")
                 continue
-            #assert orig_shape == 'N/A' or orig_shape == mel_shape, 
             
             mel = mel.numpy()
             if fp16_save:

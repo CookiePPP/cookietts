@@ -159,7 +159,8 @@ class Postnet(nn.Module):
 
         self.convolutions.append(
             nn.Sequential(
-                ConvNorm(hparams.n_mel_channels, hparams.postnet_embedding_dim,
+                ConvNorm(hparams.n_mel_channels*(hparams.LL_SpectLoss+1),
+                         hparams.postnet_embedding_dim,
                          kernel_size=hparams.postnet_kernel_size, stride=1,
                          padding=int((hparams.postnet_kernel_size - 1) / 2),
                          dilation=1, w_init_gain='tanh'),
@@ -177,11 +178,12 @@ class Postnet(nn.Module):
             )
         self.convolutions.append(
             nn.Sequential(
-                ConvNorm(hparams.postnet_embedding_dim, hparams.n_mel_channels,
+                ConvNorm(hparams.postnet_embedding_dim,
+                         hparams.n_mel_channels*(hparams.LL_SpectLoss+1),
                          kernel_size=hparams.postnet_kernel_size, stride=1,
                          padding=int((hparams.postnet_kernel_size - 1) / 2),
                          dilation=1, w_init_gain='linear'),
-                nn.BatchNorm1d(hparams.n_mel_channels))
+                nn.BatchNorm1d(hparams.n_mel_channels*(hparams.LL_SpectLoss+1)))
             )
     
     def forward(self, x):
@@ -354,7 +356,8 @@ class Decoder(nn.Module):
         self.p_prenet_dropout = hparams.p_prenet_dropout
         self.prenet_speaker_embed_dim = hparams.prenet_speaker_embed_dim if hasattr(hparams, 'prenet_speaker_embed_dim') else 0
         self.max_decoder_steps = hparams.max_decoder_steps
-        self.gate_threshold = hparams.gate_threshold
+        self.pred_logvar = hparams.LL_SpectLoss# Bool
+        self.gate_threshold = hparams.gate_threshold# Float
         self.AttRNN_extra_decoder_input = hparams.AttRNN_extra_decoder_input
         self.AttRNN_hidden_dropout_type = hparams.AttRNN_hidden_dropout_type
         self.p_AttRNN_hidden_dropout = hparams.p_AttRNN_hidden_dropout
@@ -432,7 +435,7 @@ class Decoder(nn.Module):
         
         self.linear_projection = LinearNorm(
             decoder_rnn_output_dim + self.memory_dim,
-            hparams.n_mel_channels * hparams.n_frames_per_step)
+            hparams.n_mel_channels * hparams.n_frames_per_step * (self.pred_logvar+1))
         
         self.gate_layer = LinearNorm(
             decoder_rnn_output_dim + self.memory_dim, 1,
@@ -549,11 +552,11 @@ class Decoder(nn.Module):
         PARAMS
         ------
         decoder_inputs: inputs used for teacher-forced training, i.e. mel-specs
-
+        
         RETURNS
         -------
         inputs: processed decoder inputs
-
+        
         """
         # (B, n_mel_channels, T_out) -> (B, T_out, n_mel_channels)
         decoder_inputs = decoder_inputs.transpose(1, 2)
@@ -563,7 +566,7 @@ class Decoder(nn.Module):
         # (B, T_out, n_mel_channels) -> (T_out, B, n_mel_channels)
         decoder_inputs = decoder_inputs.transpose(0, 1)
         return decoder_inputs
-
+    
     def parse_decoder_outputs(self, mel_outputs, gate_outputs, alignments):
         """ Prepares decoder outputs for output
         PARAMS
@@ -586,13 +589,13 @@ class Decoder(nn.Module):
             gate_outputs = gate_outputs.transpose(0, 1)
         else:
             gate_outputs = gate_outputs[None]
-        
         gate_outputs = gate_outputs.contiguous()
+        
         # (T_out, B, n_mel_channels) -> (B, T_out, n_mel_channels)
         mel_outputs = torch.stack(mel_outputs).transpose(0, 1).contiguous()
         # decouple frames per step
         mel_outputs = mel_outputs.view(
-            mel_outputs.size(0), -1, self.n_mel_channels)
+            mel_outputs.size(0), -1, self.n_mel_channels*(self.pred_logvar+1))
         # (B, T_out, n_mel_channels) -> (B, n_mel_channels, T_out)
         mel_outputs = mel_outputs.transpose(1, 2)
         
@@ -666,7 +669,7 @@ class Decoder(nn.Module):
         
         gate_prediction = self.gate_layer(decoder_hidden_attention_context) # addmm 5.762ms
         
-        decoder_output = self.linear_projection(decoder_hidden_attention_context) # addmm 5.621ms
+        decoder_output = self.linear_projection(decoder_hidden_attention_context)# -> [context_frames, B, n_mel] # addmm 5.621ms
         
         return decoder_output, gate_prediction, self.attention_weights
     
@@ -703,17 +706,17 @@ class Decoder(nn.Module):
             decoder_inputs = HeightGaussianBlur(decoder_inputs, blur_strength=rand_blur_strength)# [B, n_mel, dec_T]
         
         decoder_inputs = self.parse_decoder_inputs(decoder_inputs)
-        # (B, mel_channels, T_out) -> (T_out, B, mel_channels)
+        # (B, n_mel, T_out) -> (T_out, B, n_mel)
         
         if decoder_input is None:
             decoder_input = self.get_go_frame(memory).unsqueeze(0) # create blank starting frame
             if self.context_frames > 1:
                 decoder_input = decoder_input.repeat(self.context_frames, 1, 1)
         else:
-            decoder_input = decoder_input.permute(2, 0, 1) # [B, mel_channels, context_frames] -> [context_frames, B, mel_channels]
-        # memory -> (1, B, mel_channels) <- which is all 0's
+            decoder_input = decoder_input.permute(2, 0, 1) # [B, n_mel, context_frames] -> [context_frames, B, n_mel]
+        # memory -> (1, B, n_mel) <- which is all 0's
         
-        decoder_inputs = torch.cat((decoder_input, decoder_inputs), dim=0) # concat T_out
+        decoder_inputs = torch.cat((decoder_input, decoder_inputs), dim=0) # [context_frames+dec_T, B, n_mel] concat T_out
         
         if self.prenet_speaker_embed_dim:
             embedded_speakers = self.speaker_embedding(speaker_ids)[:, None]
@@ -728,15 +731,14 @@ class Decoder(nn.Module):
         mel_outputs, gate_outputs, alignments = [], [], []
         while len(mel_outputs) < decoder_inputs.size(0) - 1:
             if len(mel_outputs) <= teacher_force_till or np.random.uniform(0.0, 1.0) <= p_teacher_forcing:
-                decoder_input = decoder_inputs[len(mel_outputs)] # use all-in-one processed output for next step
+                decoder_input = decoder_inputs[len(mel_outputs)] # use teacher forced input
             else:
-                decoder_input = self.prenet(mel_outputs[-1]) # use last output for next step (like inference)
+                decoder_input = self.prenet(mel_outputs[-1][:, :self.n_mel_channels]) # [B, n_mel] use last output for next input (like inference)
             
             mel_output, gate_output, attention_weights = self.decode(decoder_input)
             
             if self.dump_attention_weights:
                 attention_weights = attention_weights.cpu()
-            
             mel_outputs += [mel_output.squeeze(1)]
             gate_outputs += [gate_output.squeeze(1)]
             if not self.dump_attention_weights or len(mel_outputs) < 2:
@@ -815,6 +817,7 @@ class Tacotron2(nn.Module):
         self.mask_padding = hparams.mask_padding
         self.fp16_run = hparams.fp16_run
         self.n_mel_channels = hparams.n_mel_channels
+        self.pred_logvar = hparams.LL_SpectLoss
         self.n_frames_per_step = hparams.n_frames_per_step
         self.p_teacher_forcing = hparams.p_teacher_forcing
         self.teacher_force_till = hparams.teacher_force_till
@@ -876,7 +879,7 @@ class Tacotron2(nn.Module):
     def mask_outputs(self, outputs, output_lengths=None):
         if self.mask_padding and output_lengths is not None:
             mask = ~get_mask_from_lengths(output_lengths)
-            mask = mask.expand(self.n_mel_channels, mask.size(0), mask.size(1))
+            mask = mask.expand(self.n_mel_channels*(self.pred_logvar+1), mask.size(0), mask.size(1))
             mask = mask.permute(1, 0, 2)
             # [B, n_mel, steps]
             outputs[0].data.masked_fill_(mask, 0.0)
