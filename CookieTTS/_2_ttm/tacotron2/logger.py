@@ -108,7 +108,7 @@ class Tacotron2Logger(SummaryWriter):
         self.add_scalar("teacher_forced_validation.average_max_attention_weight", avg_prob, iteration)
         _, mel_outputs, gate_outputs, alignments, *_ = y_pred
         mel_targets, gate_targets, *_ = y
-        mel_MSE_map = torch.nn.MSELoss(reduction='none')(mel_outputs, mel_targets)
+        mel_MSE_map = torch.nn.MSELoss(reduction='none')(mel_outputs[:, :mel_targets.shape[1], :], mel_targets)
         mel_MSE_map[:, -1, -1] = 20.0 # because otherwise the color map scale is crap
         
         # plot distribution of parameters
