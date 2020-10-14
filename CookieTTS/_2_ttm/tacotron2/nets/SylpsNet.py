@@ -51,7 +51,7 @@ class SylpsNet(nn.Module):
     
     def infer_auto(self, sylps, rand_sampling=False):# [B]
         ln_sylps = sylps.log()
-        sylps_cat = torch.stack((sylps, ln_sylps), dim=1)# [B, 2]
+        sylps_cat = torch.cat((sylps, ln_sylps), dim=1)# [B, 2]
         syl_res = self.seq_layers(sylps_cat)
         syl_params = sylps_cat + self.res_weight * syl_res# [B, 2]
         syl_mu = syl_params[:, 0]    # [B]

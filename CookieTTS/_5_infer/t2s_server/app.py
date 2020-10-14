@@ -62,8 +62,17 @@ def texttospeech():
         # (Text) CRLF to LF
         text = text.replace('\r\n','\n')
         
-        # (Text) Max Lenght Limit
+        # (Text) Max Length Limit
         text = text[:int(conf['webpage']['max_input_len'])]
+        
+        # (Text) Split into segments and send to worker(s)
+        pass
+        
+        # Wait for audio files to be generated or fail
+        pass
+        
+        # Merge the finished product to a single audio file and serve back to user.
+        pass
         
         # generate an audio file from the inputs
         filename, gen_time, gen_dur, total_specs, n_passes, avg_score = t2s.infer(text, speaker, style_mode, textseg_mode, batch_mode, max_attempts, max_duration_s, batch_size, dyna_max_duration_s, use_arpabet, target_score, multispeaker_mode, cat_silence_s, textseg_len_target)
@@ -141,7 +150,7 @@ def show_entries():
                             cat_silence_s=conf['webpage']['defaults']['cat_silence_s'],
                             textseg_len_target=conf['webpage']['defaults']['textseg_len_target'],)
 
-#Route to stream music
+#Route to stream audio
 @app.route('/<voice>', methods=['GET'])
 def streammp3(voice):
     print("AUDIO_REQUEST: ", request)
@@ -153,7 +162,7 @@ def streammp3(voice):
                 data = fwav.read(1024)
     
     stream_audio = False
-    if stream_audio: # don't have seeking working atm
+    if stream_audio:# don't have seeking working atm
         return Response(generate(), mimetype="audio/wav")
     else:
         return send_from_directory(t2s.conf['output_directory'], voice)

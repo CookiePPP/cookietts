@@ -1,0 +1,40 @@
+import time
+import torch
+import sys
+import os
+import subprocess
+
+argslist = list(sys.argv)[1:]
+num_gpus = torch.cuda.device_count()
+argslist.append('--n_gpus={}'.format(num_gpus))
+workers = []
+job_id = time.strftime("%Y_%m_%d-%H%M%S")
+argslist.append("--group_name=group_{}".format(job_id))
+os.makedirs('logs', exist_ok=True)
+
+for i in range(num_gpus):
+    argslist.append('--rank={}'.format(i))
+    stdout = None if i == 0 else open("logs/{}_GPU_{}.log".format(job_id, i),
+                                      "w")
+    print(argslist)
+    p = subprocess.Popen([str(sys.executable)]+argslist, stdout=stdout)
+    workers.append(p)
+    argslist = argslist[:-1]
+
+for p in workers:
+    p.wait()
+
+
+#crashed = False
+#while (!crashed):
+#    for p in workers:
+#        poll = p.poll()
+#        if poll != None:
+#            crashed = True
+#    time.sleep(2)
+#for p in workers:
+#    try:
+#        p.terminate()
+#        p.kill()
+#    except Exception as e:
+#        pass

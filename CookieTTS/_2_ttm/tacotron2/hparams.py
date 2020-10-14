@@ -5,7 +5,8 @@ from CookieTTS.utils.text.symbols import symbols
 def create_hparams(hparams_string=None, verbose=False):
     """Create model hyperparameters. Parse nondefault from given string."""
 
-    hparams = tf.contrib.training.HParams(
+    from CookieTTS._2_ttm.tacotron2.utils_hparam import HParams
+    hparams = HParams(
         ################################
         # Experiment Parameters        #
         ################################
@@ -15,7 +16,7 @@ def create_hparams(hparams_string=None, verbose=False):
         seed=1234,
         dynamic_loss_scaling=True,
         fp16_run=False,
-        distributed_run=False,
+        distributed_run=True,
         dist_backend="nccl",
         dist_url="tcp://127.0.0.1:54321",
         cudnn_enabled=True,
@@ -60,7 +61,7 @@ def create_hparams(hparams_string=None, verbose=False):
         filter_length=2400,
         hop_length=600,
         win_length=2400,
-        n_mel_channels=160,
+        n_mel_channels=256,
         mel_fmin=0.0,
         mel_fmax=16000.0,
         
@@ -99,7 +100,7 @@ def create_hparams(hparams_string=None, verbose=False):
         # (EmotionNet) Semi-supervised VAE/Classifier
         emotion_classes = ['neutral','anxious','happy','annoyed','sad','confused','smug','angry','whispering','shouting','sarcastic','amused','surprised','singing','fear','serious'],
         emotionnet_latent_dim=32,# unsupervised Latent Dim
-        emotionnet_encoder_outputs_dropout=0.0,# Encoder Outputs Dropout
+        emotionnet_encoder_outputs_dropout=0.7,# Encoder Outputs Dropout
         emotionnet_RNN_dim=128, # GRU dim to summarise Encoder Outputs
         emotionnet_classifier_layer_dropout=0.25, # Dropout ref, speaker and summarised Encoder outputs.
                                                   # Which are used to predict zs and zu
@@ -113,7 +114,7 @@ def create_hparams(hparams_string=None, verbose=False):
         # (AuxEmotionNet)
         auxemotionnet_layer_dims=[256,],# width of each layer, LeakyReLU() is used between hiddens
                                         # input is TorchMoji hidden, outputs to classifier layer and zu param predictor
-        auxemotionnet_encoder_outputs_dropout=0.0,# Encoder Outputs Dropout
+        auxemotionnet_encoder_outputs_dropout=0.7,# Encoder Outputs Dropout
         auxemotionnet_RNN_dim=128, # GRU dim to summarise Encoder outputs
         auxemotionnet_classifier_layer_dropout=0.25, # Dropout ref, speaker and summarised Encoder outputs.
                                                      # Which are used to predict zs and zu params
@@ -160,7 +161,7 @@ def create_hparams(hparams_string=None, verbose=False):
         # (Decoder) DecoderRNN
         decoder_rnn_dim=512, # 1024 baseline
         DecRNN_hidden_dropout_type='zoneout',# options ('dropout','zoneout')
-        p_DecRNN_hidden_dropout=0.1,# 0.1 baseline
+        p_DecRNN_hidden_dropout=0.15,# 0.1 baseline
         decoder_residual_connection=False,# residual connections with the AttentionRNN hidden state and Attention/Memory Context
         # Optional Second Decoder
         second_decoder_rnn_dim=512,# 0 baseline # Extra DecoderRNN to learn more complex patterns # set to 0 to disable layer.
@@ -194,7 +195,22 @@ def create_hparams(hparams_string=None, verbose=False):
         # (Postnet) Mel-post processing network parameters
         postnet_embedding_dim=512,
         postnet_kernel_size=5,
-        postnet_n_convolutions=5,
+        postnet_n_convolutions=6,
+        postnet_residual_connections=2,# False baseline, int > 0 == n_layers in each residual block
+        
+        # (Adversarial Postnet Generator) - modifies the tacotron output to look convincingly fake instead of just accurate.
+        use_postnet_generator_and_discriminator=True,
+        adv_postnet_noise_dim=128,
+        adv_postnet_embedding_dim=384,
+        adv_postnet_kernel_size=3,
+        adv_postnet_n_convolutions=6,
+        adv_postnet_residual_connections=3,
+        
+        # (Adversarial Postnet Discriminator) - Learns the difference between real and fake spectrograms, teaches the postnet generator how to make convincing looking outputs.
+        dis_postnet_embedding_dim=512,
+        dis_postnet_kernel_size=5,
+        dis_postnet_n_convolutions=8,
+        dis_postnet_residual_connections=4,
         
         ################################
         # Optimization Hyperparameters #
@@ -204,11 +220,11 @@ def create_hparams(hparams_string=None, verbose=False):
         weight_decay=1e-6,
         grad_clip_thresh=1.0,# overriden by 'run_every_epoch.py'
         
-        batch_size=40,     # controls num of files processed in parallel per GPU
-        val_batch_size=40, # for more precise comparisons between models, constant batch_size is useful
+        batch_size=16,     # controls num of files processed in parallel per GPU
+        val_batch_size=16, # for more precise comparisons between models, constant batch_size is useful
         
         use_TBPTT=True,# continue truncated files into the next training iteration
-        truncated_length=1000, # max mel length till truncation.
+        truncated_length=800, # max mel length till truncation.
         mask_padding=True,#mask values by setting them to the same values in target and predicted
         masked_select=True,#mask values by removing them from the calculation
         
@@ -235,6 +251,16 @@ def create_hparams(hparams_string=None, verbose=False):
         postnet_MAE_scalar = 0.0, #       L1 Spectrogram Loss After Postnet
         postnet_SMAE_scalar = 0.0,# SmoothL1 Spectrogram Loss After Postnet
         
+        # if use_postnet_generator_and_discriminator is True:
+        adv_postnet_scalar = 0.1,# Global Loss Scalar for the entire Adversarial System
+                                 #                  (Postnet, Reconstruction, Discriminator, Etc)
+        adv_postnet_reconstruction_weight = 10.0,# Reconstruction Loss to force the GAN to follow the input somewhat
+        adv_postnet_grad_propagation = 0.05, # Multiply GAN gradients before they connect to the main network.
+                                            # 0.0 is the same as detaching the GAN loss from the main network, so the GAN loss will only update the Adversarial Postnet.
+                                            # 1.0 is apply GAN Loss gradients to the entire tacotron2 network like *normal*
+        dis_postnet_scalar = 0.1,# Loss Scalar for discriminator on normal not-GAN postnet
+        dis_spect_scalar   = 0.1,# Loss Scalar for discriminator on normal recurrent spect outputs
+        
         zsClassificationNCELoss = 0.15, # EmotionNet Classification Loss (Negative Cross Entropy)
         zsClassificationMAELoss = 0.00, # EmotionNet Classification Loss (Mean Absolute Error)
         zsClassificationMSELoss = 0.00, # EmotionNet Classification Loss (Mean Squared Error)
@@ -257,11 +283,6 @@ def create_hparams(hparams_string=None, verbose=False):
                                              # As an example of how this works, if you imagine there is a 10 letter input that lasts 1 second. The first 0.1s is pushed towards using the 1st letter, the next 0.1s will be pushed towards using the 2nd letter, and so on for each chunk of audio. Since each letter has a different natural duration (especially punctuation), this attention guiding is not particularly accurate, so it's not recommended to use a high loss scalar later into training.
         DiagonalGuidedAttention_sigma=0.5, # how to *curve?* the attention loss? Just leave this one alone.
         
-        
-        # Experimental/Ignore
-        use_postnet_discriminator = False,# not implemented yet.
-                                          # no ETA, may never be added/needed
-        
         rescale_for_volume=0.0, # Not implemented # Rescale spectrogram losses to prioritise louder sounds, and put less (or zero) priority on quieter sounds
                                 # Valid values between 0.0 and 1.0
                                 # will rescale spectrogram magnitudes (which range from -11.52 for silence, and 4.5 for deafeningly loud)
@@ -269,10 +290,10 @@ def create_hparams(hparams_string=None, verbose=False):
     )
 
     if hparams_string:
-        tf.compat.v1.logging.info('Parsing command line hparams: %s', hparams_string)
+        print('Parsing command line hparams: %s', hparams_string)
         hparams.parse(hparams_string)
 
     if verbose:
-        tf.compat.v1.logging.info('Final parsed hparams: %s', hparams.values())
+        print('Final parsed hparams: %s', hparams.values())
 
     return hparams

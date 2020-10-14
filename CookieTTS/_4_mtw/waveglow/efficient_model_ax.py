@@ -3,18 +3,21 @@ import torch.nn as nn
 import torch.nn.functional as F
 import numpy as np
 
+from CookieTTS._4_mtw.waveglow.glow_ax import TransposedUpsampleNet
+
 # utils
-from waveglow_utils import PreEmphasis
+from CookieTTS._4_mtw.waveglow.waveglow_utils import PreEmphasis
 from scipy import signal
+from CookieTTS.utils.audio.iso226 import ISO_226
 
 @torch.jit.script
 def ignore_nan(input):
     """Replace NaN values with 0.0"""
-    input[torch.isnan(input)] = torch.zeros(1, device=input.device, dtype=input.dtype)
+    input.masked_fill_(torch.isnan(input), 0.)
 
 class WaveGlow(nn.Module):
     def __init__(self, n_mel_channels, n_flows, n_group, n_early_every,
-                n_early_size, memory_efficient, spect_scaling, upsample_mode, upsample_first, speaker_embed, cond_layers, cond_hidden_channels, cond_output_channels, cond_kernel_size, cond_residual, cond_padding_mode, WN_config, win_length, hop_length, cond_res_rezero=False, cond_activation_func='none', negative_slope=None, channel_mixing='1x1conv', mix_first=True, preceived_vol_scaling=False, waveflow=True, yoyo='depreciated', yoyo_WN='depreciated', shift_spect=0., scale_spect=1., preempthasis=None):
+                n_early_size, memory_efficient, spect_scaling, upsample_mode, upsample_first, speaker_embed, cond_layers, cond_hidden_channels, cond_output_channels, cond_kernel_size, cond_residual, cond_padding_mode, WN_config, win_length, hop_length, sampling_rate=48000, cond_res_rezero=False, cond_activation_func='none', negative_slope=None, channel_mixing='1x1conv', mix_first=True, preceived_vol_scaling=False, waveflow=True, yoyo='depreciated', yoyo_WN='depreciated', shift_spect=0., scale_spect=1., preempthasis=None, use_logvar_channels=False, load_hidden_from_disk=False, transposed_conv_hidden_dim=256, transposed_conv_kernel_size=4, transposed_conv_scales=None, transposed_conv_output_dim=256, transposed_conv_residual=False, transposed_conv_residual_linear=False, transposed_conv_res_rezero=False, group_conv_output_dim=None, group_conv_groupped=True, iso226_empthasis=False):
         super(WaveGlow, self).__init__()
         assert(n_group % 2 == 0)
         assert(hop_length % n_group == 0), "hop_length is not int divisible by n_group"
@@ -26,10 +29,14 @@ class WaveGlow(nn.Module):
         self.n_early_every = n_early_every
         self.n_early_size = n_early_size
         
+        self.sampling_rate = sampling_rate
         self.win_size = win_length
         self.hop_length = hop_length
         self.n_mel_channels = n_mel_channels
+        self.use_hidden_cond = load_hidden_from_disk
+        self.has_logvar_channels = use_logvar_channels
         self.vol_scaling = preceived_vol_scaling
+        self.iso226_empthasis = iso226_empthasis
         self.preempthasis = preempthasis
         if preempthasis:
             self.preempthasise = PreEmphasis(preempthasis)
@@ -45,30 +52,39 @@ class WaveGlow(nn.Module):
         self.multispeaker = self.speaker_embed_dim > 0 or WN_config['speaker_embed_dim'] > 0
         
         if waveflow:
-            from efficient_modules import WaveFlowCoupling as AffineCouplingBlock
-            from glow_ax import WN_2d as WN
+            from CookieTTS._4_mtw.waveglow.efficient_modules import WaveFlowCoupling as AffineCouplingBlock
+            from CookieTTS._4_mtw.waveglow.glow_ax import WN_2d as WN
         else:
-            from efficient_modules import AffineCouplingBlock
-            from glow_ax import WN
+            from CookieTTS._4_mtw.waveglow.efficient_modules import AffineCouplingBlock
+            from CookieTTS._4_mtw.waveglow.glow_ax import WN
         
+        # (input) speaker embedding
         if self.speaker_embed_dim:
             max_speakers = 512
             self.speaker_embed = nn.Embedding(max_speakers, self.speaker_embed_dim)
         
+        # Calculate input cond dimension. (and update this var everytime the cond dim changes)
+        WN_cond_channels = (self.n_mel_channels*(use_logvar_channels+1))+self.speaker_embed_dim
+        
+        #####################
+        ###  Cond Layers  ###
+        #####################
         self.cond_residual = cond_residual
-        if self.cond_residual: # override conditional output size if using residuals
-            cond_output_channels = self.n_mel_channels+self.speaker_embed_dim
+        if self.cond_residual is True or self.cond_residual is 1: # override conditional output size if using residuals
+            cond_output_channels = (self.n_mel_channels*(use_logvar_channels+1))+self.speaker_embed_dim
         
         self.cond_res_rezero = cond_res_rezero
         if self.cond_res_rezero:
-            self.alpha = nn.Parameter(torch.rand(1)*0.002+0.001) # rezero initial state (0.001±0.001)
+            self.alpha = nn.Parameter(torch.rand(1)*0.02+0.01) # rezero initial state (0.001±0.001)
         
         self.cond_layers = nn.ModuleList()
         if cond_layers:
+            if self.cond_residual == '1x1conv':
+                self.res_conv = nn.Conv1d(WN_cond_channels, cond_output_channels, 1)
             # messy initialization for arbitrary number of layers, input dims and output dims
             cond_kernel_size = 2*cond_kernel_size - 1 # 1 -> 1, 2 -> 3, 3 -> 5
             cond_pad = int((cond_kernel_size - 1)/2)
-            dimensions = [self.n_mel_channels+self.speaker_embed_dim,]+[cond_hidden_channels]*(cond_layers-1)+[cond_output_channels,]
+            dimensions = [WN_cond_channels,]+[cond_hidden_channels]*(cond_layers-1)+[cond_output_channels,]
             in_dims = dimensions[:-1]
             out_dims = dimensions[1:]
             #print(in_dims, out_dims, "\n")
@@ -94,24 +110,44 @@ class WaveGlow(nn.Module):
                 self.cond_activation_func = torch.nn.functional.sigmoid
             else:
                 raise NotImplementedError
-        else:
-            WN_cond_channels = self.n_mel_channels+self.speaker_embed_dim
         
-        # import channel mixing
+        ###############################
+        ###  TransposedUpsampleNet  ###
+        ###############################
+        self.upsample_factor = WN_config['upsample_factor'] = hop_length // n_group  
+        self.interpolation_required = True
+        t_in_dim = None
+        t_out_dim = None
+        if transposed_conv_scales is not None and len(transposed_conv_scales) > 0 and transposed_conv_hidden_dim and transposed_conv_kernel_size:
+            t_in_dim = WN_cond_channels
+            t_out_dim = transposed_conv_output_dim if (transposed_conv_output_dim is not None) else WN_cond_channels
+            self.upsample_net = TransposedUpsampleNet(t_in_dim, t_out_dim, transposed_conv_hidden_dim, transposed_conv_kernel_size, transposed_conv_scales, use_last_layer_act_func=True, residual=transposed_conv_residual, residual_linear=transposed_conv_residual_linear, rezero=transposed_conv_res_rezero)
+            self.interpolation_required = bool( np.product(transposed_conv_scales) != self.upsample_factor )
+            WN_cond_channels = t_out_dim
+        
+        ########################################
+        ###  (Optional) n_Flow Grouped Conv  ###
+        ########################################
+        if group_conv_output_dim:
+            self.n_flow_group_conv = nn.Conv1d(WN_cond_channels, group_conv_output_dim*n_flows, 1,
+                                               groups=n_flows if group_conv_groupped else 1)
+            WN_cond_channels = group_conv_output_dim
+        
+        ########################
+        ###  Channel Mixing  ###
+        ########################
         if self.channel_mixing == '1x1conv':
-            from efficient_modules import InvertibleConv1x1
+            from CookieTTS._4_mtw.waveglow.efficient_modules import InvertibleConv1x1
             self.convinv = nn.ModuleList()
         elif self.channel_mixing == 'permuteheight':
-            from efficient_modules import PermuteHeight
-            self.convinv = list()
+            from CookieTTS._4_mtw.waveglow.efficient_modules import PermuteHeight
+            self.convinv = list()    
         
-        self.upsample_factor = hop_length // n_group
-        sub_win_size = win_length // n_group
-        
+        ###############
+        ###  Flows  ###
+        ###############
+        # Set up flows with the right sizes based on how many dimensions have been output already.
         self.WN = nn.ModuleList()
-        
-        # Set up layers with the right sizes based on how many dimensions
-        # have been output already
         n_remaining_channels = n_group
         self.z_split_sizes = []
         for k in range(n_flows):
@@ -121,12 +157,7 @@ class WaveGlow(nn.Module):
             
             assert n_remaining_channels > 0, "n_remaining_channels is 0. (increase n_group or decrease n_early_every/n_early_size)"
             
-            if memory_efficient and (k+1)/n_flows <= memory_efficient:
-                mem_eff_layer = True
-                print(f"Flow {k} using Mem Efficient Backprop")
-            else:
-                mem_eff_layer = False
-                print(f"Flow {k} using Normal Backprop")
+            mem_eff_layer = True if (memory_efficient and (k+1)/n_flows <= memory_efficient) else False
             
             if self.channel_mixing == '1x1conv':
                 self.convinv.append( InvertibleConv1x1(n_remaining_channels, memory_efficient=mem_eff_layer) )
@@ -137,6 +168,18 @@ class WaveGlow(nn.Module):
                                 cond_in_channels=WN_cond_channels, **WN_config) )
         self.z_split_sizes.append(n_remaining_channels)
     
+    def _upsample_mels(self, cond, audio_size, force_interpolate=False):
+        if hasattr(self, 'upsample_net') and self.upsample_net is not None:
+            cond = self.upsample_net(cond)
+        if force_interpolate or (self.interpolation_required and not (cond.shape[2] == audio_size[2])):
+            cond = F.interpolate(cond, size=audio_size[2], mode=self.upsample_mode, align_corners=True if self.upsample_mode == 'linear' else None)
+        else:
+            cond_len = cond.shape[2]
+            audio_len = audio_size[2]
+            pad_l = (cond_len-audio_len)//2
+            pad_r = -(audio_len-cond_len)//2
+            cond = cond[:, :, pad_l:-pad_r]
+        return cond
     
     def forward(self, cond, audio, speaker_ids=None): # optional cond input
         """
@@ -172,6 +215,8 @@ class WaveGlow(nn.Module):
             cond_res *= self.alpha # reZero modifier
         
         if self.cond_residual:
+            if hasattr(self, 'res_conv'):
+                cond = self.res_conv(cond)
             cond = cond + cond_res # adjust the original input by a residual
         else:
             cond = cond_res # completely reform the input into something else
@@ -180,11 +225,11 @@ class WaveGlow(nn.Module):
         audio = audio.view(batch_dim, -1, self.n_group).transpose(1, 2)
         
         #  Upsample spectrogram to size of audio
-        if self.upsample_early:
-            cond = self._upsample_mels(cond, audio.size(2)) # [B, mels, T//n_group]
+        if self.upsample_early is True:
+            cond = self._upsample_mels(cond, audio.shape) # [B, mels, T//n_group]
         
-        #assert audio.size(2) <= cond.size(2)
-        #cond = cond[..., :audio.size(2)]
+        if hasattr(self, 'n_flow_group_conv'):
+            cond = self.n_flow_group_conv(cond).chunk(self.n_flows, dim=1)
         
         output_audio = []
         split_sections = [self.n_early_size, self.n_group]
@@ -202,9 +247,10 @@ class WaveGlow(nn.Module):
                     assert not torch.isnan(audio).any(), f'Flow {k} NaN Exception'
                     assert not torch.isinf(audio).any(), f'Flow {k} inf Exception'
             
-            audio, log_s = affine_coup(audio, cond, speaker_ids=speaker_ids)
+            k_cond = cond[k] if type(cond) == tuple else cond
+            audio, log_s = affine_coup(audio, k_cond, speaker_ids=speaker_ids)
             
-            if self.ignore_nan:
+            if self.ignore_nan and not self.training:
                 ignore_nan(audio)
             
             if self.nan_asserts:
@@ -218,22 +264,17 @@ class WaveGlow(nn.Module):
                     assert not torch.isinf(audio).any(), f'Flow {k} inf Exception'
             
             if k:
-                logdet += log_det_W + log_s.float().sum((1, 2))
-                logdet_w_sum += log_det_W
+                logdet += log_det_W.float() + log_s.float().sum((1, 2))
+                logdet_w_sum += log_det_W.float()
                 log_s_sum += log_s.float().sum((1,))
             else:
-                logdet = log_det_W + log_s.float().sum((1, 2))
-                logdet_w_sum = log_det_W
+                logdet = log_det_W.float() + log_s.float().sum((1, 2))
+                logdet_w_sum = log_det_W.float()
                 log_s_sum = log_s.float().sum((1,))
         
         assert split_sections[1] == self.z_split_sizes[-1]
         output_audio.append(audio)
         return torch.cat(output_audio, 1).transpose(1, 2).contiguous().view(batch_dim, -1), logdet, logdet_w_sum, log_s_sum
-    
-    def _upsample_mels(self, cond, audio_size):
-        cond = F.interpolate(cond, size=audio_size[2], mode=self.upsample_mode, align_corners=True if self.upsample_mode == 'linear' else None)
-        #cond = F.interpolate(cond, scale_factor=600, mode=self.upsample_mode, align_corners=True if self.upsample_mode == 'linear' else None) # upsample by hop_length
-        return cond
     
     def inverse(self, z, cond, speaker_ids=None, return_CPU=True):
         if self.shift_spect != 0.:
@@ -259,6 +300,8 @@ class WaveGlow(nn.Module):
             cond_res *= self.alpha # reZero modifier
         
         if self.cond_residual:
+            if hasattr(self, 'res_conv'):
+                cond = self.res_conv(cond)
             cond += cond_res # adjust the original input by a residual
         else:
             cond = cond_res # completely reform the input into something else
@@ -267,11 +310,11 @@ class WaveGlow(nn.Module):
         z = z.view(batch_dim, -1, self.n_group).transpose(1, 2)
         
         #  Upsample spectrogram to size of audio
-        if self.upsample_early:
-            cond = self._upsample_mels(cond, z.size(2)) # [B, mels, T//n_group]
+        if self.upsample_early is True:
+            cond = self._upsample_mels(cond, z.shape)# [B, cond_dim, T//n_group]
         
-        #assert z.size(2) <= cond.size(2)
-        #cond = cond[..., :z.size(2)]
+        if hasattr(self, 'n_flow_group_conv'):
+            cond = self.n_flow_group_conv(cond).chunk(self.n_flows, dim=1)# [[B, cond_dim, T//n_group],] * n_flows
         
         remained_z = []
         for r in z.split(self.z_split_sizes, 1):
@@ -284,18 +327,14 @@ class WaveGlow(nn.Module):
             if not self.mix_first:
                 z, log_det_W = invconv.inverse(z)
             
-            z, log_s = affine_coup.inverse(z, cond, speaker_ids=speaker_ids)
+            k_cond = cond[k] if type(cond) == tuple else cond
+            z, log_s = affine_coup.inverse(z, k_cond, speaker_ids=speaker_ids)
             
             if self.ignore_nan:
                 ignore_nan(z)
             
             if self.mix_first:
                 z, log_det_W = invconv.inverse(z)
-            
-            #if k == self.n_flows - 1:
-            #    logdet = log_det_W + log_s.sum((1, 2))
-            #else:
-            #    logdet += log_det_W + log_s.sum((1, 2))
             
             if k % self.n_early_every == 0 and k:
                 z = torch.cat((remained_z.pop(), z), 1)
@@ -319,10 +358,17 @@ class WaveGlow(nn.Module):
     
     @torch.no_grad()
     def infer(self, spect, speaker_ids=None, artifact_trimming=1, sigma=1., t_scaler=1.0, return_CPU=True):
+        if self.iso226_empthasis and not hasattr(self, 'iso226'):
+            self.iso226 = ISO_226(sampling_rate=self.sampling_rate, filter_length=self.sampling_rate//40, hop_length=self.sampling_rate//400, win_length=self.sampling_rate//40, stft_device='cpu')
+        
+        input_device, input_dtype = spect.device, spect.dtype
+        wg_device, wg_dtype = next(self.parameters()).device, next(self.parameters()).dtype
+        spect = spect.to(wg_device, wg_dtype)# move to GPU and correct data type
+        
         if len(spect.shape) == 2:
             spect = spect[None, ...] # [n_mel, T//hop_length] -> [B, n_mel, T//hop_length]
         if artifact_trimming > 0:
-            spect = F.pad(spect, (0, artifact_trimming), value=-11.512925)
+            spect = F.pad(spect, (0, artifact_trimming), value=0.0)
         
         batch_dim, n_mel_channels, steps = spect.shape # [B, n_mel, T//hop_length]
         samples = (steps - 1) * self.hop_length * t_scaler # T = T//hop_length * hop_length
@@ -335,6 +381,10 @@ class WaveGlow(nn.Module):
         if artifact_trimming > 0:
             audio_trim = artifact_trimming*self.hop_length # amount of audio to trim
             audio = audio[:, :-audio_trim]
+        
+        if self.iso226_empthasis:
+            audio = self.iso226.inverse(audio)
+        audio = audio.to(input_dtype)# output with same data type as input
         return audio
     
     def remove_weightnorm(self):

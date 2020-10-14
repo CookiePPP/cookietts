@@ -58,55 +58,44 @@ class Tacotron2Logger(SummaryWriter):
         self.add_scalar("infer.attention_alignment_diagonality", diagonality, iteration)
         self.add_scalar("infer.average_max_attention_weight", avg_prob, iteration)
         _, mel_outputs, gate_outputs, alignments, *_ = y_pred
+        mel_outputs_GAN = y_pred[8][0]
         mel_targets, gate_targets, *_ = y
         mel_outputs = mel_outputs[:, :mel_targets.shape[1], :]
         
-        # plot alignment, mel target and predicted, gate target and predicted
-        idx = 0 # plot longest audio file
-        self.add_image(
-            "infer_alignment",
-            plot_alignment_to_numpy(alignments[idx].data.cpu().numpy().T),
-            iteration, dataformats='HWC')
-        self.add_image(
-            "infer_mel_target",
-            plot_spectrogram_to_numpy(mel_targets[idx].data.cpu().numpy()),
-            iteration, dataformats='HWC')
-        self.add_image(
-            "infer_mel_predicted",
-            plot_spectrogram_to_numpy(mel_outputs[idx].data.cpu().numpy()),
-            iteration, dataformats='HWC')
-        self.add_image(
-            "infer_gate",
-            plot_gate_outputs_to_numpy(
-                gate_targets[idx].data.cpu().numpy(),
-                torch.sigmoid(gate_outputs[idx]).data.cpu().numpy()),
-            iteration, dataformats='HWC')
-        
-        idx = 1 # and plot 2nd longest audio file
-        self.add_image(
-            "infer_alignment2",
-            plot_alignment_to_numpy(alignments[idx].data.cpu().numpy().T),
-            iteration, dataformats='HWC')
-        self.add_image(
-            "infer_mel_target2",
-            plot_spectrogram_to_numpy(mel_targets[idx].data.cpu().numpy()),
-            iteration, dataformats='HWC')
-        self.add_image(
-            "infer_mel_predicted2",
-            plot_spectrogram_to_numpy(mel_outputs[idx].data.cpu().numpy()),
-            iteration, dataformats='HWC')
-        self.add_image(
-            "infer_gate2",
-            plot_gate_outputs_to_numpy(
-                gate_targets[idx].data.cpu().numpy(),
-                torch.sigmoid(gate_outputs[idx]).data.cpu().numpy()),
-            iteration, dataformats='HWC')
+        plot_n_files = 5
+        # plot infer alignment, mel target and predicted, gate predicted
+        for idx in range(plot_n_files):# plot longest x audio files
+            str_idx = '' if idx == 0 else idx
+            self.add_image(
+                f"infer_alignment{str_idx}",
+                plot_alignment_to_numpy(alignments[idx].data.cpu().numpy().T),
+                iteration, dataformats='HWC')
+            self.add_image(
+                f"infer_mel_target{str_idx}",
+                plot_spectrogram_to_numpy(mel_targets[idx].data.cpu().numpy()),
+                iteration, dataformats='HWC')
+            self.add_image(
+                f"infer_mel_predicted{str_idx}",
+                plot_spectrogram_to_numpy(mel_outputs[idx].data.cpu().numpy()),
+                iteration, dataformats='HWC')
+            if mel_outputs_GAN is not None:
+                self.add_image(
+                    f"mel_predicted_GAN{str_idx}",
+                    plot_spectrogram_to_numpy(mel_outputs_GAN[idx].data.cpu().numpy()),
+                    iteration, dataformats='HWC')
+            self.add_image(
+                f"infer_gate{str_idx}",
+                plot_gate_outputs_to_numpy(
+                    gate_targets[idx].data.cpu().numpy(),
+                    torch.sigmoid(gate_outputs[idx]).data.cpu().numpy()),
+                iteration, dataformats='HWC')
     
     def log_teacher_forced_validation(self, reduced_loss, model, y, y_pred, iteration, val_teacher_force_till, val_p_teacher_forcing, diagonality, avg_prob):
         self.add_scalar("teacher_forced_validation.loss", reduced_loss, iteration)
         self.add_scalar("teacher_forced_validation.attention_alignment_diagonality", diagonality, iteration)
         self.add_scalar("teacher_forced_validation.average_max_attention_weight", avg_prob, iteration)
         _, mel_outputs, gate_outputs, alignments, *_ = y_pred
+        mel_outputs_GAN = y_pred[8][0]
         mel_targets, gate_targets, *_ = y
         mel_outputs = mel_outputs[:, :mel_targets.shape[1], :]
         mel_MSE_map = torch.nn.MSELoss(reduction='none')(mel_outputs, mel_targets)
@@ -133,6 +122,11 @@ class Tacotron2Logger(SummaryWriter):
                 f"mel_predicted{str_idx}",
                 plot_spectrogram_to_numpy(mel_outputs[idx].data.cpu().numpy()),
                 iteration, dataformats='HWC')
+            if mel_outputs_GAN is not None:
+                self.add_image(
+                    f"mel_predicted_GAN{str_idx}",
+                    plot_spectrogram_to_numpy(mel_outputs_GAN[idx].data.cpu().numpy()),
+                    iteration, dataformats='HWC')
             self.add_image(
                 f"mel_squared_error{str_idx}",
                 plot_spectrogram_to_numpy(mel_MSE_map[idx].data.cpu().numpy()),
@@ -148,7 +142,8 @@ class Tacotron2Logger(SummaryWriter):
         if len(section) and section[-1] != '/':
             section = section + '/'
         self.add_scalar(f"{section}{name}", term[0], iteration)
-        self.add_scalar(f"_weighted_{section}{name}", term[0]*term[1], iteration)
+        if term[1] != 0.0 and term[1] != 1.0:
+            self.add_scalar(f"_weighted_{section}{name}", term[0]*term[1], iteration)
     
     def log_additional_losses(self, loss_terms, iteration, prepend=''):
         self.log_weighted(loss_terms[1], iteration, section=f'{prepend}spect', name='MSELoss')
@@ -173,6 +168,9 @@ class Tacotron2Logger(SummaryWriter):
         self.log_weighted(loss_terms[20], iteration, section=f'{prepend}AuxClassicationLoss', name='NCE')
         self.log_weighted(loss_terms[21], iteration, section=f'{prepend}PredEmotionNetZuLoss', name='MSE')
         self.log_weighted(loss_terms[22], iteration, section=f'{prepend}PredEmotionNetZuLoss', name='MAE')
+        self.log_weighted(loss_terms[24], iteration, section=f'{prepend}AdversarialLoss', name='AvgFakeness')
+        self.log_weighted(loss_terms[25], iteration, section=f'{prepend}AdversarialLoss', name='Generator')
+        self.log_weighted(loss_terms[26], iteration, section=f'{prepend}AdversarialLoss', name='Discriminator')
         
         self.add_scalar(f'{prepend}ClassicationTop1Acc', loss_terms[23][0], iteration)
         
@@ -200,3 +198,6 @@ class Tacotron2Logger(SummaryWriter):
         #[PredDistMSE.item(), self.predzu_MSE_weight],                        21
         #[PredDistMAE.item(), self.predzu_MAE_weight],                        22
         #[Top1ClassificationAcc, 1.0],                                        23
+        #[reduced_avg_fakeness, 1.0],                                         24
+        #[adv_postnet_loss.item(), self.adv_postnet_scalar],                  25
+        #[reduced_d_loss, self.adv_postnet_scalar],                           26

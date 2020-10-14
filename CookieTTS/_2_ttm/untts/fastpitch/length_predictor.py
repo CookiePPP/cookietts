@@ -35,7 +35,7 @@ class TemporalPredictor(nn.Module):
         )
         self.fc = nn.Linear(filter_size, 1, bias=True)
 
-    def forward(self, enc_out, enc_out_mask=None):
+    def forward(self, enc_out, enc_out_mask=None):# [B, enc_T, dim]
         if enc_out_mask is not None:
             enc_out = enc_out * enc_out_mask
         
@@ -44,4 +44,4 @@ class TemporalPredictor(nn.Module):
         
         if enc_out_mask is not None:
             enc_out = enc_out * enc_out_mask
-        return enc_out.squeeze(-1)
+        return enc_out.squeeze(-1)# [B, enc_T]

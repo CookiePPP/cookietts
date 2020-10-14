@@ -4,7 +4,7 @@ import torch.nn.functional as F
 import torch.nn.init as init
 from torch.nn.utils import weight_norm as norm
 import numpy as np
-import module as mm
+import CookieTTS._2_ttm.tacotron2.module as mm
 from CookieTTS.utils.model.layers import ConvNorm, LinearNorm
 
 EPSILON = 1e-6 # smallest value that will not result in inf in fp16
@@ -19,7 +19,7 @@ class ReferenceEncoder(nn.Module):
     :param conv_act_func: Conv2d activation function
     :param out_activation_fn: output Linear activation function
     """
-    def __init__(self, hparams, conv_filters, rnn_dim, bias=False, conv_act_func=torch.relu, out_activation_fn=torch.tanh, drop_rate=0.):
+    def __init__(self, hparams, conv_filters, rnn_dim, bias=False, conv_act_func=F.relu_, out_activation_fn=torch.tanh, drop_rate=0.):
         super(ReferenceEncoder, self).__init__()
         self.in_channels = hparams.n_frames_per_step
         # ref_enc_filters

@@ -15,12 +15,10 @@ from unidecode import unidecode
 import nltk # sentence spliting
 from nltk import sent_tokenize
 
-sys.path.append('../')
-from model import Tacotron2
-from train import load_model
-from text import text_to_sequence
-from denoiser import Denoiser
-from utils import load_filepaths_and_text
+from CookieTTS._2_ttm.tacotron2.model import Tacotron2, load_model
+from CookieTTS._4_mtw.waveglow.denoiser import Denoiser
+from CookieTTS.utils.text import text_to_sequence
+from CookieTTS.utils.dataset.utils import load_filepaths_and_text
 
 def get_mask_from_lengths(lengths, max_len=None):
     if not max_len:
@@ -148,7 +146,7 @@ def parse_text_into_segments(texts, split_at_quotes=True, target_segment_length=
 def get_first_over_thresh(x, threshold):
     """Takes [B, T] and outputs first T over threshold for each B (output.shape = [B])."""
     device = x.device
-    x = x.clone().cpu().float() # GPU implementation of argmax() splits tensor into 32 elem chunks, each chunk is parsed forward then the outputs are collected together... backwards
+    x = x.clone().cpu().float() # using CPU because GPU implementation of argmax() splits tensor into 32 elem chunks, each chunk is parsed forward then the outputs are collected together... backwards
     x[:,-1] = threshold # set last to threshold just incase the output didn't finish generating.
     x[x>threshold] = threshold
     return ( (x.size(1)-1)-(x.flip(dims=(1,)).argmax(dim=1)) ).to(device).int()
@@ -157,6 +155,7 @@ def get_first_over_thresh(x, threshold):
 class T2S:
     def __init__(self, conf):
         self.conf = conf
+        torch.set_grad_enabled(False)
         
         # load Tacotron2
         self.ttm_current = self.conf['TTM']['default_model']
@@ -169,11 +168,11 @@ class T2S:
         assert self.MTW_current in self.conf['MTW']['models'].keys(), "WaveGlow default model not found in config models"
         vocoder_path = self.conf['MTW']['models'][self.MTW_current]['modelpath'] # get first available waveglow
         vocoder_confpath = self.conf['MTW']['models'][self.MTW_current]['configpath']
-        self.waveglow, self.MTW_denoiser, self.MTW_train_sigma, self.MTW_sp_id_lookup = self.load_waveglow(vocoder_path, vocoder_confpath)
+        self.waveglow, self.MTW_denoiser, self.MTW_train_sigma, self.MTW_sp_id_lookup, self.MTW_conf = self.load_waveglow(vocoder_path, vocoder_confpath)
+        self.MTW_input_type = self.conf['MTW']['models'][self.MTW_current]['input_type'] if 'input_type' in self.conf['MTW']['models'][self.MTW_current].keys() else 'MEL'
         
         # load torchMoji
-        if self.ttm_hparams.torchMoji_linear: # if Tacotron includes a torchMoji layer
-            self.tm_sentence_tokenizer, self.tm_torchmoji = self.load_torchmoji()
+        self.tm_sentence_tokenizer, self.tm_torchmoji = self.load_torchmoji()
         
         # override since my checkpoints are still missing speaker names
         if self.conf['TTM']['use_speaker_ids_file_override']:
@@ -223,9 +222,9 @@ class T2S:
         import json
         import numpy as np
         import os
-        from torchmoji.sentence_tokenizer import SentenceTokenizer
-        from torchmoji.model_def import torchmoji_feature_encoding
-        from torchmoji.global_variables import PRETRAINED_PATH, VOCAB_PATH
+        from CookieTTS.utils.torchmoji.sentence_tokenizer import SentenceTokenizer
+        from CookieTTS.utils.torchmoji.model_def import torchmoji_feature_encoding
+        from CookieTTS.utils.torchmoji.global_variables import PRETRAINED_PATH, VOCAB_PATH
         
         print('Tokenizing using dictionary from {}'.format(VOCAB_PATH))
         with open(VOCAB_PATH, 'r') as f:
@@ -260,50 +259,95 @@ class T2S:
         config = json.loads(data)
         train_config = config["train_config"]
         data_config = config["data_config"]
+        if 'preempthasis' not in data_config.keys():
+            data_config['preempthasis'] = 0.0
+        if 'use_logvar_channels' not in data_config.keys():
+            data_config['use_logvar_channels'] = False
+        if 'load_hidden_from_disk' not in data_config.keys():
+            data_config['load_hidden_from_disk'] = False
+        if not 'iso226_empthasis' in data_config.keys():
+            data_config["iso226_empthasis"] = False
         dist_config = config["dist_config"]
+        data_config['n_mel_channels'] = config["waveglow_config"]['n_mel_channels'] if 'n_mel_channels' in config["waveglow_config"].keys() else 160
         vocoder_config = {
-            **config["waveglow_config"], 
+            **config["waveglow_config"],
             'win_length': data_config['win_length'],
-            'hop_length': data_config['hop_length']
+            'hop_length': data_config['hop_length'],
+            'preempthasis': data_config['preempthasis'],
+            'n_mel_channels': data_config["n_mel_channels"],
+            'use_logvar_channels': data_config["use_logvar_channels"],
+            'load_hidden_from_disk': data_config["load_hidden_from_disk"],
+            'iso226_empthasis': data_config["iso226_empthasis"]
         }
         print(vocoder_config)
         print(f"Config File from '{config_fpath}' successfully loaded.")
         
         # import the correct model core
         if self.is_ax(vocoder_config):
-            from efficient_model_ax import WaveGlow
+            from CookieTTS._4_mtw.waveglow.efficient_model_ax import WaveGlow
         else:
             if vocoder_config["yoyo"]:
-                from efficient_model import WaveGlow
+                from CookieTTS._4_mtw.waveglow.efficient_model import WaveGlow
             else:
-                from glow import WaveGlow
+                from CookieTTS._4_mtw.waveglow.glow import WaveGlow
         
         # initialize model
-        print(f"intializing WaveGlow model... ", end="")
-        waveglow = WaveGlow(**vocoder_config).cuda()
-        print(f"Done!")
+        print("intializing WaveGlow model... ", end="")
+        waveglow = WaveGlow(**vocoder_config)#.cuda()
+        print("Done!")
+        
+        print(f"{sum(p.numel() for p in waveglow.parameters())/1e6:.3f}M Parameters")
         
         # load checkpoint from file
-        print(f"loading WaveGlow checkpoint... ", end="")
+        print("loading WaveGlow checkpoint... ", end="")
         checkpoint = torch.load(vocoder_path)
         waveglow.load_state_dict(checkpoint['model']) # and overwrite initialized weights with checkpointed weights
-        waveglow.cuda().eval().half() # move to GPU and convert to half precision
-        print(f"Done!")
+        waveglow.half()       # and convert to half precision (2x speed)
+        waveglow.cuda().eval()# move to GPU
+        if hasattr(waveglow, 'remove_weightnorm'):
+            waveglow.remove_weightnorm() # and remove weightnorm (1.3x speed)
+        print("Done!")
         
-        print(f"initializing Denoiser... ", end="")
-        denoiser = Denoiser(waveglow)
-        print(f"Done!")
+        print("initializing Denoiser... ", end="")
+        cond_channels = vocoder_config['n_mel_channels']*(vocoder_config['use_logvar_channels']+1)
+        denoiser = Denoiser(waveglow, n_mel_channels=cond_channels)
+        print("Done!")
         vocoder_iters = checkpoint['iteration']
         print(f"WaveGlow trained for {vocoder_iters} iterations")
         speaker_lookup = checkpoint['speaker_lookup'] # ids lookup
         training_sigma = train_config['sigma']
         
-        return waveglow, denoiser, training_sigma, speaker_lookup
+        print("Clearing CUDA Cache... ", end='')
+        del checkpoint
+        torch.cuda.empty_cache()
+        print("Done!")
+        
+        print('\n'*10)
+        import gc # prints currently alive Tensors and Variables  # - And fixes the memory leak? I guess poking the leak with a stick is the answer for now.
+        for obj in gc.get_objects():
+            try:
+                if torch.is_tensor(obj) or (hasattr(obj, 'data') and torch.is_tensor(obj.data)):
+                    print(type(obj), obj.size())
+            except:
+                pass
+        print('\n'*10)
+        
+        return waveglow, denoiser, training_sigma, speaker_lookup, vocoder_config
     
     
     def update_wg(self, vocoder_name):
-        self.waveglow, self.MTW_denoiser, self.MTW_train_sigma, self.MTW_sp_id_lookup = self.load_waveglow(self.conf['MTW']['models'][vocoder_name]['modelpath'], self.conf['MTW']['models'][vocoder_name]['configpath'])
+        self.waveglow, self.MTW_denoiser, self.MTW_train_sigma, self.MTW_sp_id_lookup, self.MTW_conf = self.load_waveglow(self.conf['MTW']['models'][vocoder_name]['modelpath'], self.conf['MTW']['models'][vocoder_name]['configpath'])
+        self.MTW_input_type = self.conf['MTW']['models'][vocoder_name]['input_type'] if 'input_type' in self.conf['MTW']['models'][vocoder_name].keys() else 'MEL'
         self.MTW_current = vocoder_name
+    
+    def update_tacotron2_hparams(self, hparams):
+        if not hasattr(hparams, 'LL_SpectLoss'):
+            hparams.LL_SpectLoss = False
+        if not hasattr(hparams, 'use_memory_bottleneck'):
+            hparams.use_memory_bottleneck = False
+        if not hasattr(hparams, 'prenet_noise'):
+            hparams.prenet_noise = 0.0
+        return hparams
     
     def load_tacotron2(self, tacotron_path):
         """Loads tacotron2,
@@ -314,13 +358,18 @@ class T2S:
         """
         checkpoint = torch.load(tacotron_path) # load file into memory
         print("Loading Tacotron... ", end="")
-        checkpoint_hparams = checkpoint['hparams'] # get hparams
+        checkpoint_hparams = self.update_tacotron2_hparams(checkpoint['hparams']) # get hparams
         checkpoint_dict = checkpoint['state_dict'] # get state_dict
         
         model = load_model(checkpoint_hparams) # initialize the model
         model.load_state_dict(checkpoint_dict) # load pretrained weights
         _ = model.cuda().eval().half()
         print("Done")
+        
+        print("Compiling Tacotron Decoder... ", end='')
+        model.decoder = torch.jit.script(model.decoder)
+        print("Done")
+        
         tacotron_speaker_name_lookup = checkpoint['speaker_name_lookup'] # save speaker name lookup
         tacotron_speaker_id_lookup = checkpoint['speaker_id_lookup'] # save speaker_id lookup
         print(f"This Tacotron model has been trained for {checkpoint['iteration']} Iterations.")
@@ -328,7 +377,7 @@ class T2S:
     
     
     def update_tt(self, tacotron_name):
-        self.model, self.ttm_hparams, self.ttm_sp_name_lookup, self.ttm_sp_id_lookup = self.load_tacotron2(self.conf['TTM']['models'][tacotron_name]['modelpath'])
+        self.tacotron, self.ttm_hparams, self.ttm_sp_name_lookup, self.ttm_sp_id_lookup = self.load_tacotron2(self.conf['TTM']['models'][tacotron_name]['modelpath'])
         self.ttm_current = tacotron_name
         
         if self.conf['TTM']['use_speaker_ids_file_override']:# (optional) override
@@ -350,7 +399,7 @@ class T2S:
         return validated_names
     
     
-    def infer(self, text, speaker_names, style_mode, textseg_mode, batch_mode, max_attempts, max_duration_s, batch_size, dyna_max_duration_s, use_arpabet, target_score, speaker_mode, cat_silence_s, textseg_len_target, gate_delay=4, gate_threshold=0.6, filename_prefix=None, status_updates=False, show_time_to_gen=True, end_mode='thresh', absolute_maximum_tries=4096, absolutely_required_score=-1e3):
+    def infer(self, text, speaker_names, style_mode, textseg_mode, batch_mode, max_attempts, max_duration_s, batch_size, dyna_max_duration_s, use_arpabet, target_score, speaker_mode, cat_silence_s, textseg_len_target, gate_delay=4, gate_threshold=0.6, filename_prefix=None, status_updates=False, show_time_to_gen=True, end_mode='thresh', absolute_maximum_tries=2048, absolutely_required_score=-1e3):
         """
         PARAMS:
         ...
@@ -397,7 +446,7 @@ class T2S:
             # Score Parameters
             diagonality_weighting = 0.5 # 'pacing factor', a penalty for clips where the model pace changes often/rapidly. # this thing does NOT work well for Rarity.
             max_focus_weighting = 1.0   # 'stuck factor', a penalty for clips that spend execisve time on the same letter.
-            min_focus_weighting = 1.0   # 'miniskip factor', a penalty for skipping/ignoring single letters in the input text.
+            min_focus_weighting = 0.5   # 'miniskip factor', a penalty for skipping/ignoring single letters in the input text.
             avg_focus_weighting = 1.0   # 'skip factor', a penalty for skipping very large parts of the input text
             
             # add a filename prefix to keep multiple requests seperate
@@ -529,7 +578,8 @@ class T2S:
                         print(f'Exception: {ex}')
                         print(f"TorchMoji failed to process text:\n{text_batch}")
                         #raise Exception(f"text\n{text}\nfailed to process.")
-                    style_input = torch.from_numpy(embedding).cuda().half().repeat_interleave(batch_size_per_text, dim=0)
+                    style_input = torch.from_numpy(embedding).cuda().repeat_interleave(batch_size_per_text, dim=0)
+                    style_input = style_input.to(next(self.tacotron.parameters()).dtype)
                 elif style_mode == 'torchmoji_string':
                     style_input = text_batch
                     raise NotImplementedError
@@ -566,14 +616,22 @@ class T2S:
                 print("sequence.shape[0] =",sequence.shape[0]) # debug
                 
                 try:
-                    best_score = np.ones(simultaneous_texts) * -9e9
+                    best_score = np.ones(simultaneous_texts) * -1e5
                     tries      = np.zeros(simultaneous_texts)
                     best_generations = [0]*simultaneous_texts
                     best_score_str = ['']*simultaneous_texts
                     while np.amin(best_score) < target_score:
                         # run Tacotron
                         if status_updates: print("Running Tacotron2... ", end='')
-                        mel_batch_outputs, mel_batch_outputs_postnet, gate_batch_outputs, alignments_batch = self.tacotron.inference(sequence, tacotron_speaker_ids, style_input=style_input, style_mode=style_mode, text_lengths=text_lengths.repeat_interleave(batch_size_per_text, dim=0))
+                        mel_batch_outputs, mel_batch_outputs_postnet, gate_batch_outputs, alignments_batch, hidden_att_contexts = self.tacotron.inference(sequence, tacotron_speaker_ids, style_input=style_input, style_mode=style_mode, text_lengths=text_lengths.repeat_interleave(batch_size_per_text, dim=0),
+                        return_hidden_state=True if 'HDN' in self.MTW_input_type else False)
+                        
+                        if not self.MTW_conf['use_logvar_channels'] and mel_batch_outputs_postnet.shape[1] == self.MTW_conf['n_mel_channels']*2:
+                            mel_batch_outputs_postnet = mel_batch_outputs_postnet[:, :self.MTW_conf['n_mel_channels']]
+                        elif self.MTW_conf['use_logvar_channels'] and mel_batch_outputs_postnet.shape[1] == self.MTW_conf['n_mel_channels']:
+                            mel_batch_outputs_postnet = torch.cat((mel_batch_outputs_postnet, mel_batch_outputs_postnet.clone()*0.0), dim=1)
+                        if 'HDN' in self.MTW_input_type:
+                            mel_batch_outputs_postnet = hidden_att_contexts
                         
                         # metric for html side
                         n_passes+=1 # metric for html
@@ -601,18 +659,20 @@ class T2S:
                         for j in range(simultaneous_texts): # process each set of text spectrograms seperately
                             start, end = (j*batch_size_per_text), ((j+1)*batch_size_per_text)
                             sametext_batch = batch[start:end] # seperate the full batch into pieces that use the same input text
+                            assert len(sametext_batch) >= 1
                             
                             # process all items related to the j'th text input
                             for k, (mel_outputs, mel_outputs_postnet, gate_outputs, alignments, diagonality, avg_prob, enc_max_focus, enc_min_focus, enc_avg_focus) in enumerate(sametext_batch):
                                 # factors that make up score
                                 weighted_score =  avg_prob.item() # general alignment quality
                                 diagonality_punishment = (max(diagonality.item(),1.20)-1.20) * 0.5 * diagonality_weighting  # speaking each letter at a similar pace.
-                                max_focus_punishment = max((enc_max_focus.item()-40), 0) * 0.005 * max_focus_weighting # getting stuck on same letter for 0.5s
-                                min_focus_punishment = max(0.25-enc_min_focus.item(),0) * min_focus_weighting # skipping single enc outputs
+                                max_focus_punishment = max((enc_max_focus.item()-60), 0) * 0.005 * max_focus_weighting # getting stuck on same letter for 0.5s
+                                min_focus_punishment = max(0.15-enc_min_focus.item(),0) * min_focus_weighting # skipping single enc outputs
                                 avg_focus_punishment = max(2.5-enc_avg_focus.item(), 0) * avg_focus_weighting # skipping most enc outputs
                                 
                                 weighted_score -= (diagonality_punishment + max_focus_punishment + min_focus_punishment + avg_focus_punishment)
-                                score_str = f"{round(diagonality.item(),3)} {round(avg_prob.item()*100,2)}% {round(weighted_score,4)} {round(max_focus_punishment,2)} {round(min_focus_punishment,2)} {round(avg_focus_punishment,2)}|"
+                                score_str = f"[{round(weighted_score,4)}weighted_score] [{diagonality.item():>5.3f} diagonality] [{avg_prob.item():>06.2%}avg_max_att] [{diagonality_punishment:>5.2f}diagonality_punishment] [{max_focus_punishment:>5.2f}max_focus_punishment] [{min_focus_punishment:>5.2f}min_focus_punishment] [{avg_focus_punishment:>5.2f}avg_focus_punishment]|"
+                                assert weighted_score > -1e5, f'Score of {weighted_score} is less than minimum!\n{score_str}'
                                 if weighted_score > best_score[j]:
                                     best_score[j] = weighted_score
                                     best_score_str[j] = score_str
@@ -632,6 +692,8 @@ class T2S:
                     del batch
                     if status_updates: print("Done")
                     pass
+                
+                assert not any([x is 0 for x in best_generations])
                 
                 # cleanup VRAM
                 style_input = sequence = None
@@ -658,7 +720,8 @@ class T2S:
                     print("Running WaveGlow... ", end='')
                 # Run WaveGlow
                 audio_batch = self.waveglow.infer(mel_batch_outputs_postnet, speaker_ids=vocoder_speaker_ids, sigma=self.MTW_train_sigma*0.95)
-                audio_denoised_batch = self.MTW_denoiser(audio_batch, strength=0.0001).squeeze(1)
+                
+                audio_denoised_batch = audio_batch#self.MTW_denoiser(audio_batch, strength=0.0001).squeeze(1)
                 print("audio_denoised_batch.shape =", audio_denoised_batch.shape) # debug
                 if status_updates:
                     print('Done')
@@ -666,6 +729,8 @@ class T2S:
                 
                 # write audio files and any stats
                 audio_bs = audio_batch.size(0)
+                audio_batch = audio_batch.cpu().float()# move from GPU to system RAM
+                audio_denoised_batch = audio_denoised_batch.cpu().float()# move from GPU to system RAM
                 for j, (audio, audio_denoised) in enumerate(zip(audio_batch.split(1, dim=0), audio_denoised_batch.split(1, dim=0))):
                     # remove WaveGlow padding
                     audio_end = max_lengths[j] * self.ttm_hparams.hop_length
@@ -688,7 +753,7 @@ class T2S:
                         audio = torch.nn.functional.pad(audio, (0, cat_silence_samples))
                     
                     # scale audio for int16 output
-                    audio = (audio * 2**15).squeeze().cpu().numpy().astype('int16')
+                    audio = (audio * 2**15).squeeze().numpy().astype('int16')
                     
                     # remove if already exists
                     if os.path.exists(save_path):
@@ -772,3 +837,14 @@ class T2S:
         avg_score = np.mean(scores)
         
         return out_name, time_to_gen, audio_seconds_generated, total_specs, n_passes, avg_score
+
+
+def start_worker(config, device, request_queue, finished_queue):
+    """
+    Start a Text-2-Speech Worker.
+    This process will check request_queue for requests and complete them till the host process is killed or something crashes.
+    """
+    t2s = T2S(conf['workers']) # initialize Text-2-Speech module. Loads models
+    
+    while queue_is_empty:
+        time.sleep(0.1)# wait 100ms then check queue again...

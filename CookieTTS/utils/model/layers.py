@@ -246,22 +246,170 @@ class GMMAttention(nn.Module): # Experimental from NTT123
         return attention_context, attention_weights, loc
 
 
-class LSTMCellWithZoneout(nn.LSTMCell):
-    def __init__(self, input_size, hidden_size, bias=True, zoneout_prob=0.1):
-        super().__init__(input_size, hidden_size, bias)
-        self._zoneout_prob = zoneout_prob
+import torch
+from torch.nn.modules.rnn import RNNCellBase
+from torch import Tensor
+from typing import List, Tuple, Optional
+class LSTMCellWithZoneout(RNNCellBase):
+    r"""A long short-term memory (LSTM) cell.
+    .. math::
+        \begin{array}{ll}
+        i = \sigma(W_{ii} x + b_{ii} + W_{hi} h + b_{hi}) \\
+        f = \sigma(W_{if} x + b_{if} + W_{hf} h + b_{hf}) \\
+        g = \tanh(W_{ig} x + b_{ig} + W_{hg} h + b_{hg}) \\
+        o = \sigma(W_{io} x + b_{io} + W_{ho} h + b_{ho}) \\
+        c' = f * c + i * g \\
+        h' = o * \tanh(c') \\
+        \end{array}
+    where :math:`\sigma` is the sigmoid function, and :math:`*` is the Hadamard product.
+    Args:
+        input_size: The number of expected features in the input `x`
+        hidden_size: The number of features in the hidden state `h`
+        bias: If ``False``, then the layer does not use bias weights `b_ih` and
+            `b_hh`. Default: ``True``
+    Inputs: input, (h_0, c_0)
+        - **input** of shape `(batch, input_size)`: tensor containing input features
+        - **h_0** of shape `(batch, hidden_size)`: tensor containing the initial hidden
+          state for each element in the batch.
+        - **c_0** of shape `(batch, hidden_size)`: tensor containing the initial cell state
+          for each element in the batch.
+          If `(h_0, c_0)` is not provided, both **h_0** and **c_0** default to zero.
+    Outputs: (h_1, c_1)
+        - **h_1** of shape `(batch, hidden_size)`: tensor containing the next hidden state
+          for each element in the batch
+        - **c_1** of shape `(batch, hidden_size)`: tensor containing the next cell state
+          for each element in the batch
+    Attributes:
+        weight_ih: the learnable input-hidden weights, of shape
+            `(4*hidden_size, input_size)`
+        weight_hh: the learnable hidden-hidden weights, of shape
+            `(4*hidden_size, hidden_size)`
+        bias_ih: the learnable input-hidden bias, of shape `(4*hidden_size)`
+        bias_hh: the learnable hidden-hidden bias, of shape `(4*hidden_size)`
+    .. note::
+        All the weights and biases are initialized from :math:`\mathcal{U}(-\sqrt{k}, \sqrt{k})`
+        where :math:`k = \frac{1}{\text{hidden\_size}}`
+    Examples::
+        >>> rnn = nn.LSTMCell(10, 20)
+        >>> input = torch.randn(3, 10)
+        >>> hx = torch.randn(3, 20)
+        >>> cx = torch.randn(3, 20)
+        >>> output = []
+        >>> for i in range(6):
+                hx, cx = rnn(input[i], (hx, cx))
+                output.append(hx)
+    """
+
+    def __init__(self, input_size: int, hidden_size: int, bias: bool = True, dropout: float = 0.0, zoneout: float = 0.0) -> None:
+        super(LSTMCellWithZoneout, self).__init__(input_size, hidden_size, bias, num_chunks=4)
+        self.dropout = dropout
+        self.zoneout = zoneout
     
-    def forward(self, input, hx):
-        old_h, old_c = hx
-        new_h, new_c = super(LSTMCellWithZoneout, self).forward(input, hx)
-        if self.training and self._zoneout_prob > 0.0:
-            c_mask = torch.empty_like(new_c).bernoulli_(p=self._zoneout_prob).bool().data
-            h_mask = torch.empty_like(new_h).bernoulli_(p=self._zoneout_prob).bool().data
-            h = torch.where(h_mask, old_h, new_h)
-            c = torch.where(c_mask, old_c, new_c)
-            return h, c
+    #@torch.jit.script
+    def lstm_cell(self, input: Tensor,
+                        state: Tuple[Tensor, Tensor],
+                    weight_ih: Tensor,
+                    weight_hh: Tensor,
+                      dropout: float,
+                      zoneout: float,
+                     training: bool,
+                      bias_ih: Optional[Tensor] = None,
+                      bias_hh: Optional[Tensor] = None) -> Tuple[Tensor, Tensor]:
+        hx, cx = state
+        
+        if training and zoneout > 0.0:
+            old_h = hx.clone()
+            old_c = cx.clone()
+        
+            if bias_ih is None or bias_hh is None:
+                gates = (torch.mm(input, weight_ih.t()) + torch.mm(hx, weight_hh.t()))
+            else:
+                gates = (torch.mm(input, weight_ih.t()) + bias_ih +
+                         torch.mm(hx, weight_hh.t()) + bias_hh)
+            ingate, forgetgate, cellgate, outgate = gates.chunk(4, 1)
+
+            ingate = ingate.sigmoid_()
+            forgetgate = forgetgate.sigmoid_()
+            cellgate = cellgate.tanh_()
+            outgate = outgate.sigmoid_()
+
+            cy = (forgetgate * cx).add_(ingate * cellgate)
+            hy = outgate * torch.tanh(cy)
+
+            hy = torch.nn.functional.dropout(hy, p=dropout, training=training, inplace=True)
+            
+            c_mask = torch.empty_like(cy).bernoulli_(p=zoneout).byte()
+            h_mask = torch.empty_like(hy).bernoulli_(p=zoneout).byte()
+            hy = torch.where(h_mask, old_h, hy)
+            cy = torch.where(c_mask, old_c, cy)
         else:
-            return new_h, new_c
+            if bias_ih is None or bias_hh is None:
+                gates = (torch.mm(input, weight_ih.t()) + torch.mm(hx, weight_hh.t()))
+            else:
+                gates = (torch.mm(input, weight_ih.t()) + bias_ih +
+                         torch.mm(hx, weight_hh.t()) + bias_hh)
+            ingate, forgetgate, cellgate, outgate = gates.chunk(4, 1)
+
+            ingate = ingate.sigmoid_()
+            forgetgate = forgetgate.sigmoid_()
+            cellgate = cellgate.tanh_()
+            outgate = outgate.sigmoid_()
+
+            cy = (forgetgate * cx).add_(ingate * cellgate)
+            hy = outgate * torch.tanh(cy)
+
+            hy = torch.nn.functional.dropout(hy, p=dropout, training=training, inplace=True)
+        
+        return (hy, cy)
+    
+    def forward(self, input: Tensor, hx: Optional[Tuple[Tensor, Tensor]] = None) -> Tuple[Tensor, Tensor]:
+        self.check_forward_input(input)
+        if hx is None:
+            zeros = torch.zeros(input.size(0), self.hidden_size, dtype=input.dtype, device=input.device)
+            hx = (zeros, zeros)
+        self.check_forward_hidden(input, hx[0], '[0]')
+        self.check_forward_hidden(input, hx[1], '[1]')
+        return self.lstm_cell(
+            input, hx,
+            self.weight_ih, self.weight_hh,
+            self.dropout, self.zoneout,
+            self.training,
+            self.bias_ih, self.bias_hh,
+        )
+
+if __name__ == "__main__":
+    print("Testing LSTMCellWithZoneout")
+    torch.autograd.set_detect_anomaly(True)
+    
+    # test with all
+    lstmcell = LSTMCellWithZoneout(16, 32, bias=True, dropout=0.1, zoneout=0.1)
+    output, hidden = lstmcell( torch.rand(1, 16), (torch.rand(1, 32), torch.rand(1, 32)) )
+    output.sum().backward()
+    
+    # test without bias
+    lstmcell = LSTMCellWithZoneout(16, 32, bias=False, dropout=0.1, zoneout=0.1)
+    output, hidden = lstmcell( torch.rand(1, 16), (torch.rand(1, 32), torch.rand(1, 32)) )
+    output.sum().backward()
+    
+    # test without dropout, zoneout or bias
+    lstmcell = LSTMCellWithZoneout(16, 32, bias=False, dropout=0.0, zoneout=0.0)
+    output, hidden = lstmcell( torch.rand(1, 16), (torch.rand(1, 32), torch.rand(1, 32)) )
+    output.sum().backward()
+    
+    # test on GPU
+    lstmcell = LSTMCellWithZoneout(16, 32, bias=True, dropout=0.1, zoneout=0.1).cuda()
+    output, hidden = lstmcell( torch.rand(1, 16).cuda(), (torch.rand(1, 32).cuda(), torch.rand(1, 32).cuda()) )
+    output.sum().backward()
+    
+    # test on GPU in fp16
+    lstmcell = LSTMCellWithZoneout(16, 32, bias=True, dropout=0.1, zoneout=0.1).cuda().half()
+    output, hidden = lstmcell( torch.rand(1, 16).cuda().half(), (torch.rand(1, 32).cuda().half(), torch.rand(1, 32).cuda().half()) )
+    output.sum().backward()
+    
+    lstmcell = torch.jit.script(lstmcell)
+    
+    torch.autograd.set_detect_anomaly(False)
+    print('LSTMCellWithZoneout Test Passed!')
 
 
 class LinearNorm(torch.nn.Module):

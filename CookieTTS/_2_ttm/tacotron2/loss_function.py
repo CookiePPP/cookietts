@@ -1,10 +1,19 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+import torch.distributed as dist
 import numpy as np
-from torch import nn
+import math
 from CookieTTS.utils.model.utils import get_mask_from_lengths
 from typing import Optional
+
+
+def reduce_tensor(tensor, n_gpus):
+    rt = tensor.clone()
+    dist.all_reduce(rt, op=dist.ReduceOp.SUM)
+    rt /= n_gpus
+    return rt
+
 
 # https://github.com/gothiswaysir/Transformer_Multi_encoder/blob/952868b01d5e077657a036ced04933ce53dcbf4c/nets/pytorch_backend/e2e_tts_tacotron2.py#L28-L156
 class GuidedAttentionLoss(torch.nn.Module):
@@ -103,12 +112,16 @@ class Tacotron2Loss(nn.Module):
         self.use_LL_Loss = hparams.LL_SpectLoss
         self.melout_LL_scalar  = hparams.melout_LL_scalar
         self.postnet_LL_scalar = hparams.postnet_LL_scalar
-        self.melout_MSE_scalar = hparams.melout_MSE_scalar
-        self.melout_MAE_scalar = hparams.melout_MAE_scalar
+        self.melout_MSE_scalar  = hparams.melout_MSE_scalar
+        self.melout_MAE_scalar  = hparams.melout_MAE_scalar
         self.melout_SMAE_scalar = hparams.melout_SMAE_scalar
-        self.postnet_MSE_scalar = hparams.postnet_MSE_scalar
-        self.postnet_MAE_scalar = hparams.postnet_MAE_scalar
+        self.postnet_MSE_scalar  = hparams.postnet_MSE_scalar
+        self.postnet_MAE_scalar  = hparams.postnet_MAE_scalar
         self.postnet_SMAE_scalar = hparams.postnet_SMAE_scalar
+        self.adv_postnet_scalar = hparams.adv_postnet_scalar
+        self.adv_postnet_reconstruction_weight = hparams.adv_postnet_reconstruction_weight
+        self.dis_postnet_scalar = hparams.dis_postnet_scalar
+        self.dis_spect_scalar   = hparams.dis_spect_scalar
         self.masked_select = hparams.masked_select
         
         # KL Scheduler Params
@@ -229,14 +242,17 @@ class Tacotron2Loss(nn.Module):
         return -(q_Lxy + H), -KLD_bmean # [] + [], []
     
     
-    def forward(self, model_output, targets, iter, em_kl_weight=None, DiagonalGuidedAttention_scalar=None):
+    def forward(self, model_output, targets, criterion_dict, iter, em_kl_weight=None, DiagonalGuidedAttention_scalar=None):
         self.em_kl_weight = self.em_kl_weight if em_kl_weight is None else em_kl_weight
         self.DiagonalGuidedAttention_scalar = self.DiagonalGuidedAttention_scalar if DiagonalGuidedAttention_scalar is None else DiagonalGuidedAttention_scalar
+        amp, n_gpus, model, model_d, hparams, optimizer, optimizer_d, grad_clip_thresh = criterion_dict.values()
+        is_overflow = False
+        grad_norm = 0.0
         
         mel_target, gate_target, output_lengths, text_lengths, emotion_id_target, emotion_onehot_target, sylps_target, preserve_decoder, *_ = targets
         mel_target.requires_grad = False
         gate_target.requires_grad = False
-        mel_out, mel_out_postnet, gate_out, alignments, pred_sylps, syl_package, em_package, aux_em_package, *_ = model_output
+        mel_out, mel_out_postnet, gate_out, alignments, pred_sylps, syl_package, em_package, aux_em_package, gan_package, *_ = model_output
         gate_target = gate_target.view(-1, 1)
         gate_out = gate_out.view(-1, 1)
         
@@ -251,13 +267,18 @@ class Tacotron2Loss(nn.Module):
             mask = get_mask_from_lengths(output_lengths)
             mask = mask.expand(mel_target.size(1), mask.size(0), mask.size(1))
             mask = mask.permute(1, 0, 2)
+            
+            mel_target_not_masked = mel_target
             mel_target = torch.masked_select(mel_target, mask)
             if self.use_LL_Loss:
                 mel_out, mel_logvar = mel_out.chunk(2, dim=1)
                 mel_out_postnet, mel_logvar_postnet = mel_out_postnet.chunk(2, dim=1)
                 mel_logvar = torch.masked_select(mel_logvar, mask)
                 mel_logvar_postnet = torch.masked_select(mel_logvar_postnet, mask)
+            
+            mel_out_not_masked = mel_out
             mel_out = torch.masked_select(mel_out, mask)
+            mel_out_postnet_not_masked = mel_out_postnet
             mel_out_postnet = torch.masked_select(mel_out_postnet, mask)
         
         # spectrogram / decoder loss
@@ -364,15 +385,119 @@ class Tacotron2Loss(nn.Module):
                                         output_lengths[preserve_decoder==0.0])
             loss += (AttentionLoss*self.DiagonalGuidedAttention_scalar)
         
-        # debug/fun
-        S_Bsz = supervised_mask.sum().item()
-        U_Bsz = unsupervised_mask.sum().item()
-        ClassicationAccStr = 'N/A'
-        Top1ClassificationAcc = 0.0
-        if S_Bsz > 0:
-            Top1ClassificationAcc = (torch.argmax(log_prob_labeled.exp(), dim=1) == torch.argmax(y_onehot, dim=1)).float().sum().item()/S_Bsz # top-1 accuracy
-            self.AvgClassAcc = self.AvgClassAcc*0.95 + Top1ClassificationAcc*0.05
-            ClassicationAccStr = round(Top1ClassificationAcc*100, 2)
+        avg_fakeness = 0.0
+        if True and gan_package[0] is not None:
+            real_labels = torch.zeros(mel_target_not_masked.shape[0], device=loss.device, dtype=loss.dtype)# [B]
+            fake_labels = torch.ones( mel_target_not_masked.shape[0], device=loss.device, dtype=loss.dtype)# [B]
+            
+            mel_outputs_adv, speaker_embed, *_ = gan_package
+            if self.masked_select:
+                fill_mask = mel_target_not_masked == 0.0
+                mel_outputs_adv = mel_outputs_adv.clone()
+                mel_outputs_adv.masked_fill_(fill_mask, 0.0)
+                mel_outputs_adv_masked = torch.masked_select(mel_outputs_adv, mask)
+                mel_out_not_masked = mel_out_not_masked.clone()
+                mel_out_not_masked.masked_fill_(fill_mask, 0.0)
+                mel_out_postnet_not_masked = mel_out_postnet_not_masked.clone()
+                mel_out_postnet_not_masked.masked_fill_(fill_mask, 0.0)
+            
+            # spectrograms [B, n_mel, dec_T]
+            # mel_target_not_masked
+            # mel_out_not_masked
+            # mel_out_postnet_not_masked
+            # mel_outputs_adv
+            
+            speaker_embed = speaker_embed.unsqueeze(2).repeat(1, 1, dec_T)# [B, embed] -> [B, embed, dec_T]
+            fake_pred_fakeness = model_d(mel_outputs_adv, speaker_embed.detach())# should speaker_embed be attached computational graph? Not sure atm
+            avg_fakeness = fake_pred_fakeness.mean()# metric for Tensorboard
+            # Tacotron2 Optimizer / Loss
+            reduced_avg_fakeness = reduce_tensor(avg_fakeness.data, n_gpus).item() if hparams.distributed_run else avg_fakeness.item()
+            
+            adv_postnet_loss = nn.BCELoss()(fake_pred_fakeness, real_labels) # [B] -> [] calc loss to decrease fakeness of model
+            GAN_Spect_MAE = nn.L1Loss()(mel_outputs_adv_masked, mel_target)
+            if reduced_avg_fakeness > 0.4:
+                loss += (adv_postnet_loss*self.adv_postnet_scalar)
+                loss += (GAN_Spect_MAE*(self.adv_postnet_scalar*self.adv_postnet_reconstruction_weight))
+        
+        # Tacotron2 Optimizer / Loss
+        if hparams.distributed_run:
+            reduced_loss = reduce_tensor(loss.data, n_gpus).item()
+            reduced_gate_loss = reduce_tensor(gate_loss.data, n_gpus).item()
+        else:
+            reduced_loss = loss.item()
+            reduced_gate_loss = gate_loss.item()
+        
+        if optimizer is not None:
+            if hparams.fp16_run:
+                with amp.scale_loss(loss, optimizer) as scaled_loss:
+                    scaled_loss.backward()
+            else:
+                loss.backward()
+            
+            if hparams.fp16_run:
+                grad_norm = torch.nn.utils.clip_grad_norm_(
+                    amp.master_params(optimizer), grad_clip_thresh)
+                is_overflow = math.isinf(grad_norm) or math.isnan(grad_norm)
+            else:
+                grad_norm = torch.nn.utils.clip_grad_norm_(
+                    model.parameters(), grad_clip_thresh)
+            
+            optimizer.step()
+        
+        # (optional) Discriminator Optimizer / Loss
+        if True and gan_package[0] is not None:
+            if optimizer_d is not None:
+                optimizer_d.zero_grad()
+            
+            # spectrograms [B, n_mel, dec_T]
+            # mel_target_not_masked
+            # mel_out_not_masked
+            # mel_out_postnet_not_masked
+            # mel_outputs_adv
+            
+            fake_pred_fakeness = model_d(mel_outputs_adv.detach(), speaker_embed.detach())
+            fake_d_loss = nn.BCELoss()(fake_pred_fakeness, fake_labels)# [B] -> [] loss to increase distriminated fakeness of fake samples
+            
+            real_pred_fakeness = model_d(mel_target_not_masked.detach(), speaker_embed.detach())
+            real_d_loss = nn.BCELoss()(real_pred_fakeness, real_labels)# [B] -> [] loss to decrease distriminated fakeness of real samples
+            
+            if self.dis_postnet_scalar:
+                fake_pred_fakeness = model_d(mel_out_postnet_not_masked.detach(), speaker_embed.detach())
+                fake_d_loss += self.dis_postnet_scalar * nn.BCELoss()(fake_pred_fakeness, fake_labels)# [B] -> [] loss to increase distriminated fakeness of fake samples
+            
+            if self.dis_spect_scalar:
+                fake_pred_fakeness = model_d(mel_out_not_masked.detach(), speaker_embed.detach())
+                fake_d_loss += self.dis_spect_scalar * nn.BCELoss()(fake_pred_fakeness, fake_labels)# [B] -> [] loss to increase distriminated fakeness of fake samples
+            
+            d_loss = (real_d_loss+fake_d_loss) * (self.adv_postnet_scalar*0.5)
+            reduced_d_loss = reduce_tensor(d_loss.data, n_gpus).item() if hparams.distributed_run else d_loss.item()
+            
+            if optimizer_d is not None and reduced_avg_fakeness < 0.85:
+                if hparams.fp16_run:
+                    with amp.scale_loss(d_loss, optimizer_d) as scaled_loss:
+                        scaled_loss.backward()
+                else:
+                    d_loss.backward()
+                
+                if hparams.fp16_run:
+                    grad_norm_d = torch.nn.utils.clip_grad_norm_(
+                        amp.master_params(optimizer_d), grad_clip_thresh)
+                    is_overflow = math.isinf(grad_norm_d) or math.isnan(grad_norm_d)
+                else:
+                    grad_norm_d = torch.nn.utils.clip_grad_norm_(
+                        model_d.parameters(), grad_clip_thresh)
+                
+                optimizer_d.step()
+        
+        with torch.no_grad(): # debug/fun
+            S_Bsz = supervised_mask.sum().item()
+            U_Bsz = unsupervised_mask.sum().item()
+            ClassicationAccStr = 'N/A'
+            Top1ClassificationAcc = 0.0
+            if S_Bsz > 0:
+                Top1ClassificationAcc = (torch.argmax(log_prob_labeled.exp(), dim=1) == torch.argmax(y_onehot, dim=1)).float().sum().item()/S_Bsz # top-1 accuracy
+                self.AvgClassAcc = self.AvgClassAcc*0.95 + Top1ClassificationAcc*0.05
+                ClassicationAccStr = round(Top1ClassificationAcc*100, 2)
         
         print(
             "            Total loss = ", loss.item(), '\n',
@@ -401,6 +526,10 @@ class Tacotron2Loss(nn.Module):
             "      Predicted Zu MSE = ", PredDistMSE.item(), '\n',
             "      Predicted Zu MAE = ", PredDistMAE.item(), '\n',
             "     DiagAttentionLoss = ", AttentionLoss.item(), '\n',
+            "       PredAvgFakeness = ", reduced_avg_fakeness, '\n',
+            "          GeneratorMAE = ", GAN_Spect_MAE.item(), '\n',
+            "         GeneratorLoss = ", adv_postnet_loss.item(), '\n',
+            "     DiscriminatorLoss = ", reduced_d_loss/self.adv_postnet_scalar, '\n',
             "      ClassicationAcc  = ", ClassicationAccStr, '%\n',
             "      AvgClassicatAcc  = ", round(self.AvgClassAcc*100, 2), '%\n',
             "      Total Batch Size = ", Bsz, '\n',
@@ -433,5 +562,8 @@ class Tacotron2Loss(nn.Module):
             [PredDistMSE.item(), self.predzu_MSE_weight],
             [PredDistMAE.item(), self.predzu_MAE_weight],
             [Top1ClassificationAcc, 1.0],
+            [reduced_avg_fakeness, 1.0],
+            [adv_postnet_loss.item(), self.adv_postnet_scalar],
+            [reduced_d_loss/self.adv_postnet_scalar, self.adv_postnet_scalar],
             ]
-        return loss, gate_loss, loss_terms
+        return loss, gate_loss, loss_terms, reduced_loss, reduced_gate_loss, grad_norm, is_overflow

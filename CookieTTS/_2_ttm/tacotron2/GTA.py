@@ -84,9 +84,19 @@ def get_global_mean(data_loader, global_mean_npy, hparams):
     return global_mean
 
 
+def get_durations(alignments, output_lengths, input_lengths):
+    batch_durations = []
+    for alignment, output_length, input_length in zip(alignments, output_lengths, input_lengths):
+        alignment = alignment[:output_length, :input_length]
+        dur_frames = torch.histc(torch.argmax(alignment, dim=1).float(), min=0, max=input_length-1, bins=input_length)# number of frames each letter taken the maximum focus of the model.
+        assert dur_frames.sum().item() == output_length, f'{dur_frames.sum().item()} != {output_length}'
+        batch_durations.append(dur_frames)
+    return batch_durations# [[enc_T], [enc_T], [enc_T], ...]
+
+
 @torch.no_grad()
 def GTA_Synthesis(output_directory, checkpoint_path, n_gpus,
-          rank, group_name, hparams, training_mode, verify_outputs, use_val_files, fp16_save, extra_info='', audio_offset=0):
+          rank, group_name, hparams, training_mode, verify_outputs, use_val_files, use_hidden_state, fp16_save, max_mse, max_mae, args=None, extra_info='', audio_offset=0):
     """Generate Ground-Truth-Aligned Spectrograms for Training WaveGlow."""
     if audio_offset:
         hparams.load_mel_from_disk = False
@@ -121,7 +131,7 @@ def GTA_Synthesis(output_directory, checkpoint_path, n_gpus,
     if hparams.fp16_run:
         model = amp.initialize(model, opt_level='O2')
     
-    model.decoder.dump_attention_weights = True # hidden param to dump attention weights
+    model.decoder.dump_attention_weights = False if (args.save_letter_durations or args.save_phone_durations) else True # hidden param to dump attention weights
     
     # ================ MAIN TRAINNIG LOOP! ===================
     os.makedirs(os.path.join(output_directory), exist_ok=True)
@@ -141,8 +151,6 @@ def GTA_Synthesis(output_directory, checkpoint_path, n_gpus,
     for i, batch in enumerate(train_loader):
         last_batch = i == max_itter
         batch_size = remainder_size if last_batch else hparams.batch_size
-        
-        #print( [batch[-1] for j in range(len(batch))] )
         
         # get wavefile path
         batch_start = (i*hparams.batch_size*n_gpus) + rank
@@ -164,9 +172,7 @@ def GTA_Synthesis(output_directory, checkpoint_path, n_gpus,
         assert (input_lengths_ == input_lengths).all().item(), 'Error loading text lengths! Text Lengths from Dataloader do not match Text Lengths from GTA.py'
         ids_sorted_decreasing = ids_sorted_decreasing.numpy() # ids_sorted_decreasing, original index
         
-        sorted_audiopaths = [] # original_file_name
-        sorted_mel_paths = []
-        sorted_speaker_ids = []
+        sorted_audiopaths, sorted_mel_paths, sorted_speaker_ids = [], [], [] # original_file_name
         for k in range(batch_size):
             sorted_audiopath = audiopaths[ids_sorted_decreasing[k]]
             sorted_audiopaths.append(sorted_audiopath)
@@ -176,44 +182,94 @@ def GTA_Synthesis(output_directory, checkpoint_path, n_gpus,
             sorted_speaker_ids.append(sorted_speaker_id)
         
         x, _ = model.parse_batch(batch)
-        _, mel_outputs_postnet, _, *_ = model(x, teacher_force_till=9999, p_teacher_forcing=1.0, drop_frame_rate=0.0)
+        _, mel_outputs_postnet, _, alignments, *_, additional = model(x, teacher_force_till=9999, p_teacher_forcing=1.0, drop_frame_rate=0.0, return_hidden_state=use_hidden_state)
+        if use_hidden_state:
+            hidden_att_contexts = additional[0]# [[B, dim],] -> [B, dim]
+            hidden_att_contexts = hidden_att_contexts.data.cpu()
+        if args.save_letter_encoder_outputs or args.save_phone_encoder_outputs:
+            memory = additional[1] # [B, enc_T, mem_dim][B, dim]
+            memory = memory.data.cpu()
+        if args.save_letter_durations or args.save_phone_durations:
+            alignments = alignments.data.cpu()
+            print(alignments.shape)
+            durations = get_durations(alignments, output_lengths, input_lengths)
         mel_outputs_postnet = mel_outputs_postnet.data.cpu()
         
         for k in range(batch_size):
             wav_path = sorted_audiopaths[k].replace(".npy",".wav")
+            hidden_path = wav_path.replace(".wav",".hdn")
             mel = mel_outputs_postnet[k,:,:output_lengths[k]]
+            mel_shape = list(mel[:model.n_mel_channels, :].shape)
             mel_path = sorted_mel_paths[k]
             speaker_id = sorted_speaker_ids[k]
             
             offset_append = '' if audio_offset == 0 else str(audio_offset)
             save_path = mel_path+offset_append+'.npy' # ext = '.mel.npy' or '.mel1.npy' ... '.mel599.npy'
-            map = f"{wav_path}|{save_path}|{speaker_id}\n"
-            f.write(map)
+            save_path_hidden = hidden_path+offset_append+'.npy' if use_hidden_state else '' # ext = '.hdn.npy' or '.hdn1.npy' ... '.hdn599.npy'
             
-            mel_shape = list(mel[:model.n_mel_channels, :].shape)
-            
-            if verify_outputs:
+            if verify_outputs or max_mse or max_mae:
                 gt_mel = train_set.get_mel(wav_path)
                 orig_shape = list(gt_mel.shape)
                 MAE = torch.nn.functional.l1_loss(mel[:model.n_mel_channels, :], gt_mel).item()
                 MSE = torch.nn.functional.mse_loss(mel[:model.n_mel_channels, :], gt_mel).item()
                 # check mel from wav_path has same shape as mel just saved
+                if max_mse and MSE > max_mse:
+                    failed_files+=1
+                    print(f"MSE ({MSE}) is greater than max MSE ({max_mse}).\nFilepath: '{wav_path}'\n")
+                    continue
+                if max_mae and MAE > max_mae:
+                    failed_files+=1
+                    print(f"MAE ({MAE}) is greater than max MAE ({max_mae}).\nFilepath: '{wav_path}'\n")
+                    continue
             else:
                 MSE = MAE = orig_shape = 'N/A'
-            
-            print(f"PATH: '{wav_path}'\nText Length: {input_lengths[k].item()}\nMel Shape:{mel_shape}\nSpeaker_ID: {speaker_id}\nTarget_Size: {orig_shape}\nMSE: {MSE}\nMAE: {MAE}\n")
             
             if orig_shape == 'N/A' or orig_shape == mel_shape:
                 processed_files+=1
             else:
                 failed_files+=1
-                print(f"Target shape {orig_shape} does not match generated mel shape {mel_shape}.\nFilepath: '{wav_path}'")
+                print(f"Target shape {orig_shape} does not match generated mel shape {mel_shape}.\nFilepath: '{wav_path}'\n")
                 continue
             
-            mel = mel.numpy()
-            if fp16_save:
-                mel = mel.astype(np.float16)
-            np.save(save_path, mel)
+            print(f"PATH: '{wav_path}'\nText Length: {input_lengths[k].item()}\nMel Shape:{mel_shape}\nSpeaker_ID: {speaker_id}\nTarget Shape: {orig_shape}\nMSE: {MSE}\nMAE: {MAE}\n")
+            
+            if not args.do_not_save_mel:
+                mel = mel.numpy()
+                mel = mel.astype(np.float16) if fp16_save else mel
+                np.save(save_path, mel)
+            save_path_hidden = duration_path = save_path_enc_out = ''
+            if use_hidden_state:
+                hidden_att_context = hidden_att_contexts[k,:,:output_lengths[k]]
+                hidden_att_context = hidden_att_context.numpy()
+                hidden_att_context = hidden_att_context.astype(np.float16) if fp16_save else hidden_att_context
+                np.save(save_path_hidden, hidden_att_context)
+            if args.save_letter_durations and hparams.p_arpabet == 0.:
+                durs = durations[k]
+                durs = durs.numpy()
+                durs = durs.astype(np.float16) if fp16_save else hidden_att_context
+                duration_path = wav_path.replace('.wav','_gdur.npy')
+                np.save(duration_path, durs)
+            if args.save_phone_durations and hparams.p_arpabet == 1.:
+                durs = durations[k]
+                durs = durs.numpy()
+                durs = durs.astype(np.float16) if fp16_save else hidden_att_context
+                duration_path = wav_path.replace('.wav','_pdur.npy')
+                np.save(duration_path, durs)
+            if args.save_letter_encoder_outputs and hparams.p_arpabet == 0.:
+                encoder_outputs = memory[k, :input_lengths[k], :]
+                encoder_outputs = encoder_outputs.numpy()
+                encoder_outputs = encoder_outputs.astype(np.float16) if fp16_save else hidden_att_context
+                save_path_enc_out = wav_path.replace('.wav','_genc_out.npy')
+                np.save(save_path_enc_out, encoder_outputs)
+            if args.save_phone_encoder_outputs and hparams.p_arpabet == 1.:
+                encoder_outputs = memory[k, :input_lengths[k], :]
+                encoder_outputs = encoder_outputs.numpy()
+                encoder_outputs = encoder_outputs.astype(np.float16) if fp16_save else hidden_att_context
+                save_path_enc_out = wav_path.replace('.wav','_penc_out.npy')
+                np.save(save_path_enc_out, encoder_outputs)
+            
+            map = f"{wav_path}|{save_path}|{speaker_id}|{save_path_hidden}|{duration_path}|{save_path_enc_out}\n"
+            f.write(map) # write paths to text file
         
         duration = time.time() - duration
         avg_duration = rolling_sum.process(duration)
@@ -224,12 +280,13 @@ def GTA_Synthesis(output_directory, checkpoint_path, n_gpus,
     
     # merge all generated filelists from every GPU
     filenames = [f'map_{filelisttype}_{j}.txt' for j in range(n_gpus)]
-    with open(os.path.join(output_directory, f'map_{filelisttype}.txt'), 'w') as outfile:
-        for fname in filenames:
-            with open(os.path.join(output_directory, fname)) as infile:
-                for line in infile:
-                    if len(line.strip()):
-                        outfile.write(line)
+    if rank == 0:
+        with open(os.path.join(output_directory, f'map_{filelisttype}.txt'), 'w') as outfile:
+            for fname in filenames:
+                with open(os.path.join(output_directory, fname)) as infile:
+                    for line in infile:
+                        if len(line.strip()):
+                            outfile.write(line)
 
 
 if __name__ == '__main__':
@@ -238,8 +295,8 @@ if __name__ == '__main__':
     In the output_directory will be a filelist that can be used to train WaveGlow/WaveFlow on the aligned tacotron outputs, which will increase audio quality when generating new text.
     
     Example:
-    CUDA_VISIBLE_DEVICES=0,1,2 python3 -m multiproc GTA.py -o "GTA_flist" -c "outdir/checkpoint_300000" --extremeGTA 100 --verify_outputs --fp16_save
-    CUDA_VISIBLE_DEVICES=0,1,2 python3 -m multiproc GTA.py -o "GTA_flist" -c "outdir/checkpoint_300000" --extremeGTA 100 --verify_outputs --fp16_save --use_validation_files
+    CUDA_VISIBLE_DEVICES=0,1,2 python3 -m multiproc GTA.py -o "GTA_flist" -c "outdir/checkpoint_300000" --extremeGTA 100 --hparams=distributed_run=True,fp16_run=True --verify_outputs --save_hidden_state --fp16_save --max_mse 0.35
+    CUDA_VISIBLE_DEVICES=0,1,2 python3 -m multiproc GTA.py -o "GTA_flist" -c "outdir/checkpoint_300000" --extremeGTA 100 --hparams=distributed_run=True,fp16_run=True --verify_outputs --save_hidden_state --fp16_save --max_mse 0.35 --use_validation_files
     
      - In this example, CUDA_VISIBLE_DEVICES selects the 1st, 2nd and 3rd GPUs
      - '-o GTA_flist' is the location that the new filelist(s) will be saved
@@ -268,15 +325,31 @@ if __name__ == '__main__':
     parser.add_argument('--rank', type=int, default=0,
                         required=False, help='rank of current gpu')
     parser.add_argument('--num_workers', type=int, default=8,
-                        required=False, help='how many processes are used to load data for each GPU. Each process will use a chunk of RAM. 5 Workers on a Threadripper 2950X is enough to feed one RTX 2080 Ti in fp16 mode.')
+                        required=False, help='how many processes (workers) are used to load data for each GPU. Each process will use a chunk of RAM. 24 Workers on a Threadripper 2950X is enough to feed three RTX 2080 Ti\'s in fp16 mode.')
     parser.add_argument('--extremeGTA', type=int, default=0, required=False,
                         help='Generate a Ground Truth Aligned output every interval specified. This will run tacotron hop_length//interval times per file and can use thousands of GBs of storage. Caution is advised')
+    parser.add_argument('--max_mse', type=float, default=0.45, required=False,
+                        help='Maximum MSE from Ground Truth to be valid for saving. (Anything above this value will be discarded)')
+    parser.add_argument('--max_mae', type=float, default=0.6, required=False,
+                        help='Maximum MAE from Ground Truth to be valid for saving. (Anything above this value will be discarded)')
     parser.add_argument('--use_training_mode', action='store_true',
                         help='Use model.train() while generating alignments. Will increase both variablility and inaccuracy.')
     parser.add_argument('--verify_outputs', action='store_true',
                         help='Debug Option. Checks output file and input file match.')
     parser.add_argument('--use_validation_files', action='store_true',
                         help='Ground Truth Align validation files instead of training files.')
+    parser.add_argument('--save_hidden_state', action='store_true',
+                        help='Save model internal state as well as spectrograms (decoder_hidden_attention_context). Hidden states can be used as alternatives to spectrograms for training Vocoders.')
+    parser.add_argument('--save_letter_durations', action='store_true',
+                        help='Save durations of each grapheme in the input.')
+    parser.add_argument('--save_phone_durations', action='store_true',
+                        help='Save durations of each phoneme in the input.')
+    parser.add_argument('--save_letter_encoder_outputs', action='store_true',
+                        help='Save encoded graphemes.')
+    parser.add_argument('--save_phone_encoder_outputs', action='store_true',
+                        help='Save encoded phonemes.')
+    parser.add_argument('--do_not_save_mel', action='store_true',
+                        help='Save encoded phonemes.')
     parser.add_argument('--fp16_save', action='store_true',
                         help='Save spectrograms using np.float16 aka Half Precision. Will reduce the storage space required.')
     parser.add_argument('--group_name', type=str, default='group_name',
@@ -309,7 +382,7 @@ if __name__ == '__main__':
     hparams.validation_files = hparams.validation_files.replace("mel_val","val").replace("_merged.txt",".txt")
     
     if not args.use_validation_files:
-        hparams.batch_size = hparams.batch_size * 12 # no gradients stored so batch size can go up a bunch
+        hparams.batch_size = hparams.batch_size * 10 # no gradients stored so batch size can go up a bunch
     
     torch.autograd.set_grad_enabled(False)
     
@@ -322,7 +395,12 @@ if __name__ == '__main__':
         for ind, ioffset in enumerate(range(0, hparams.hop_length, args.extremeGTA)): # generate aligned spectrograms for all audio samples
             if ind < 0:
                 continue
-            GTA_Synthesis(args.output_directory, args.checkpoint_path, args.n_gpus, args.rank, args.group_name, hparams, args.use_training_mode, args.verify_outputs, args.use_validation_files, args.fp16_save, audio_offset=ioffset, extra_info=f"{ind}/{hparams.hop_length//args.extremeGTA} ")
+            GTA_Synthesis(args.output_directory, args.checkpoint_path, args.n_gpus, args.rank, args.group_name, hparams, args.use_training_mode, args.verify_outputs, args.use_validation_files, args.save_hidden_state, args.fp16_save, args.max_mse, args.max_mae, args=args, audio_offset=ioffset, extra_info=f"{ind+1}/{hparams.hop_length//args.extremeGTA} ")
+    elif (args.save_letter_durations or args.save_letter_encoder_outputs) and (args.save_phone_durations or args.save_phone_encoder_outputs):
+        hparams.p_arpabet = 0.0
+        GTA_Synthesis(args.output_directory, args.checkpoint_path, args.n_gpus, args.rank, args.group_name, hparams, args.use_training_mode, args.verify_outputs, args.use_validation_files, args.save_hidden_state, args.fp16_save, args.max_mse, args.max_mae, args=args, extra_info="1/2 ")
+        hparams.p_arpabet = 1.0
+        GTA_Synthesis(args.output_directory, args.checkpoint_path, args.n_gpus, args.rank, args.group_name, hparams, args.use_training_mode, args.verify_outputs, args.use_validation_files, args.save_hidden_state, args.fp16_save, args.max_mse, args.max_mae, args=args, extra_info="2/2 ")
     else:
-        GTA_Synthesis(args.output_directory, args.checkpoint_path, args.n_gpus, args.rank, args.group_name, hparams, args.use_training_mode, args.verify_outputs, args.use_validation_files, args.fp16_save)
+        GTA_Synthesis(args.output_directory, args.checkpoint_path, args.n_gpus, args.rank, args.group_name, hparams, args.use_training_mode, args.verify_outputs, args.use_validation_files, args.save_hidden_state, args.fp16_save, args.max_mse, args.max_mae, args=args)
     print("GTA Done!")

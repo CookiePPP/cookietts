@@ -3,11 +3,12 @@ import torch.nn as nn
 import torch.nn.functional as F
 import numpy as np
 
-from efficient_modules import AffineCouplingBlock, InvertibleConv1x1
+from CookieTTS._4_mtw.waveglow.efficient_modules import AffineCouplingBlock, InvertibleConv1x1
 
 class WaveGlow(nn.Module):
     def __init__(self, yoyo, yoyo_WN, n_mel_channels, n_flows, n_group, n_early_every,
-                n_early_size, memory_efficient, spect_scaling, upsample_mode, WN_config, win_length, hop_length):
+                n_early_size, memory_efficient, spect_scaling, upsample_mode, WN_config, win_length, hop_length,
+                preempthasis=None, use_logvar_channels=False, load_hidden_from_disk=False, iso226_empthasis=False):
         super(WaveGlow, self).__init__()
         assert(n_group % 2 == 0)
         self.n_flows = n_flows
@@ -28,12 +29,12 @@ class WaveGlow(nn.Module):
             self.cond_layers = nn.ModuleList()
             
             # start cond layer
-            cond_layer = nn.Conv1d(self.n_mel_channels+self.speaker_embed_dim, hidden_dim, 3, padding=1, padding_mode='zeros')# (in_channels, out_channels, kernel_size)
+            cond_layer = nn.Conv1d(self.n_mel_channels+self.speaker_embed_dim, hidden_dim, 3, padding=1, padding_mode='replicate')# (in_channels, out_channels, kernel_size)
             cond_layer = nn.utils.weight_norm(cond_layer, name='weight')
             self.cond_layers.append(cond_layer)
             
             for i in range(1): # hidden layers
-                cond_layer = nn.Conv1d(hidden_dim, hidden_dim, 3, padding=1, padding_mode='zeros')# (in_channels, out_channels, kernel_size)
+                cond_layer = nn.Conv1d(hidden_dim, hidden_dim, 3, padding=1, padding_mode='replicate')# (in_channels, out_channels, kernel_size)
                 cond_layer = nn.utils.weight_norm(cond_layer, name='weight')
                 self.cond_layers.append(cond_layer)
             
@@ -43,9 +44,9 @@ class WaveGlow(nn.Module):
             self.cond_layers.append(cond_layer)
             
         if yoyo_WN:
-            from efficient_modules import WN
+            from CookieTTS._4_mtw.waveglow.efficient_modules import WN
         else:
-            from glow import WN
+            from CookieTTS._4_mtw.waveglow.glow import WN
         
         self.upsample_factor = hop_length // n_group
         sub_win_size = win_length // n_group

@@ -4,10 +4,11 @@ import torch
 from typing import Optional
 
 
-def get_mask_from_lengths(lengths: torch.Tensor, max_len = None):
-    if max_len is None:
+@torch.jit.script
+def get_mask_from_lengths(lengths: torch.Tensor, max_len:int = 0):
+    if max_len == 0:
         max_len = int(torch.max(lengths).item())
-    ids = torch.arange(0, max_len, out=torch.cuda.LongTensor(max_len))
+    ids = torch.arange(0, max_len, device=lengths.device, dtype=torch.long)
     mask = (ids < lengths.unsqueeze(1))
     return mask
 

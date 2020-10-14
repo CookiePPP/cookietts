@@ -13,8 +13,7 @@ from torch.utils.data.distributed import DistributedSampler
 from torch.utils.data import DataLoader
 from torch.optim.lr_scheduler import ReduceLROnPlateau
 
-from model import load_model
-from model import Tacotron2
+from model import Tacotron2, GANDiscriminator, load_model
 from data_utils import TextMelLoader, TextMelCollate
 from loss_function import Tacotron2Loss
 from logger import Tacotron2Logger
@@ -82,20 +81,13 @@ class StreamingMovingAverage:
         return float(self.sum) / len(self.values)
 
 
-def reduce_tensor(tensor, n_gpus):
-    rt = tensor.clone()
-    dist.all_reduce(rt, op=dist.ReduceOp.SUM)
-    rt /= n_gpus
-    return rt
-
-
 def init_distributed(hparams, n_gpus, rank, group_name):
     assert torch.cuda.is_available(), "Distributed mode requires CUDA."
     print("Initializing Distributed")
 
     # Set cuda device so everything is done on the right GPU.
     torch.cuda.set_device(rank % torch.cuda.device_count())
-
+    
     # Initialize distributed communication
     dist.init_process_group(
         backend=hparams.dist_backend, init_method=hparams.dist_url,
@@ -114,7 +106,7 @@ def prepare_dataloaders(hparams, saved_lookup):
     collate_fn = TextMelCollate(hparams)
     
     if hparams.distributed_run:
-        train_sampler = DistributedSampler(trainset,shuffle=False)#True)
+        train_sampler = DistributedSampler(trainset, shuffle=False)#True)
         shuffle = False
     else:
         train_sampler = None
@@ -138,9 +130,9 @@ def prepare_directories_and_logger(output_directory, log_directory, rank):
     return logger
 
 
-def warm_start_force_model(checkpoint_path, model):
+def warm_start_force_model(checkpoint_path, model, model_d):
     assert os.path.isfile(checkpoint_path)
-    print("Warm starting model from checkpoint '{}'".format(checkpoint_path))
+    print(f"Warm starting model from checkpoint '{checkpoint_path}'")
     checkpoint_dict = torch.load(checkpoint_path, map_location='cpu')
     pretrained_dict = checkpoint_dict['state_dict']
     model_dict = model.state_dict()
@@ -154,12 +146,28 @@ def warm_start_force_model(checkpoint_path, model):
     if pretrained_missing: print(list(pretrained_missing.keys()),"doesn't have pretrained weights and has been reset")
     model_dict.update(filtered_dict)
     model.load_state_dict(model_dict)
+    
+    
+    if 'model_d' in checkpoint_dict.keys():
+        pretrained_dict = checkpoint_dict['model_d']
+        model_dict = model_d.state_dict()
+        # Fiter out unneccessary keys
+        filtered_dict = {k: v for k,v in pretrained_dict.items() if k in model_dict and pretrained_dict[k].shape == model_dict[k].shape}
+        model_dict_missing = {k: v for k,v in pretrained_dict.items() if k not in model_dict}
+        model_dict_mismatching = {k: v for k,v in pretrained_dict.items() if k in model_dict and pretrained_dict[k].shape != model_dict[k].shape}
+        pretrained_missing = {k: v for k,v in model_dict.items() if k not in pretrained_dict}
+        if model_dict_missing: print(list(model_dict_missing.keys()),'does not exist in the current model and is being ignored')
+        if model_dict_mismatching: print(list(model_dict_mismatching.keys()),"is the wrong shape and has been reset")
+        if pretrained_missing: print(list(pretrained_missing.keys()),"doesn't have pretrained weights and has been reset")
+        model_dict.update(filtered_dict)
+        model_d.load_state_dict(model_dict)
+    
     iteration = 0
     saved_lookup = checkpoint_dict['speaker_id_lookup'] if 'speaker_id_lookup' in checkpoint_dict.keys() else None
-    return model, iteration, saved_lookup
+    return model, model_d, iteration, saved_lookup
 
 
-def warm_start_model(checkpoint_path, model, ignore_layers):
+def warm_start_model(checkpoint_path, model, model_d, ignore_layers):
     assert os.path.isfile(checkpoint_path)
     print("Warm starting model from checkpoint '{}'".format(checkpoint_path))
     checkpoint_dict = torch.load(checkpoint_path, map_location='cpu')
@@ -174,10 +182,10 @@ def warm_start_model(checkpoint_path, model, ignore_layers):
     iteration = checkpoint_dict['iteration']
     iteration = 0
     saved_lookup = checkpoint_dict['speaker_id_lookup'] if 'speaker_id_lookup' in checkpoint_dict.keys() else None
-    return model, iteration, saved_lookup
+    return model, model_d, iteration, saved_lookup
 
 
-def load_checkpoint(checkpoint_path, model, optimizer):
+def load_checkpoint(checkpoint_path, model, model_d, optimizer, optimizer_d):
     assert os.path.isfile(checkpoint_path)
     print("Loading checkpoint '{}'".format(checkpoint_path))
     checkpoint_dict = torch.load(checkpoint_path, map_location='cpu')
@@ -186,8 +194,10 @@ def load_checkpoint(checkpoint_path, model, optimizer):
     #model.load_state_dict(state_dict) # tmp for updating old models
 
     model.load_state_dict(checkpoint_dict['state_dict']) # original
-
+    
+    if 'model_d' in checkpoint_dict.keys(): model_d.load_state_dict(checkpoint_dict['model_d'])
     #if 'optimizer' in checkpoint_dict.keys(): optimizer.load_state_dict(checkpoint_dict['optimizer'])
+    if 'optimizer_d' in checkpoint_dict.keys(): optimizer_d.load_state_dict(checkpoint_dict['optimizer_d'])
     if 'amp' in checkpoint_dict.keys(): amp.load_state_dict(checkpoint_dict['amp'])
     if 'learning_rate' in checkpoint_dict.keys(): learning_rate = checkpoint_dict['learning_rate']
     #if 'hparams' in checkpoint_dict.keys(): hparams = checkpoint_dict['hparams']
@@ -200,10 +210,10 @@ def load_checkpoint(checkpoint_path, model, optimizer):
     saved_lookup = checkpoint_dict['speaker_id_lookup'] if 'speaker_id_lookup' in checkpoint_dict.keys() else None
     print("Loaded checkpoint '{}' from iteration {}" .format(
         checkpoint_path, iteration))
-    return model, optimizer, learning_rate, iteration, best_validation_loss, saved_lookup
+    return model, model_d, optimizer, optimizer_d, learning_rate, iteration, best_validation_loss, saved_lookup
 
 
-def save_checkpoint(model, optimizer, learning_rate, iteration, hparams, best_validation_loss, average_loss, speaker_id_lookup, filepath):
+def save_checkpoint(model, model_d, optimizer, optimizer_d, learning_rate, iteration, hparams, best_validation_loss, average_loss, speaker_id_lookup, filepath):
     from CookieTTS.utils.dataset.utils import load_filepaths_and_text
     tqdm.write("Saving model and optimizer state at iteration {} to {}".format(
         iteration, filepath))
@@ -214,6 +224,8 @@ def save_checkpoint(model, optimizer, learning_rate, iteration, hparams, best_va
 
     torch.save({'iteration': iteration,
                 'state_dict': model.state_dict(),
+                'model_d': model_d.state_dict(),
+                'optimizer_d': optimizer_d.state_dict(),
                 'optimizer': optimizer.state_dict(),
                 'learning_rate': learning_rate,
                 #'amp': amp.state_dict(),
@@ -248,10 +260,11 @@ def average_loss_terms(loss_terms_arr):
     return loss_terms
 
 
-def validate(model, criterion, valset, iteration, batch_size, n_gpus,
-             collate_fn, logger, distributed_run, rank, val_teacher_force_till, val_p_teacher_forcing, teacher_force=1):
+def validate(hparams, model, model_d, criterion, valset, iteration, batch_size, n_gpus,
+             collate_fn, logger, distributed_run, rank, val_teacher_force_till, val_p_teacher_forcing, teacher_force=1, p_emotionnet_embed=0.0):
     """Handles all the validation scoring and printing"""
     model.eval()
+    model_d.eval()
     with torch.no_grad():
         val_sampler = DistributedSampler(valset) if distributed_run else None
         val_loader = DataLoader(valset, sampler=val_sampler, num_workers=num_workers_,
@@ -260,9 +273,11 @@ def validate(model, criterion, valset, iteration, batch_size, n_gpus,
         if teacher_force == 1:
             val_teacher_force_till = 0
             val_p_teacher_forcing = 1.0
+            p_emotionnet_embed = 1.0
         elif teacher_force == 2:
             val_teacher_force_till = 0
             val_p_teacher_forcing = 0.0
+            p_emotionnet_embed = 0.0
         val_loss = 0.0
         diagonality = torch.zeros(1)
         avg_prob = torch.zeros(1)
@@ -271,16 +286,22 @@ def validate(model, criterion, valset, iteration, batch_size, n_gpus,
             x, y = model.parse_batch(batch)
             with torch.random.fork_rng(devices=[0,]):
                 torch.random.manual_seed(0)# use same seed during validation so results are more consistent and comparable.
-                y_pred = model(x, teacher_force_till=val_teacher_force_till, p_teacher_forcing=val_p_teacher_forcing)
+                y_pred = model(x, teacher_force_till=val_teacher_force_till, p_teacher_forcing=val_p_teacher_forcing, p_emotionnet_embed=p_emotionnet_embed)
             rate, prob = alignment_metric(x, y_pred)
             diagonality += rate
             avg_prob += prob
-            loss, gate_loss, loss_terms = criterion(y_pred, y, 0)
+            criterion_dict = { "amp": None,
+                            "n_gpus": n_gpus,
+                             "model": model,
+                           "model_d": model_d,
+                           "hparams": hparams,
+                         "optimizer": None,
+                       "optimizer_d": None,
+                  "grad_clip_thresh": 0.0,   }
+            loss, gate_loss, loss_terms, reduced_val_loss, reduced_gate_loss, grad_norm, is_overflow = criterion(
+                 y_pred, y, criterion_dict, 0)
+            
             loss_terms_arr.append(loss_terms)
-            if distributed_run:
-                reduced_val_loss = reduce_tensor(loss.data, n_gpus).item()
-            else:
-                reduced_val_loss = loss.item()
             val_loss += reduced_val_loss
             # end forloop
         val_loss = val_loss / (i + 1)
@@ -288,6 +309,7 @@ def validate(model, criterion, valset, iteration, batch_size, n_gpus,
         avg_prob = (avg_prob / (i + 1)).item()
         # end torch.no_grad()
     model.train()
+    model_d.train()
     if rank == 0:
         tqdm.write("Validation loss {}: {:9f}  Average Max Attention: {:9f}".format(iteration, val_loss, avg_prob))
         if iteration != 0:
@@ -310,10 +332,12 @@ def calculate_global_mean(data_loader, global_mean_npy, hparams):
     print('calculating global mean...')
     for i, batch in tqdm(enumerate(data_loader), total=len(data_loader), smoothing=0.001):
         text_padded, input_lengths, mel_padded, gate_padded,\
-            output_lengths, speaker_ids, torchmoji_hidden, preserve_decoder_states = batch
+            output_lengths, speaker_ids, torchmoji_hidden, preserve_decoder_states, *_ = batch
         # padded values are 0.
         sums.append(mel_padded.double().sum(dim=(0, 2)))
         frames.append(output_lengths.double().sum())
+        if i > 100:
+            break
     global_mean = sum(sums) / sum(frames)
     global_mean = to_gpu(global_mean.half()) if hparams.fp16_run else to_gpu(global_mean.float())
     if global_mean_npy:
@@ -347,6 +371,8 @@ def train(output_directory, log_directory, checkpoint_path, warm_start, warm_sta
     # initialize blank model
     model = load_model(hparams)
     model.eval()
+    model_d = GANDiscriminator(hparams).cuda()
+    model_d.eval()
     learning_rate = hparams.learning_rate
 
     # (optional) show the names of each layer in model, mainly makes it easier to copy/paste what you want to adjust
@@ -359,38 +385,47 @@ def train(output_directory, log_directory, checkpoint_path, warm_start, warm_sta
             if any(layer.startswith(module) for module in hparams.frozen_modules):
                 params.requires_grad = False
                 print(f"Layer: {layer} has been frozen")
-
+    
     # define optimizer (any params without requires_grad are ignored)
     #optimizer = torch.optim.Adam(filter(lambda p: p.requires_grad, model.parameters()), lr=learning_rate, weight_decay=hparams.weight_decay)
+    
+    if hparams.use_postnet_generator_and_discriminator:
+        optimizer_d = apexopt.FusedAdam(filter(lambda p: p.requires_grad, model_d.parameters()), lr=learning_rate, weight_decay=hparams.weight_decay)
+    else:
+        optimizer_d = None
     optimizer = apexopt.FusedAdam(filter(lambda p: p.requires_grad, model.parameters()), lr=learning_rate, weight_decay=hparams.weight_decay)
-
+    
     if hparams.fp16_run:
         model, optimizer = amp.initialize(model, optimizer, opt_level='O2')
-
+        if hparams.use_postnet_generator_and_discriminator:
+            model_d, optimizer_d = amp.initialize(model_d, optimizer_d, opt_level='O2')
+    
     if hparams.distributed_run:
         model = apply_gradient_allreduce(model)
-
+        if hparams.use_postnet_generator_and_discriminator:
+            model_d = apply_gradient_allreduce(model_d)
+    
     criterion = Tacotron2Loss(hparams)
-
+    
     logger = prepare_directories_and_logger(
         output_directory, log_directory, rank)
-
+    
     # Load checkpoint if one exists
-    best_validation_loss = 0.8 # used to see when "best_model" should be saved, default = 0.4, load_checkpoint will update to last best value.
+    best_validation_loss = 1e3 # used to see when "best_model" should be saved
     iteration = 0
     epoch_offset = 0
     _learning_rate = 1e-3
     saved_lookup = None
     if checkpoint_path is not None:
         if warm_start:
-            model, iteration, saved_lookup = warm_start_model(
-                checkpoint_path, model, hparams.ignore_layers)
+            model, model_d, iteration, saved_lookup = warm_start_model(
+                checkpoint_path, model, model_d, hparams.ignore_layers)
         elif warm_start_force:
-            model, iteration, saved_lookup = warm_start_force_model(
-                checkpoint_path, model)
+            model, model_d, iteration, saved_lookup = warm_start_force_model(
+                checkpoint_path, model, model_d)
         else:
-            model, optimizer, _learning_rate, iteration, best_validation_loss, saved_lookup = load_checkpoint(
-                checkpoint_path, model, optimizer)
+            model, model_d, optimizer, optimizer_d, _learning_rate, iteration, best_validation_loss, saved_lookup = load_checkpoint(
+                checkpoint_path, model, model_d, optimizer, optimizer_d)
             if hparams.use_saved_learning_rate:
                 learning_rate = _learning_rate
             iteration += 1  # next iteration is iteration + 1
@@ -415,6 +450,7 @@ def train(output_directory, log_directory, checkpoint_path, warm_start, warm_sta
         scheduler = ReduceLROnPlateau(optimizer, factor=0.1**(1/5), patience=10)
 
     model.train()
+    model_d.train()
     is_overflow = False
     validate_then_terminate = 0
     if validate_then_terminate:
@@ -459,49 +495,27 @@ def train(output_directory, log_directory, checkpoint_path, warm_start, warm_sta
                 learning_rate = max(min_learning_rate, learning_rate) # output the largest number
                 for param_group in optimizer.param_groups:
                     param_group['lr'] = learning_rate
+                for param_group in optimizer_d.param_groups:
+                    param_group['lr'] = learning_rate * discriminator_lr_scale
             # /run external code every epoch, allows the run to be adjusting without restarts/
             
-            model.zero_grad()
+            optimizer.zero_grad()
             x, y = model.parse_batch(batch) # move batch to GPU (async)
             y_pred = model(x, teacher_force_till=teacher_force_till, p_teacher_forcing=p_teacher_forcing, drop_frame_rate=drop_frame_rate)
             
-            loss, gate_loss, loss_terms = criterion(y_pred, y, iteration, em_kl_weight=em_kl_weight, DiagonalGuidedAttention_scalar=DiagonalGuidedAttention_scalar)
+            criterion_dict = {
+                "amp": amp,
+                "n_gpus": n_gpus,
+                "model": model,
+                "model_d": model_d,
+                "hparams": hparams,
+                "optimizer": optimizer,
+                "optimizer_d": optimizer_d,
+                "grad_clip_thresh": grad_clip_thresh,
+            }
+            loss, gate_loss, loss_terms, reduced_loss, reduced_gate_loss, grad_norm, is_overflow = criterion(
+                 y_pred, y, criterion_dict, iteration, em_kl_weight=em_kl_weight, DiagonalGuidedAttention_scalar=DiagonalGuidedAttention_scalar)
             
-            if hparams.distributed_run:
-                reduced_loss = reduce_tensor(loss.data, n_gpus).item()
-                reduced_gate_loss = reduce_tensor(gate_loss.data, n_gpus).item()
-            else:
-                reduced_loss = loss.item()
-                reduced_gate_loss = gate_loss.item()
-            
-            if hparams.fp16_run:
-                with amp.scale_loss(loss, optimizer) as scaled_loss:
-                    scaled_loss.backward()
-            else:
-                loss.backward()
-            
-            if hparams.fp16_run:
-                grad_norm = torch.nn.utils.clip_grad_norm_(
-                    amp.master_params(optimizer), grad_clip_thresh)
-                is_overflow = math.isinf(grad_norm) or math.isnan(grad_norm)
-            else:
-                grad_norm = torch.nn.utils.clip_grad_norm_(
-                    model.parameters(), grad_clip_thresh)
-            
-            optimizer.step()
-            
-            for j, param_group in enumerate(optimizer.param_groups):
-                learning_rate = (float(param_group['lr'])); break
-            
-            if iteration < decay_start:
-                learning_rate = A_ + C_
-            else:
-                iteration_adjusted = iteration - decay_start
-                learning_rate = (A_*(e**(-iteration_adjusted/B_))) + C_
-            learning_rate = max(min_learning_rate, learning_rate) # output the largest number
-            for param_group in optimizer.param_groups:
-                param_group['lr'] = learning_rate
-
             if not is_overflow and rank == 0:
                 duration = time.time() - start_time
                 average_loss = rolling_loss.process(reduced_loss)
@@ -518,26 +532,26 @@ def train(output_directory, log_directory, checkpoint_path, warm_start, warm_sta
                 start_time = time.time()
             if is_overflow and rank == 0:
                 tqdm.write("Gradient Overflow, Skipping Step")
-
+            
             if not is_overflow and ((iteration % (hparams.iters_per_checkpoint/1) == 0) or (os.path.exists(save_file_check_path))):
                 # save model checkpoint like normal
                 if rank == 0:
                     checkpoint_path = os.path.join(
                         output_directory, "checkpoint_{}".format(iteration))
-                    save_checkpoint(model, optimizer, learning_rate, iteration, hparams, best_validation_loss, average_loss, speaker_lookup, checkpoint_path)
-
+                    save_checkpoint(model, model_d, optimizer, optimizer_d, learning_rate, iteration, hparams, best_validation_loss, average_loss, speaker_lookup, checkpoint_path)
+            
             if not is_overflow and ((iteration % int((hparams.iters_per_validation)/1) == 0) or (os.path.exists(save_file_check_path)) or (iteration < 1000 and (iteration % 250 == 0))):
                 if rank == 0 and os.path.exists(save_file_check_path):
                     os.remove(save_file_check_path)
                 # perform validation and save "best_model" depending on validation loss
                 if iteration > 0:
-                    val_loss = validate(model, criterion, valset, iteration,
+                    val_loss = validate(hparams, model, model_d, criterion, valset, iteration,
                              hparams.val_batch_size, n_gpus, collate_fn, logger,
                              hparams.distributed_run, rank, val_teacher_force_till, val_p_teacher_forcing, teacher_force=1) #teacher_force
-                    val_loss = validate(model, criterion, valset, iteration,
+                    val_loss = validate(hparams, model, model_d, criterion, valset, iteration,
                              hparams.val_batch_size, n_gpus, collate_fn, logger,
                              hparams.distributed_run, rank, val_teacher_force_till, val_p_teacher_forcing, teacher_force=2) #infer
-                val_loss = validate(model, criterion, valset, iteration,
+                val_loss = validate(hparams, model, model_d, criterion, valset, iteration,
                          hparams.val_batch_size, n_gpus, collate_fn, logger,
                          hparams.distributed_run, rank, val_teacher_force_till, val_p_teacher_forcing, teacher_force=0) #validate (0.8 forcing)
                 if use_scheduler:
@@ -546,7 +560,7 @@ def train(output_directory, log_directory, checkpoint_path, warm_start, warm_sta
                     best_validation_loss = val_loss
                     if rank == 0:
                         checkpoint_path = os.path.join(output_directory, "best_model")
-                        save_checkpoint(model, optimizer, learning_rate, iteration, hparams, best_validation_loss, average_loss, speaker_lookup, checkpoint_path)
+                        save_checkpoint(model, model_d, optimizer, optimizer_d, learning_rate, iteration, hparams, best_validation_loss, average_loss, speaker_lookup, checkpoint_path)
 
             iteration += 1
             # end of iteration loop
@@ -577,32 +591,38 @@ if __name__ == '__main__':
                         required=False, help='Distributed group name')
     parser.add_argument('--hparams', type=str,
                         required=False, help='comma separated name=value pairs')
-
+    
     args = parser.parse_args()
     hparams = create_hparams(args.hparams)
-
+    
     torch.backends.cudnn.enabled = hparams.cudnn_enabled
     torch.backends.cudnn.benchmark = hparams.cudnn_benchmark
-
+    
     print("FP16 Run:", hparams.fp16_run)
     print("Dynamic Loss Scaling:", hparams.dynamic_loss_scaling)
     print("Distributed Run:", hparams.distributed_run)
     print("cuDNN Enabled:", hparams.cudnn_enabled)
     print("cuDNN Benchmark:", hparams.cudnn_benchmark)
-
+    
     if args.gen_mels:
         print("Generating Mels...")
         create_mels(hparams)
         print("Finished Generating Mels")
-
+    
     if args.detect_anomaly: # checks backprop for NaN/Infs and outputs very useful stack-trace. Runs slowly while enabled.
         torch.autograd.set_detect_anomaly(True)
         print("Autograd Anomaly Detection Enabled!\n(Code will run slower but backward pass will output useful info if crashing or NaN/inf values)")
-
+    
     # these are needed for fp16 training, not inference
     if hparams.fp16_run:
         from apex import amp
+    else:
+        global amp
+        amp = None
+    try:
         from apex import optimizers as apexopt
-
+    except:
+        pass
+    
     train(args.output_directory, args.log_directory, args.checkpoint_path,
           args.warm_start, args.warm_start_force, args.n_gpus, args.rank, args.group_name, hparams)

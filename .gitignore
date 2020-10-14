@@ -26,6 +26,7 @@ ipython_config.py
 /CookieTTS/_4_mtw/waveglow/outdir/
 /CookieTTS/_2_ttm/tacotron2/checkpoints/
 /CookieTTS/_2_ttm/tacotron2/NewCPs/
+/CookieTTS/_4_mtw/waveglow/checkpoints/
 
 # Model logs
 /CookieTTS/_2_ttm/flowtts/logs/

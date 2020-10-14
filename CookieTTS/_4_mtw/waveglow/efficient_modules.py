@@ -3,7 +3,6 @@ import torch.nn as nn
 import torch.nn.functional as F
 from torch.utils.checkpoint import checkpoint as checkpoint_grads
 from torch.autograd import Function, set_grad_enabled, grad, gradcheck
-from efficient_util import add_weight_norms
 import numpy as np
 
 from functools import reduce
@@ -55,13 +54,13 @@ class WaveFlowCoupling(nn.Module):
             # conv queue with autoregressive initialized with zeros
             n_group = audio_out.shape[1]
             for i in range(n_group-1):# [0,1,2...22]
-                audio_samp = z[-1]# [B, 1, T//n_group]
-                next_audio_samp = audio_out[:,i+1:i+2]# just generated sample # [B, n_group, T//n_group] -> [B, 1, T//n_group]
+                audio_samp = z[-1]# just generated sample [B, 1, T//n_group]
+                next_audio_samp = audio_out[:,i+1:i+2]# [B, n_group, T//n_group] -> [B, 1, T//n_group]
                 
                 acts, audio_queues, spect_queues = self.WN(audio_samp, spect, speaker_ids, audio_queues=audio_queues, spect_queues=spect_queues) # get next sample
                 
-                log_s, t = acts[:,:,-1:] # [2, B, 1, T//n_group] -> [B, 1, T//n_group], [B, 1, T//n_group]
-                z.append( (next_audio_samp - t) / log_s.exp() ) # [B, 1, T//n_group] save predicted next sample
+                log_s, t = acts[:,:,-1:] # [2, B, 1, T//n_group] -> [B, 1, 1], [B, 1, 1]
+                z.append( (next_audio_samp - t) / log_s.exp() ) # [B, 1, 1] save predicted next sample
             z = torch.cat(z, dim=1)# [B, n_group, T//n_group]
             return z, -log_s
 
@@ -382,7 +381,7 @@ class PermuteHeight():
     def __init__(self, n_remaining_channels, k, n_flows, sigma):
         assert n_flows%2==0, "PermuteHeight requires even n_flows"
         self.sigma = sigma
-        self.const = 0.5 * np.log(2 * np.pi) + np.log(self.sigma)
+        self.const = -(0.5 * np.log(2 * np.pi) + np.log(self.sigma))/n_flows
         
         # b) we reverse Z(7), Z(6), Z(5), Z(4) over the height dimension as before, but bipartition Z(3), Z(2), Z(1), Z(0) in the middle of the height dimension then reverse each part respectively.
         if k%4 in (2,3): # Flows (2,3, 6,7, 10,11)

@@ -13,7 +13,7 @@ def load_wav_to_torch(full_path):
         max_mag = -np.iinfo(data.dtype).min # maximum magnitude = min possible value of intXX
     else: # if audio data is type fp32
         max_mag = max(np.amax(data), -np.amin(data))
-        max_mag = 2**31 if max_mag > (2**15) else (2**15 if max_mag > 1.01 else 1.0) # data should be either 16-bit INT, 32-bit INT or [-1 to 1] float32
+        max_mag = (2**31)+1 if max_mag > (2**15) else ((2**15)+1 if max_mag > 1.01 else 1.0) # data should be either 16-bit INT, 32-bit INT or [-1 to 1] float32
     return torch.FloatTensor(data.astype(np.float32)), sampling_rate, max_mag
 
 
@@ -32,3 +32,41 @@ def files_to_list(filename):
 
     files = [f.rstrip() for f in files]
     return files
+
+
+@torch.jit.script
+def DTW(batch_pred, batch_target, scale_factor: int, range_: int):
+    """
+    Calcuates ideal time-warp for each frame to minimize L1 Error from target.
+    Params:
+        scale_factor: Scale factor for linear interpolation.
+                      Values greater than 1 allows blends neighbouring frames to be used.
+        range_: Range around the target frame that predicted frames should be tested as possible candidates to output.
+                If range is set to 1, then predicted frames with more than 0.5 distance cannot be used. (where 0.5 distance means blending the 2 frames together).
+    """
+    assert range_ % 2 == 1, 'range_ must be an odd integer.'
+    assert batch_pred.shape == batch_target.shape, 'pred and target shapes do not match.'
+    assert len(batch_pred) == 3, 'input Tensor must be 3d of dims [batch, height, time]'
+    assert len(batch_target) == 3, 'input Tensor must be 3d of dims [batch, height, time]'
+    
+    batch_pred_dtw = batch_pred * 0.
+    for i, (pred, target) in enumerate(zip(batch_pred, batch_target)):
+        pred = pred.unsqueeze(0)
+        target = target.unsqueeze(0)
+        
+        # shift pred into all aligned forms that might produce improved L1
+        pred_pad = torch.nn.functional.pad(pred, (range_//2, range_//2))
+        pred_expanded = torch.nn.functional.interpolate(pred_pad, scale_factor=float(scale_factor), mode='linear', align_corners=False)# [B, C, T] -> [B, C, T*s]
+        
+        p_shape = pred.shape
+        pred_list = []
+        for j in range(scale_factor*range_):
+            pred_list.append(pred_expanded[:,:,j::scale_factor][:,:,:p_shape[2]])
+        
+        pred_dtw = pred.clone()
+        for pred_interpolated in pred_list:
+            new_l1 = torch.nn.functional.l1_loss(pred_interpolated, target, reduction='none').sum(dim=1, keepdim=True)
+            old_l1 = torch.nn.functional.l1_loss(pred_dtw, target, reduction='none').sum(dim=1, keepdim=True)
+            pred_dtw = torch.where(new_l1 < old_l1, pred_interpolated, pred_dtw)
+        batch_pred_dtw[i:i+1] = pred_dtw
+    return batch_pred_dtw

@@ -1,22 +1,38 @@
 current_iteration = iteration
+######################################################################################
+##                                                                                  ##
+## ████████╗ █████╗  ██████╗ ██████╗ ████████╗██████╗  ██████╗ ███╗   ██╗  ██████╗  ##
+## ╚══██╔══╝██╔══██╗██╔════╝██╔═══██╗╚══██╔══╝██╔══██╗██╔═══██╗████╗  ██║  ╚════██╗ ##
+##    ██║   ███████║██║     ██║   ██║   ██║   ██████╔╝██║   ██║██╔██╗ ██║   █████╔╝ ##
+##    ██║   ██╔══██║██║     ██║   ██║   ██║   ██╔══██╗██║   ██║██║╚██╗██║  ██╔═══╝  ##
+##    ██║   ██║  ██║╚██████╗╚██████╔╝   ██║   ██║  ██║╚██████╔╝██║ ╚████║  ███████╗ ##
+##    ╚═╝   ╚═╝  ╚═╝ ╚═════╝ ╚═════╝    ╚═╝   ╚═╝  ╚═╝ ╚═════╝ ╚═╝  ╚═══╝  ╚══════╝ ##
+##                                                                                  ##
+######################################################################################
+## Tacotron2 ##
+###############
 
 # Learning Rate / Optimization
 decay_start = 99999999
-A_ = 36e-5
+A_ = 0.25e-4
 B_ = 40000
 C_ = 0e-5
 min_learning_rate = 1e-6
 
-grad_clip_thresh = 1.5
+discriminator_lr_scale = 1.0
+
+grad_clip_thresh = 1.0
 
 # Loss Scalars
-em_kl_weight = 0.0001 # set to None to load from hparams
-DiagonalGuidedAttention_scalar = 0.001#0.05 # set to None to load from hparams
+em_kl_weight = 0.0005 # set to None to load from hparams.py
+DiagonalGuidedAttention_scalar = 0.2 # set to None to load from hparams.py
 
 # Prenet/Teacher Forcing Stuffs
-drop_frame_rate = 0.0
-#drop_frame_rate = min(0.000010 * max(current_iteration-5000,0), 0.2) # linearly increase DFR from 0.0 to 0.25 from iteration 5000 to 55000.
-p_teacher_forcing = 1.00
+dfr_warmup_iters = 10000
+dfr_max_value = 0.2
+drop_frame_rate = min(max(current_iteration-1,0)/(dfr_warmup_iters*dfr_max_value), dfr_max_value) # linearly increase DFR from 0.0 to 0.2 from iteration 1 to 10001.
+
+p_teacher_forcing = 0.95
 teacher_force_till = 0
 val_p_teacher_forcing=0.80
 val_teacher_force_till=30

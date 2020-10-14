@@ -61,20 +61,15 @@ class AuxEmotionNet(nn.Module):
         return aux_zs, aux_zu_mu, aux_zu_logvar, aux_zu_params
     
     def infer_rand(self, sylps):# [B]
-        syl_zu = torch.zeros_like(sylps, layout=(sylps.shape[0],)).normal_()[:, None]# [B] -> [B, 1]
+        pass
         return syl_zu
     
     def infer_controlled(self, x, mu=0.0):# [B], int
-        syl_zu = torch.ones(x.shape[0])[:, None] * mu# [B] -> [B, 1]
+        pass
         return syl_zu
     
-    def infer_auto(self, sylps, rand_sampling=False):# [B]
-        ln_sylps = sylps.log()
-        sylps_cat = torch.stack((sylps, ln_sylps), dim=1)# [B, 2]
-        syl_res = self.seq_layers(sylps_cat)
-        syl_params = sylps_cat + self.res_weight * syl_res# [B, 2]
-        syl_mu = syl_params[:, 0]    # [B]
-        syl_logvar = syl_params[:, 1]# [B]
-        syl_zu = self.reparameterize(syl_mu, syl_logvar, rand_sampling)# [B]
-        syl_zu = syl_zu[:, None]# [B] -> [B, 1]
-        return syl_zu
+    def infer_auto(self, torchmoji_hidden, speaker_embed, encoder_outputs, text_lengths=None, variable_sampling=False):# [B]
+        zs, zu_mu, zu_logvar, _ = self.forward(torchmoji_hidden, speaker_embed, encoder_outputs, text_lengths=None)
+        zu = self.reparameterize(zu_mu, zu_logvar, variable_sampling)# -> [B, 1, lat_dim]
+        
+        return zs, zu

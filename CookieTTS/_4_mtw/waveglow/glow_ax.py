@@ -25,6 +25,7 @@
 #
 # *****************************************************************************
 import copy
+import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -32,7 +33,6 @@ from torch.autograd import Variable
 
 # "Gated Convolutional Neural Networks for Domain Adaptation"
 #  https://arxiv.org/pdf/1905.06906.pdf
-
 @torch.jit.script
 def GTU(input_a, input_b, n_channels: int):
     """Gated Tanh Unit (GTU)"""
@@ -43,7 +43,7 @@ def GTU(input_a, input_b, n_channels: int):
     return acts
 
 @torch.jit.script
-def GTRU(input_a, input_b, n_channels: int):
+def GTRU(input_a, input_b, n_channels: int):# saves significant VRAM and runs faster, unstable for first 150K~ iters. (test a difference layer initialization?)
     """Gated[?] Tanh ReLU Unit (GTRU)"""
     in_act = input_a+input_b
     t_act = torch.tanh(in_act[:, :n_channels, :])
@@ -126,7 +126,7 @@ def GTSRU(input_a, input_b, n_channels: int):
     return acts
 
 @torch.jit.script
-def GSIRRU(input_a, input_b, n_channels: int):
+def GSIRRU(input_a, input_b, n_channels: int): # best and fastest converging unit, uses a lot of VRAM.
     """Gated[?] SIREN ReLU Unit (GSIRRU)"""
     in_act = input_a+input_b
     in_act[:, :n_channels, :].detach().mul_(16) # modify tensor WITHOUT telling autograd.
@@ -159,7 +159,6 @@ def GSIRRLRU(input_a, input_b, n_channels: int):
 def GTLRU(input_a, input_b, n_channels: int):
     """Gated[?] Tanh Leaky ReLU Unit (GTLRU)"""
     in_act = input_a+input_b
-    in_act[:, :n_channels, :].detach().mul_(16) # modify tensor WITHOUT telling autograd.
     t_act = torch.tanh(in_act[:, :n_channels, :])
     r_act = torch.nn.functional.leaky_relu(in_act[:, n_channels:, :], negative_slope=0.01, inplace=True)
     acts = t_act * r_act
@@ -198,6 +197,51 @@ def get_gate_func(gated_unit_str):
     else:
         raise Exception("gated_unit is invalid\nOptions are ('GTU','GTRU','GLU').")
 
+
+class TransposedUpsampleNet(nn.Module):
+    """
+    Uses Transposed Convs to upsample a [B, C, T] Tensor.
+    
+    [B, in_channels, T] -> [B, out_channels, prod(scales)*T]
+    """
+    def __init__(self, in_channels, out_channels, hidden_channels, kernel_size=3, scales=[16, 16], use_last_layer_act_func=False, weightnorm=False, residual=False, residual_linear=False, rezero=False):
+        super(TransposedUpsampleNet, self).__init__()
+        self.residual = residual
+        self.residual_linear = residual_linear
+        self.res_weight = nn.Parameter(torch.rand(1)*0.02+0.01) if rezero else None
+        self.scales = scales
+        self.t_convs = nn.ModuleList()
+        for i, scale in enumerate(scales):
+            is_first_layer = bool(i == 0)
+            is_last_layer = bool(i+1 == len(scales))
+            in_dim = in_channels if is_first_layer else hidden_channels
+            out_dim = out_channels if is_last_layer else hidden_channels
+            k_size = kernel_size[i] if type(kernel_size) == list else kernel_size
+            t_conv = nn.ConvTranspose1d(in_dim, out_dim, k_size, scale, padding=(k_size-scale)//2)
+            if weightnorm:
+                t_conv = torch.nn.utils.weight_norm(t_conv)
+            self.t_convs.append(t_conv)
+            if not is_last_layer or use_last_layer_act_func:
+                self.t_convs.append( nn.LeakyReLU(negative_slope=0.4, inplace=True) )
+        self.res_channels = min(in_channels, out_channels)
+    
+    def forward(self, x):# [B, C, T]
+        if self.residual:
+            scale = np.product(self.scales)
+            x_interp = F.interpolate(x, scale_factor=scale, mode='linear' if self.residual_linear else 'nearest', align_corners=False)
+        
+        for layer in self.t_convs:
+            if hasattr(layer, 'inplace'):
+                layer.inplace = False if self.training else True
+            x = layer(x)
+        
+        if self.residual:
+            if self.res_weight:
+                x *= self.res_weight
+            x[:, :self.res_channels] += x_interp[:, :self.res_channels]
+        return x
+
+
 class WN(nn.Module):
     """
     This is the WaveNet like layer for the affine coupling.  The primary difference
@@ -205,8 +249,10 @@ class WN(nn.Module):
     size reset.  The dilation only doubles on each layer
     """
     def __init__(self, n_in_channels, cond_in_channels, cond_layers, cond_hidden_channels, cond_kernel_size, cond_padding_mode, seperable_conv, merge_res_skip, upsample_mode, n_layers, n_channels, # audio_channels, mel_channels*n_group, n_layers, n_conv_channels
-                 speaker_embed_dim, rezero, cond_activation_func='none', negative_slope=None, kernel_size=None, kernel_size_w=None, n_layers_dilations_w=None, n_layers_dilations_h=None, res_skip=True, cond_out_activation_func=True, upsample_first=None, gated_unit='GTU'): # bool: ReZero
+                 speaker_embed_dim, rezero, cond_activation_func='none', negative_slope=None, kernel_size=None, kernel_size_w=None, n_layers_dilations_w=None, n_layers_dilations_h=None, res_skip=True, cond_out_activation_func=True, upsample_first=None, gated_unit='GTU', upsample_factor=None,
+                 transposed_conv_hidden_dim=256, transposed_conv_kernel_size=4, transposed_conv_scales=None): # bool: ReZero
         super(WN, self).__init__()
+        cond_in_channels += speaker_embed_dim
         kernel_size = kernel_size_w or kernel_size
         assert(kernel_size % 2 == 1)
         assert(n_channels % 2 == 0)
@@ -239,14 +285,23 @@ class WN(nn.Module):
             max_speakers = 512
             self.speaker_embed = nn.Embedding(max_speakers, self.speaker_embed_dim)
         
+        self.interpolation_required = True
+        t_in_dim = None
+        t_out_dim = None
+        if transposed_conv_scales is not None and len(transposed_conv_scales) > 0 and transposed_conv_hidden_dim and transposed_conv_kernel_size:
+            t_in_dim = transposed_conv_hidden_dim if (self.upsample_first is False) else cond_in_channels
+            t_out_dim = 2*n_channels*n_layers if (self.upsample_first is False) else cond_in_channels
+            self.upsample_net = TransposedUpsampleNet(t_in_dim, t_out_dim, transposed_conv_hidden_dim, transposed_conv_kernel_size, transposed_conv_scales, use_last_layer_act_func=False)
+            self.interpolation_required = bool( np.product(transposed_conv_scales) != upsample_factor )
+        
         self.cond_out_activation_func = cond_out_activation_func
-        self.cond_layers = nn.ModuleList()
         if cond_layers:
-            cond_in_channels = cond_in_channels + self.speaker_embed_dim
+            self.cond_layers = nn.ModuleList()
             cond_kernel_size = 2*cond_kernel_size - 1 # 1 -> 1, 2 -> 3, 3 -> 5
             cond_pad = int((cond_kernel_size - 1)/2)
-            cond_output_channels = 2*n_channels*n_layers
+            cond_output_channels = 2*n_channels*n_layers if (t_in_dim is None) else transposed_conv_hidden_dim
             # messy initialization for arbitrary number of layers, input dims and output dims
+            cond_in_channels = t_out_dim if (t_out_dim is not None and self.upsample_first == 'before_wn_cond') else cond_in_channels
             dimensions = [cond_in_channels,]+[cond_hidden_channels]*(cond_layers-1)+[cond_output_channels,]
             in_dims = dimensions[:-1]
             out_dims = dimensions[1:]
@@ -272,7 +327,6 @@ class WN(nn.Module):
                 self.cond_activation_func = torch.nn.functional.sigmoid
             else:
                 raise NotImplementedError
-        
         
         if type(n_layers_dilations_w) == int:
             n_layers_dilations_w = [n_layers_dilations_w,]*n_layers # constant dilation if using int
@@ -305,9 +359,17 @@ class WN(nn.Module):
                 res_skip_layer = nn.utils.weight_norm(res_skip_layer, name='weight')
                 self.res_skip_layers.append(res_skip_layer)
     
-    def _upsample_mels(self, cond, audio_size):
-        cond = F.interpolate(cond, size=audio_size[2], mode=self.upsample_mode, align_corners=True if self.upsample_mode == 'linear' else None)
-        #cond = F.interpolate(cond, scale_factor=600/24, mode=self.upsample_mode, align_corners=True if self.upsample_mode == 'linear' else None) # upsample by hop_length//n_group
+    def _upsample_mels(self, cond, audio_size, force_interpolate=False):
+        if hasattr(self, 'upsample_net') and self.upsample_net is not None:
+            cond = self.upsample_net(cond)
+        if force_interpolate or (self.interpolation_required and not (cond.shape[2] == audio_size[2])):
+            cond = F.interpolate(cond, size=audio_size[2], mode=self.upsample_mode, align_corners=True if self.upsample_mode == 'linear' else None)
+        else:
+            cond_len = cond.shape[2]
+            audio_len = audio_size[2]
+            pad_l = (cond_len-audio_len)//2
+            pad_r = -(audio_len-cond_len)//2
+            cond = cond[:, :, pad_l:-pad_r]
         return cond
     
     def forward(self, audio, spect, speaker_id=None):
@@ -318,14 +380,14 @@ class WN(nn.Module):
             speaker_embeddings = speaker_embeddings.unsqueeze(-1).repeat(1, 1, spect.shape[2]) # shape like spect
             spect = torch.cat([spect, speaker_embeddings], dim=1) # and concat them
         
-        for i, layer in enumerate(self.cond_layers):
-            spect = layer(spect)
-            if hasattr(self, 'cond_activation_func') and (self.cond_out_activation_func or (i != len(self.cond_layers)-1)):
-                spect = self.cond_activation_func(spect)
+        if hasattr(self, 'cond_layers') and self.cond_layers:
+            for i, layer in enumerate(self.cond_layers):
+                spect = layer(spect)
+                if hasattr(self, 'cond_activation_func') and (self.cond_out_activation_func or (i != len(self.cond_layers)-1)):
+                    spect = self.cond_activation_func(spect)
         
-        if not self.upsample_first: # if spectrogram hasn't been upsampled in an earlier stage
+        if self.upsample_first is False: # if spectrogram hasn't been upsampled in an earlier stage
             spect = self._upsample_mels(spect, audio.shape)
-            assert audio.size(2) == spect.size(2), f"audio size of {audio.size(2)} != spect size of {spect.size(2)}"
         
         for i in range(self.n_layers): # note, later layers learn lower frequency information
                                        # receptive field = 2**(n_layers-1)*kernel_size*n_group
@@ -363,8 +425,9 @@ class WN_2d(nn.Module):
     size reset.  The dilation only doubles on each layer
     """
     def __init__(self, n_in_channels, cond_in_channels, cond_layers, cond_hidden_channels, cond_kernel_size, cond_padding_mode, seperable_conv, merge_res_skip, upsample_mode, n_layers, n_channels, # audio_channels, mel_channels*n_group, n_layers, n_conv_channels
-                 kernel_size_w, kernel_size_h, speaker_embed_dim, rezero, cond_activation_func='none', negative_slope=None, n_layers_dilations_w=None, n_layers_dilations_h=1, res_skip=True, upsample_first=None, cond_out_activation_func=True, gated_unit='GTU'):
+                 kernel_size_w, kernel_size_h, speaker_embed_dim, rezero, cond_activation_func='none', negative_slope=None, n_layers_dilations_w=None, n_layers_dilations_h=1, res_skip=True, upsample_first=None, cond_out_activation_func=True, gated_unit='GTU', transposed_conv_hidden_dim=256, transposed_conv_kernel_size=4, transposed_conv_scales=None, upsample_factor=None):
         super(WN_2d, self).__init__()
+        cond_in_channels += speaker_embed_dim
         assert(kernel_size_w % 2 == 1)
         assert(n_channels % 2 == 0)
         assert res_skip or merge_res_skip, "Cannot remove res_skip without using merge_res_skip"
@@ -397,14 +460,23 @@ class WN_2d(nn.Module):
             max_speakers = 512
             self.speaker_embed = nn.Embedding(max_speakers, self.speaker_embed_dim)
         
+        self.interpolation_required = True
+        t_in_dim = None
+        t_out_dim = None
+        if transposed_conv_scales is not None and len(transposed_conv_scales) > 0 and transposed_conv_hidden_dim and transposed_conv_kernel_size:
+            t_in_dim = transposed_conv_hidden_dim if (self.upsample_first is False) else cond_in_channels
+            t_out_dim = 2*n_channels*n_layers if (self.upsample_first is False) else cond_in_channels
+            self.upsample_net = TransposedUpsampleNet(t_in_dim, t_out_dim, transposed_conv_hidden_dim, transposed_conv_kernel_size, transposed_conv_scales, use_last_layer_act_func=False)
+            self.interpolation_required = bool( np.product(transposed_conv_scales) != upsample_factor )
+        
         self.cond_out_activation_func = cond_out_activation_func
-        self.cond_layers = nn.ModuleList()
         if cond_layers:
-            cond_in_channels = cond_in_channels + self.speaker_embed_dim
+            self.cond_layers = nn.ModuleList()
             cond_kernel_size = 2*cond_kernel_size - 1 # 1 -> 1, 2 -> 3, 3 -> 5
             cond_pad = int((cond_kernel_size - 1)/2)
-            cond_output_channels = 2*n_channels*n_layers
+            cond_output_channels = 2*n_channels*n_layers if (t_in_dim is None or self.upsample_first == 'before_wn_cond') else transposed_conv_hidden_dim
             # messy initialization for arbitrary number of layers, input dims and output dims
+            cond_in_channels = t_out_dim if (t_out_dim is not None and self.upsample_first == 'before_wn_cond') else cond_in_channels
             dimensions = [cond_in_channels,]+[cond_hidden_channels]*(cond_layers-1)+[cond_output_channels,]
             in_dims = dimensions[:-1]
             out_dims = dimensions[1:]
@@ -470,8 +542,15 @@ class WN_2d(nn.Module):
                 res_skip_layer = nn.utils.weight_norm(res_skip_layer, name='weight')
                 self.res_skip_layers.append(res_skip_layer)
     
-    def _upsample_mels(self, cond, audio_size):
-        cond = F.interpolate(cond, size=audio_size[3], mode=self.upsample_mode, align_corners=True if self.upsample_mode == 'linear' else None)
+    def _upsample_mels(self, cond, audio_size, force_interpolate=False):
+        if hasattr(self, 'upsample_net') and self.upsample_net is not None:
+            cond = self.upsample_net(cond)
+        if force_interpolate or (self.interpolation_required and not (cond.shape[2] == audio_size[3])):
+            cond = F.interpolate(cond, size=audio_size[3], mode=self.upsample_mode, align_corners=True if self.upsample_mode == 'linear' else None)
+        else:
+            pad = (cond.shape[2] - audio_size[3])//2
+            remainder = pad%2
+            cond = cond[:, :, pad:-(pad+remainder)]
         return cond
     
     def forward(self, audio, spect, speaker_id=None, audio_queues=None, spect_queues=None):
@@ -489,15 +568,18 @@ class WN_2d(nn.Module):
                 speaker_embeddings = speaker_embeddings.unsqueeze(-1).repeat(1, 1, spect.shape[2]) # shape like spect
                 spect = torch.cat([spect, speaker_embeddings], dim=1) # and concat them
             
-            for i, layer in enumerate(self.cond_layers): # [B, cond_channels, T//hop_length] -> [B, n_channels*n_layers, T//hop_length]
-                spect = layer(spect)
-                if hasattr(self, 'cond_activation_func') and (self.cond_out_activation_func or (i != len(self.cond_layers)-1)):
-                    spect = self.cond_activation_func(spect)
+            if hasattr(self, 'cond_layers') and self.cond_layers:
+                for i, layer in enumerate(self.cond_layers): # [B, cond_channels, T//hop_length] -> [B, n_channels*n_layers, T//hop_length]
+                    spect = layer(spect)
+                    if hasattr(self, 'cond_activation_func') and (self.cond_out_activation_func or (i != len(self.cond_layers)-1)):
+                        spect = self.cond_activation_func(spect)
             
             if not self.upsample_first: # if spectrogram hasn't been upsampled in an earlier stage
                 spect = self._upsample_mels(spect, audio.shape)# [B, n_channels*n_layers, T//hop_length] -> [B, n_channels*n_layers, T//n_group]
-                spect = spect.unsqueeze(2)# [B, n_channels*n_layers, T//n_group] -> [B, n_channels*n_layers, 1, T//n_group]
-                assert audio.size(3) == spect.size(3), f"audio size of {audio.size(3)} != spect size of {spect.size(3)}"
+        
+        if len(spect.shape) < 4:
+            spect = spect.unsqueeze(2)# [B, n_channels*n_layers, T//n_group] -> [B, n_channels*n_layers, 1, T//n_group]
+            #assert audio.size(3) == spect.size(3), f"audio size of {audio.size(3)} != spect size of {spect.size(3)}"
         
         for i in range(self.n_layers):
             if exec_cond_layer: # if cond layer has been ran.
@@ -518,7 +600,6 @@ class WN_2d(nn.Module):
                 
                 # [B, n_channels, n_group, T//n_group]
                 audio_queues[i] = audio_cpad = torch.cat((audio_queues[i], audio), dim=2)[:,:,-(self.padding_h[i]+1):] # pop old samples and append new sample to end of n_group dim
-                assert audio_cpad.shape[2] == (self.padding_h[i]+1), f"conv queue is wrong length. Found {audio_cpad.shape[2]}, expected {(self.padding_h[i]+1)}"
             
             acts = self.in_layers[i](audio_cpad) # [B, n_channels, n_group//2, T//n_group] -> [B, 2*n_channels, pad+n_group//2, T//n_group]
             acts = self.gated_unit(
