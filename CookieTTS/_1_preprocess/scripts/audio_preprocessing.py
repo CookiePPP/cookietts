@@ -75,7 +75,6 @@ def normalize_volumes_mixmode(directory, amplitude=0.08, ext='.wav'):
         os.system(f"normalize-audio -w 16 -a {amplitude} -b '{subdirectory}/'*{ext}")
 
 
-
 def process_audio_multiprocess(file_paths_arr,
         filt_type, filt_cutoff_freq, filt_order,
         trim_margin_left, trim_margin_right, trim_top_db, trim_window_length, trim_hop_length, trim_ref, trim_preemphasis_strength,
@@ -131,7 +130,7 @@ def process_audio_multiprocess(file_paths_arr,
     from scipy import signal
     
     if dump_sample_rates:
-        sample_rates = {} # array of arrays. e.g: [[path 0, sample_rate 0], [path 1, sample_rate 1], [path 2, sample_rate 2], ...]
+        sample_rates = {} # array of dicts. e.g: [{path 0: sample_rate 0}, {path 1: sample_rate 1}, {path 2: sample_rate 2}, ...]
     
     skip = 0
     prev_sr = 0
@@ -190,7 +189,10 @@ def process_audio_multiprocess(file_paths_arr,
                 _, index = librosa.effects.trim(sound_filt, top_db=top_db_, frame_length=window_length_, hop_length=hop_length_, ref=ref_) # gonna be a little messed up for different sampling rates
             else:
                 _, index = librosa.effects.trim(sound, top_db=top_db_, frame_length=window_length_, hop_length=hop_length_, ref=ref_) # gonna be a little messed up for different sampling rates
-            sound = sound[max(index[0]-margin_left_, 0):index[1]+margin_right_]
+            try:
+                sound = sound[int(max(index[0]-margin_left_, 0)):int(index[1]+margin_right_)]
+            except TypeError:
+                print(f'Slice Left:\n{max(index[0]-margin_left_, 0)}\nSlice Right:\n{index[1]+margin_right_}')
             assert len(sound), f"Audio trimmed to 0 length by pass {i+1}\nconfig = {[margin_left_, margin_right_, top_db_, window_length_, hop_length_, ref_]}\nFile_Path = '{file_path}'"
         
         # write updated audio to file

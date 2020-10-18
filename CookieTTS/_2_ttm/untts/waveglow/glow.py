@@ -183,7 +183,7 @@ class FlowDecoder(nn.Module):
         self.n_group = hparams.n_group
         self.n_early_every = hparams.n_early_every
         self.n_early_size = hparams.n_early_size
-        self.cond_in_channels = hparams.pos_att_dim
+        self.cond_in_channels = hparams.cond_input_dim
         self.n_mel_channels = hparams.n_mel_channels
         self.mix_first = hparams.mix_first
         self.speaker_embed_dim = 0

@@ -305,8 +305,9 @@ class LSTMCellWithZoneout(RNNCellBase):
         self.dropout = dropout
         self.zoneout = zoneout
     
-    #@torch.jit.script
-    def lstm_cell(self, input: Tensor,
+    @torch.jit.script
+    def lstm_cell(#self,
+                        input: Tensor,
                         state: Tuple[Tensor, Tensor],
                     weight_ih: Tensor,
                     weight_hh: Tensor,

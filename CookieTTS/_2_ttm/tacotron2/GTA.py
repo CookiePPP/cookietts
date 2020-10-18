@@ -94,6 +94,14 @@ def get_durations(alignments, output_lengths, input_lengths):
     return batch_durations# [[enc_T], [enc_T], [enc_T], ...]
 
 
+def get_alignments(alignments, output_lengths, input_lengths):
+    alignments_arr = []
+    for alignment, output_length, input_length in zip(alignments, output_lengths, input_lengths):
+        alignment = alignment[:output_length, :input_length]
+        alignments_arr.append(alignment)
+    return alignments_arr# [[dec_T, enc_T], [dec_T, enc_T], [dec_T, enc_T], ...]
+
+
 @torch.no_grad()
 def GTA_Synthesis(output_directory, checkpoint_path, n_gpus,
           rank, group_name, hparams, training_mode, verify_outputs, use_val_files, use_hidden_state, fp16_save, max_mse, max_mae, args=None, extra_info='', audio_offset=0):
@@ -182,7 +190,7 @@ def GTA_Synthesis(output_directory, checkpoint_path, n_gpus,
             sorted_speaker_ids.append(sorted_speaker_id)
         
         x, _ = model.parse_batch(batch)
-        _, mel_outputs_postnet, _, alignments, *_, additional = model(x, teacher_force_till=9999, p_teacher_forcing=1.0, drop_frame_rate=0.0, return_hidden_state=use_hidden_state)
+        mel_outputs, mel_outputs_postnet, _, alignments, *_, additional = model(x, teacher_force_till=9999, p_teacher_forcing=1.0, drop_frame_rate=0.0, return_hidden_state=use_hidden_state)
         if use_hidden_state:
             hidden_att_contexts = additional[0]# [[B, dim],] -> [B, dim]
             hidden_att_contexts = hidden_att_contexts.data.cpu()
@@ -193,6 +201,12 @@ def GTA_Synthesis(output_directory, checkpoint_path, n_gpus,
             alignments = alignments.data.cpu()
             print(alignments.shape)
             durations = get_durations(alignments, output_lengths, input_lengths)
+        if args.save_letter_alignments or args.save_phone_alignments:
+            alignments = alignments.data.cpu()
+            print(alignments.shape)
+            alignments = get_alignments(alignments, output_lengths, input_lengths)
+        if mel_outputs_postnet is None:
+            mel_outputs_postnet = mel_outputs
         mel_outputs_postnet = mel_outputs_postnet.data.cpu()
         
         for k in range(batch_size):
@@ -261,6 +275,18 @@ def GTA_Synthesis(output_directory, checkpoint_path, n_gpus,
                 encoder_outputs = encoder_outputs.astype(np.float16) if fp16_save else hidden_att_context
                 save_path_enc_out = wav_path.replace('.wav','_genc_out.npy')
                 np.save(save_path_enc_out, encoder_outputs)
+            if args.save_letter_alignments and hparams.p_arpabet == 0.:
+                alignment = alignments[k]
+                alignment = alignment.numpy()
+                alignment = alignment.astype(np.float16) if fp16_save else hidden_att_context
+                save_path_align_out = wav_path.replace('.wav','_galign_out.npy')
+                np.save(save_path_align_out, alignment)
+            if args.save_phone_alignments and hparams.p_arpabet == 1.:
+                alignment = alignments[k]
+                alignment = alignment.numpy()
+                alignment = alignment.astype(np.float16) if fp16_save else hidden_att_context
+                save_path_align_out = wav_path.replace('.wav','_palign_out.npy')
+                np.save(save_path_align_out, alignment)
             if args.save_phone_encoder_outputs and hparams.p_arpabet == 1.:
                 encoder_outputs = memory[k, :input_lengths[k], :]
                 encoder_outputs = encoder_outputs.numpy()
@@ -328,9 +354,9 @@ if __name__ == '__main__':
                         required=False, help='how many processes (workers) are used to load data for each GPU. Each process will use a chunk of RAM. 24 Workers on a Threadripper 2950X is enough to feed three RTX 2080 Ti\'s in fp16 mode.')
     parser.add_argument('--extremeGTA', type=int, default=0, required=False,
                         help='Generate a Ground Truth Aligned output every interval specified. This will run tacotron hop_length//interval times per file and can use thousands of GBs of storage. Caution is advised')
-    parser.add_argument('--max_mse', type=float, default=0.45, required=False,
+    parser.add_argument('--max_mse', type=float, default=1e3, required=False,
                         help='Maximum MSE from Ground Truth to be valid for saving. (Anything above this value will be discarded)')
-    parser.add_argument('--max_mae', type=float, default=0.6, required=False,
+    parser.add_argument('--max_mae', type=float, default=1e3, required=False,
                         help='Maximum MAE from Ground Truth to be valid for saving. (Anything above this value will be discarded)')
     parser.add_argument('--use_training_mode', action='store_true',
                         help='Use model.train() while generating alignments. Will increase both variablility and inaccuracy.')
@@ -344,18 +370,24 @@ if __name__ == '__main__':
                         help='Save durations of each grapheme in the input.')
     parser.add_argument('--save_phone_durations', action='store_true',
                         help='Save durations of each phoneme in the input.')
+    parser.add_argument('--save_letter_alignments', action='store_true',
+                        help='Save alignments of each grapheme in the input.')
+    parser.add_argument('--save_phone_alignments', action='store_true',
+                        help='Save alignments of each phoneme in the input.')
     parser.add_argument('--save_letter_encoder_outputs', action='store_true',
                         help='Save encoded graphemes.')
     parser.add_argument('--save_phone_encoder_outputs', action='store_true',
                         help='Save encoded phonemes.')
     parser.add_argument('--do_not_save_mel', action='store_true',
-                        help='Save encoded phonemes.')
+                        help='Do not save predicted mel-spectrograms / AEFs.')
     parser.add_argument('--fp16_save', action='store_true',
                         help='Save spectrograms using np.float16 aka Half Precision. Will reduce the storage space required.')
     parser.add_argument('--group_name', type=str, default='group_name',
                         required=False, help='Distributed group name')
     parser.add_argument('--hparams', type=str, required=False, help='comma separated name=value pairs')
-    
+    _="""
+    --save_letter_durations --save_phone_durations --save_letter_alignments --save_phone_alignments --save_letter_encoder_outputs --save_phone_encoder_outputs
+    """
     args = parser.parse_args()
     hparams = create_hparams(args.hparams)
     hparams.n_gpus = args.n_gpus
@@ -382,7 +414,7 @@ if __name__ == '__main__':
     hparams.validation_files = hparams.validation_files.replace("mel_val","val").replace("_merged.txt",".txt")
     
     if not args.use_validation_files:
-        hparams.batch_size = hparams.batch_size * 10 # no gradients stored so batch size can go up a bunch
+        hparams.batch_size = hparams.batch_size * 8 # no gradients stored so batch size can go up a bunch
     
     torch.autograd.set_grad_enabled(False)
     
@@ -396,7 +428,7 @@ if __name__ == '__main__':
             if ind < 0:
                 continue
             GTA_Synthesis(args.output_directory, args.checkpoint_path, args.n_gpus, args.rank, args.group_name, hparams, args.use_training_mode, args.verify_outputs, args.use_validation_files, args.save_hidden_state, args.fp16_save, args.max_mse, args.max_mae, args=args, audio_offset=ioffset, extra_info=f"{ind+1}/{hparams.hop_length//args.extremeGTA} ")
-    elif (args.save_letter_durations or args.save_letter_encoder_outputs) and (args.save_phone_durations or args.save_phone_encoder_outputs):
+    elif (args.save_letter_durations or args.save_letter_alignments or args.save_letter_encoder_outputs) and (args.save_phone_durations or args.save_phone_alignments or args.save_phone_encoder_outputs):
         hparams.p_arpabet = 0.0
         GTA_Synthesis(args.output_directory, args.checkpoint_path, args.n_gpus, args.rank, args.group_name, hparams, args.use_training_mode, args.verify_outputs, args.use_validation_files, args.save_hidden_state, args.fp16_save, args.max_mse, args.max_mae, args=args, extra_info="1/2 ")
         hparams.p_arpabet = 1.0

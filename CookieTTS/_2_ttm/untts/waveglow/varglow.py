@@ -48,14 +48,14 @@ class WN(nn.Module):
     """
     def __init__(self, n_in_channels, cond_in_channels, hparams):
         super(WN, self).__init__()
-        assert(hparams.dg_wn_kernel_size % 2 == 1), 'kernel_size must be an odd number'
-        assert(hparams.dg_wn_n_channels % 2 == 0), 'n_channels must be a multiple of 2'
-        assert(hparams.dg_wn_cond_layers > 0), 'cond_layers must be greater than 0'
-        assert hparams.dg_wn_res_skip or hparams.dg_wn_merge_res_skip, "Cannot remove res_skip without using merge_res_skip"
-        self.n_layers = hparams.dg_wn_n_layers
-        self.n_channels = hparams.dg_wn_n_channels
+        assert(hparams.var_wn_kernel_size % 2 == 1), 'kernel_size must be an odd number'
+        assert(hparams.var_wn_n_channels % 2 == 0), 'n_channels must be a multiple of 2'
+        assert(hparams.var_wn_cond_layers > 0), 'cond_layers must be greater than 0'
+        assert hparams.var_wn_res_skip or hparams.var_wn_merge_res_skip, "Cannot remove res_skip without using merge_res_skip"
+        self.n_layers = hparams.var_wn_n_layers
+        self.n_channels = hparams.var_wn_n_channels
         self.speaker_embed_dim = 0
-        self.merge_res_skip = hparams.dg_wn_merge_res_skip
+        self.merge_res_skip = hparams.var_wn_merge_res_skip
         
         self.in_layers = nn.ModuleList()
         
@@ -70,48 +70,48 @@ class WN(nn.Module):
         self.end = end
         
         self.cond_layers = nn.ModuleList()
-        if hparams.dg_wn_cond_layers:
+        if hparams.var_wn_cond_layers:
             cond_in_channels = cond_in_channels + self.speaker_embed_dim
-            cond_pad = int((hparams.dg_wn_cond_kernel_size - 1)/2)
+            cond_pad = int((hparams.var_wn_cond_kernel_size - 1)/2)
             cond_output_channels = 2*self.n_channels*self.n_layers
             # messy initialization for arbitrary number of layers, input dims and output dims
-            dimensions = [cond_in_channels,]+[hparams.dg_wn_cond_hidden_channels]*(hparams.dg_wn_cond_layers-1)+[cond_output_channels,]
+            dimensions = [cond_in_channels,]+[hparams.var_wn_cond_hidden_channels]*(hparams.var_wn_cond_layers-1)+[cond_output_channels,]
             in_dims = dimensions[:-1]
             out_dims = dimensions[1:]
             
             for i in range(len(in_dims)):
                 indim = in_dims[i]
                 outim = out_dims[i]
-                cond_layer = nn.Conv1d(indim, outim, hparams.dg_wn_cond_kernel_size, padding=cond_pad, padding_mode=hparams.dg_wn_cond_padding_mode)
+                cond_layer = nn.Conv1d(indim, outim, hparams.var_wn_cond_kernel_size, padding=cond_pad, padding_mode=hparams.var_wn_cond_padding_mode)
                 cond_layer = nn.utils.weight_norm(cond_layer, name='weight')
                 self.cond_layers.append(cond_layer)
             
-            hparams.dg_wn_cond_act_func = hparams.dg_wn_cond_act_func.lower()
-            if hparams.dg_wn_cond_act_func == 'none':
+            hparams.var_wn_cond_act_func = hparams.var_wn_cond_act_func.lower()
+            if hparams.var_wn_cond_act_func == 'none':
                 pass
-            elif hparams.dg_wn_cond_act_func == 'lrelu':
+            elif hparams.var_wn_cond_act_func == 'lrelu':
                 self.wn_cond_act_func = torch.nn.functional.relu
-            elif hparams.dg_wn_cond_act_func == 'relu':
+            elif hparams.var_wn_cond_act_func == 'relu':
                 assert negative_slope, "negative_slope not defined in wn_config"
                 self.wn_cond_act_func = torch.nn.LeakyReLU(negative_slope=0.2, inplace=False)
-            elif hparams.dg_wn_cond_act_func == 'tanh':
+            elif hparams.var_wn_cond_act_func == 'tanh':
                 self.wn_cond_act_func = torch.nn.functional.tanh
-            elif hparams.dg_wn_cond_act_func == 'sigmoid':
+            elif hparams.var_wn_cond_act_func == 'sigmoid':
                 self.wn_cond_act_func = torch.nn.functional.sigmoid
             else:
-                raise NotImplementedError('hparams.dg_wn_cond_act_func is invalid')
+                raise NotImplementedError('hparams.var_wn_cond_act_func is invalid')
         
         self.res_skip_layers = nn.ModuleList()
-        if type(hparams.dg_wn_dilations_w) == int:
-            hparams.dg_wn_dilations_w = [hparams.dg_wn_dilations_w,]*self.n_layers # constant dilation if using int
+        if type(hparams.var_wn_dilations_w) == int:
+            hparams.var_wn_dilations_w = [hparams.var_wn_dilations_w,]*self.n_layers # constant dilation if using int
         for i in range(self.n_layers):
-            dilation = 2 ** i if hparams.dg_wn_dilations_w is None else hparams.dg_wn_dilations_w[i]
-            padding = int((hparams.dg_wn_kernel_size*dilation - dilation)/2)
-            if (not hparams.dg_wn_seperable_conv) or (hparams.dg_wn_kernel_size == 1):
-                in_layer = nn.Conv1d(self.n_channels, 2*self.n_channels, hparams.dg_wn_kernel_size, dilation=dilation, padding=padding, padding_mode='zeros')
+            dilation = 2 ** i if hparams.var_wn_dilations_w is None else hparams.var_wn_dilations_w[i]
+            padding = int((hparams.var_wn_kernel_size*dilation - dilation)/2)
+            if (not hparams.var_wn_seperable_conv) or (hparams.var_wn_kernel_size == 1):
+                in_layer = nn.Conv1d(self.n_channels, 2*self.n_channels, hparams.var_wn_kernel_size, dilation=dilation, padding=padding, padding_mode='zeros')
                 in_layer = nn.utils.weight_norm(in_layer, name='weight')
             else:
-                depthwise = nn.Conv1d(self.n_channels, self.n_channels, hparams.dg_wn_kernel_size, dilation=dilation, padding=padding, padding_mode='zeros', groups=self.n_channels)
+                depthwise = nn.Conv1d(self.n_channels, self.n_channels, hparams.var_wn_kernel_size, dilation=dilation, padding=padding, padding_mode='zeros', groups=self.n_channels)
                 depthwise = nn.utils.weight_norm(depthwise, name='weight')
                 pointwise = nn.Conv1d(self.n_channels, 2*self.n_channels, 1,
                                     dilation=dilation, padding=0)
@@ -125,7 +125,7 @@ class WN(nn.Module):
             else:
                 res_skip_channels = self.n_channels
             
-            if hparams.dg_wn_res_skip:
+            if hparams.var_wn_res_skip:
                 res_skip_layer = nn.Conv1d(self.n_channels, res_skip_channels, 1)
                 res_skip_layer = nn.utils.weight_norm(res_skip_layer, name='weight')
                 self.res_skip_layers.append(res_skip_layer)
@@ -171,56 +171,57 @@ class WN(nn.Module):
         return self.end(output).chunk(2, 1)
 
 
-class DurationGlow(nn.Module):
-    def __init__(self, hparams, cond_input_dim):
-        super(DurationGlow, self).__init__()
+class VarGlow(nn.Module):
+    def __init__(self, hparams, cond_in_channels):
+        super(VarGlow, self).__init__()
         assert(hparams.n_group % 2 == 0)
-        self.n_flows = hparams.dg_n_flows
-        self.n_group = hparams.dg_n_group
-        self.n_early_every = hparams.dg_n_early_every
-        self.n_early_size = hparams.dg_n_early_size
-        self.cond_in_channels = cond_input_dim # output dim of MelEncoder
-        self.mix_first = hparams.dg_mix_first
+        self.n_flows = hparams.var_n_flows
+        self.n_group = hparams.var_n_group
+        self.n_early_every = hparams.var_n_early_every
+        self.n_early_size = hparams.var_n_early_size
+        self.cond_in_channels = cond_in_channels # output dim of MelEncoder
+        self.mix_first = hparams.var_mix_first
         self.speaker_embed_dim = 0
         
-        self.cond_residual = hparams.dg_cond_residual
+        cond_output_channels = hparams.var_cond_output_channels
+        
+        self.cond_residual = hparams.var_cond_residual
         if self.cond_residual: # override conditional output size if using residuals
             cond_output_channels = self.cond_in_channels
         
-        self.cond_res_rezero = hparams.dg_cond_res_rezero
+        self.cond_res_rezero = hparams.var_cond_res_rezero
         if self.cond_res_rezero:
             self.alpha = nn.Parameter(torch.rand(1)*0.002+0.001) # rezero initial state (0.001±0.001)
         
-        cond_kernel_size = hparams.dg_cond_kernel_size
         self.cond_layers = nn.ModuleList()
-        if hparams.dg_cond_layers:
+        if hparams.var_cond_layers:
             # messy initialization for arbitrary number of layers, input dims and output dims
-            cond_kernel_size = 2*cond_kernel_size - 1 # 1 -> 1, 2 -> 3, 3 -> 5
+            cond_kernel_size = 2*hparams.var_cond_kernel_size - 1 # 1 -> 1, 2 -> 3, 3 -> 5
             cond_pad = int((cond_kernel_size - 1)/2)
-            dimensions = [self.cond_in_channels,]+[cond_hidden_channels]*(hparams.dg_cond_layers-1)+[cond_output_channels,]
+            dimensions = [self.cond_in_channels,]+[hparams.var_cond_hidden_channels]*(hparams.var_cond_layers-1)+[cond_output_channels,]
             in_dims = dimensions[:-1]
             out_dims = dimensions[1:]
             
             for i in range(len(in_dims)):
                 indim = in_dims[i]
                 outim = out_dims[i]
-                cond_layer = nn.Conv1d(indim, outim, cond_kernel_size, padding=cond_pad, padding_mode=cond_padding_mode)# (in_channels, out_channels, kernel_size)
-                if hparams.dg_cond_weightnorm:
+                cond_layer = nn.Conv1d(indim, outim, cond_kernel_size, padding=cond_pad, padding_mode=hparams.var_cond_padding_mode)# (in_channels, out_channels, kernel_size)
+                if hparams.var_cond_weightnorm:
                     cond_layer = nn.utils.weight_norm(cond_layer, name='weight')
                 self.cond_layers.append(cond_layer)
             WN_cond_channels = cond_output_channels
             
-            hparams.dg_cond_act_func = hparams.dg_cond_act_func.lower()
-            if hparams.dg_cond_act_func == 'none':
+            hparams.var_cond_act_func = hparams.var_cond_act_func.lower()
+            if hparams.var_cond_act_func == 'none':
                 pass
-            elif hparams.dg_cond_act_func == 'lrelu':
+            elif hparams.var_cond_act_func == 'lrelu':
                 self.cond_act_func = torch.nn.functional.relu
-            elif hparams.dg_cond_act_func == 'relu':
+            elif hparams.var_cond_act_func == 'relu':
                 assert negative_slope, "negative_slope not defined in wn_config"
                 self.cond_act_func = torch.nn.LeakyReLU(negative_slope=0.2, inplace=False)
-            elif hparams.dg_cond_act_func == 'tanh':
+            elif hparams.var_cond_act_func == 'tanh':
                 self.cond_act_func = torch.nn.functional.tanh
-            elif hparams.dg_cond_act_func == 'sigmoid':
+            elif hparams.var_cond_act_func == 'sigmoid':
                 self.cond_act_func = torch.nn.functional.sigmoid
             else:
                 raise NotImplementedError
@@ -230,15 +231,15 @@ class DurationGlow(nn.Module):
         self.convinv = nn.ModuleList()
         self.WN = nn.ModuleList()
         
-        n_remaining_channels = hparams.dg_n_group
+        n_remaining_channels = hparams.var_n_group
         self.z_split_sizes = []
-        for k in range(hparams.dg_n_flows):
+        for k in range(hparams.var_n_flows):
             if k % self.n_early_every == 0 and k > 0:
                 n_remaining_channels -= self.n_early_size
                 self.z_split_sizes.append(self.n_early_size)
             assert n_remaining_channels > 0, "n_remaining_channels is 0. (increase n_group or decrease n_early_every/n_early_size)"
             
-            if hparams.dg_grad_checkpoint and (k+1)/hparams.dg_n_flows <= hparams.dg_grad_checkpoint:
+            if hparams.var_grad_checkpoint and (k+1)/hparams.var_n_flows <= hparams.var_grad_checkpoint:
                 mem_eff_layer = True
             else:
                 mem_eff_layer = False

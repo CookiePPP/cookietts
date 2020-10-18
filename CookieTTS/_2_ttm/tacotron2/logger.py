@@ -57,7 +57,9 @@ class Tacotron2Logger(SummaryWriter):
         self.add_scalar("infer.loss", reduced_loss, iteration)
         self.add_scalar("infer.attention_alignment_diagonality", diagonality, iteration)
         self.add_scalar("infer.average_max_attention_weight", avg_prob, iteration)
-        _, mel_outputs, gate_outputs, alignments, *_ = y_pred
+        mel_outputs, mel_outputs_postnet, gate_outputs, alignments, *_ = y_pred
+        if mel_outputs_postnet is not None:
+            mel_outputs = mel_outputs_postnet
         mel_outputs_GAN = y_pred[8][0]
         mel_targets, gate_targets, *_ = y
         mel_outputs = mel_outputs[:, :mel_targets.shape[1], :]
@@ -94,7 +96,9 @@ class Tacotron2Logger(SummaryWriter):
         self.add_scalar("teacher_forced_validation.loss", reduced_loss, iteration)
         self.add_scalar("teacher_forced_validation.attention_alignment_diagonality", diagonality, iteration)
         self.add_scalar("teacher_forced_validation.average_max_attention_weight", avg_prob, iteration)
-        _, mel_outputs, gate_outputs, alignments, *_ = y_pred
+        mel_outputs, mel_outputs_postnet, gate_outputs, alignments, *_ = y_pred
+        if mel_outputs_postnet is not None:
+            mel_outputs = mel_outputs_postnet
         mel_outputs_GAN = y_pred[8][0]
         mel_targets, gate_targets, *_ = y
         mel_outputs = mel_outputs[:, :mel_targets.shape[1], :]

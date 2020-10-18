@@ -272,26 +272,32 @@ class Tacotron2Loss(nn.Module):
             mel_target = torch.masked_select(mel_target, mask)
             if self.use_LL_Loss:
                 mel_out, mel_logvar = mel_out.chunk(2, dim=1)
-                mel_out_postnet, mel_logvar_postnet = mel_out_postnet.chunk(2, dim=1)
+                if mel_out_postnet is not None:
+                    mel_out_postnet, mel_logvar_postnet = mel_out_postnet.chunk(2, dim=1)
                 mel_logvar = torch.masked_select(mel_logvar, mask)
                 mel_logvar_postnet = torch.masked_select(mel_logvar_postnet, mask)
             
             mel_out_not_masked = mel_out
             mel_out = torch.masked_select(mel_out, mask)
-            mel_out_postnet_not_masked = mel_out_postnet
-            mel_out_postnet = torch.masked_select(mel_out_postnet, mask)
+            if mel_out_postnet is not None:
+                mel_out_postnet_not_masked = mel_out_postnet
+                mel_out_postnet = torch.masked_select(mel_out_postnet, mask)
+        
+        postnet_MSE = postnet_MAE = postnet_SMAE = postnet_LL = torch.tensor(0.)
         
         # spectrogram / decoder loss
         spec_MSE = nn.MSELoss()(mel_out, mel_target)
         spec_MAE = nn.L1Loss()(mel_out, mel_target)
         spec_SMAE = nn.SmoothL1Loss()(mel_out, mel_target)
-        postnet_MSE = nn.MSELoss()(mel_out_postnet, mel_target)
-        postnet_MAE = nn.L1Loss()(mel_out_postnet, mel_target)
-        postnet_SMAE = nn.SmoothL1Loss()(mel_out_postnet, mel_target)
+        if mel_out_postnet is not None:
+            postnet_MSE = nn.MSELoss()(mel_out_postnet, mel_target)
+            postnet_MAE = nn.L1Loss()(mel_out_postnet, mel_target)
+            postnet_SMAE = nn.SmoothL1Loss()(mel_out_postnet, mel_target)
         if self.use_LL_Loss:
             spec_LL = NormalLLLoss(mel_out, mel_logvar, mel_target)
             loss = (spec_LL*self.melout_LL_scalar)
-            postnet_LL = NormalLLLoss(mel_out_postnet, mel_logvar_postnet, mel_target)
+            if mel_out_postnet is not None:
+                postnet_LL = NormalLLLoss(mel_out_postnet, mel_logvar_postnet, mel_target)
             loss += (postnet_LL*self.postnet_LL_scalar)
         else:
             spec_LL = postnet_LL = torch.tensor(0.0, device=mel_out.device)
@@ -385,7 +391,8 @@ class Tacotron2Loss(nn.Module):
                                         output_lengths[preserve_decoder==0.0])
             loss += (AttentionLoss*self.DiagonalGuidedAttention_scalar)
         
-        avg_fakeness = 0.0
+        reduced_d_loss = reduced_avg_fakeness = avg_fakeness = 0.0
+        GAN_Spect_MAE = adv_postnet_loss = torch.tensor(0.)
         if True and gan_package[0] is not None:
             real_labels = torch.zeros(mel_target_not_masked.shape[0], device=loss.device, dtype=loss.dtype)# [B]
             fake_labels = torch.ones( mel_target_not_masked.shape[0], device=loss.device, dtype=loss.dtype)# [B]
@@ -398,8 +405,9 @@ class Tacotron2Loss(nn.Module):
                 mel_outputs_adv_masked = torch.masked_select(mel_outputs_adv, mask)
                 mel_out_not_masked = mel_out_not_masked.clone()
                 mel_out_not_masked.masked_fill_(fill_mask, 0.0)
-                mel_out_postnet_not_masked = mel_out_postnet_not_masked.clone()
-                mel_out_postnet_not_masked.masked_fill_(fill_mask, 0.0)
+                if mel_out_postnet is not None:
+                    mel_out_postnet_not_masked = mel_out_postnet_not_masked.clone()
+                    mel_out_postnet_not_masked.masked_fill_(fill_mask, 0.0)
             
             # spectrograms [B, n_mel, dec_T]
             # mel_target_not_masked
@@ -461,7 +469,7 @@ class Tacotron2Loss(nn.Module):
             real_pred_fakeness = model_d(mel_target_not_masked.detach(), speaker_embed.detach())
             real_d_loss = nn.BCELoss()(real_pred_fakeness, real_labels)# [B] -> [] loss to decrease distriminated fakeness of real samples
             
-            if self.dis_postnet_scalar:
+            if self.dis_postnet_scalar and mel_out_postnet is not None:
                 fake_pred_fakeness = model_d(mel_out_postnet_not_masked.detach(), speaker_embed.detach())
                 fake_d_loss += self.dis_postnet_scalar * nn.BCELoss()(fake_pred_fakeness, fake_labels)# [B] -> [] loss to increase distriminated fakeness of fake samples
             

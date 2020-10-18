@@ -67,7 +67,10 @@ class LocationLayer(nn.Module):
 
 class Attention(nn.Module):
     def __init__(self, attention_rnn_dim, embedding_dim, attention_dim,
-                 attention_location_n_filters, attention_location_kernel_size):
+                 attention_location_n_filters, attention_location_kernel_size,
+                 windowed_attention_range: int=0,
+                 windowed_att_pos_learned: bool=True,
+                 windowed_att_pos_offset: float=0.):
         super(Attention, self).__init__()
         self.query_layer = LinearNorm(attention_rnn_dim, attention_dim,
                                       bias=False, w_init_gain='tanh')
@@ -77,12 +80,18 @@ class Attention(nn.Module):
         self.location_layer = LocationLayer(attention_location_n_filters,
                                             attention_location_kernel_size,
                                             attention_dim)
+        self.windowed_attention_range = windowed_attention_range
+        if windowed_att_pos_learned is True:
+            self.windowed_att_pos_offset = nn.Parameter( torch.zeros(1) )
+        else:
+            self.windowed_att_pos_offset = windowed_att_pos_offset
         self.score_mask_value = -float("inf")
     
-    def forward(self, attention_hidden_state, memory, processed_memory,
-                attention_weights_cat,
+    def forward(self, attention_hidden_state, memory, processed_memory, attention_weights_cat,
                 mask: Optional[Tensor] = None,
+                memory_lengths: Optional[Tensor] = None,
                 attention_weights: Optional[Tensor] = None,
+                current_pos: Optional[Tensor] = None,
                 score_mask_value: float = -float('inf')) -> Tuple[Tensor, Tensor]:
         """
         PARAMS
@@ -96,9 +105,9 @@ class Attention(nn.Module):
         processed_memory:
             [B, enc_T, proc_enc_dim] FloatTensor
                 processed encoder outputs
-        attention_weights_cat: 
-            [B, 2, enc_T] FloatTensor
-                previous and cummulative attention weights
+        attention_weights_cat:
+            [B, 2 (or 3), enc_T] FloatTensor
+                previous, cummulative (and sometimes exp_avg) attention weights
         mask:
             [B, enc_T] BoolTensor
                 mask for padded data
@@ -107,6 +116,8 @@ class Attention(nn.Module):
                 optional override attention_weights
                 useful for duration predictor attention or perfectly copying a clip with an alternative speaker.
         """
+        B, enc_T, enc_dim = memory.shape
+        
         if attention_weights is None:
             processed = self.location_layer(attention_weights_cat) # [B, 2, enc_T] # conv1d, matmul
             processed.add_( self.query_layer(attention_hidden_state.unsqueeze(1)).expand_as(processed_memory) ) # unsqueeze, matmul, expand_as, add_
@@ -114,14 +125,33 @@ class Attention(nn.Module):
             alignment = self.v( torch.tanh( processed ) ).squeeze(-1) # tanh, matmul, squeeze
             
             if mask is not None:
-                alignment.data.masked_fill_(mask, score_mask_value)# [B, enc_T]
+                if self.windowed_attention_range > 0 and current_pos is not None:
+                    if self.windowed_att_pos_offset:
+                        current_pos = current_pos + self.windowed_att_pos_offset
+                    max_end = memory_lengths - 1 - self.windowed_attention_range
+                    min_start = self.windowed_attention_range
+                    current_pos = torch.min(current_pos.clamp(min=min_start), max_end.to(current_pos))
+                    
+                    mask_start = (current_pos-self.windowed_attention_range).clamp(min=0).round() # [B]
+                    mask_end = mask_start+(self.windowed_attention_range*2)                       # [B]
+                    pos_mask = torch.arange(enc_T, device=current_pos.device).unsqueeze(0).repeat(B, 1)  # [B, enc_T]
+                    pos_mask = (pos_mask >= mask_start.unsqueeze(1).repeat(1, enc_T)) & (pos_mask <= mask_end.unsqueeze(1).repeat(1, enc_T))# [B, enc_T]
+                    
+                    # attention_weights_cat[pos_mask].view(B, self.windowed_attention_range*2+1) # for inference masked_select later
+                    
+                    mask = mask | ~pos_mask# [B, enc_T] & [B, enc_T] -> [B, enc_T]
+                alignment.data.masked_fill_(mask, score_mask_value)#    [B, enc_T]
             
             attention_weights = F.softmax(alignment, dim=1)# [B, enc_T] # softmax along encoder tokens dim
         attention_context = torch.bmm(attention_weights.unsqueeze(1), memory)# unsqueeze, bmm
-                                # [B, 1, enc_T] @ [B, enc_T, enc_dim] -> [B, 1, enc_dim]
+                                      # [B, 1, enc_T] @ [B, enc_T, enc_dim] -> [B, 1, enc_dim]
+        
         attention_context = attention_context.squeeze(1)# [B, 1, enc_dim] -> [B, enc_dim] # squeeze
         
-        return attention_context, attention_weights# [B, enc_dim], [B, enc_T]
+        new_pos = (attention_weights*torch.arange(enc_T, device=attention_weights.device).expand(B, -1)).sum(1)
+                       # ([B, enc_T] * [B, enc_T]).sum(1) -> [B]
+        
+        return attention_context, attention_weights, new_pos# [B, enc_dim], [B, enc_T]
 
 
 class Prenet(nn.Module):
@@ -299,7 +329,7 @@ class Postnet(nn.Module):
                              hparams.n_mel_channels*(hparams.LL_SpectLoss+1) if is_output_layer else hparams.postnet_embedding_dim,
                              kernel_size=hparams.postnet_kernel_size, stride=1,
                              padding=int((hparams.postnet_kernel_size - 1) / 2),
-                             dilation=1, w_init_gain='tanh'), ]
+                             dilation=1, w_init_gain='linear' if is_output_layer else 'tanh'), ]
             if not is_output_layer:
                 layers.append(nn.BatchNorm1d(hparams.postnet_embedding_dim))
             self.convolutions.append(nn.Sequential(*layers))
@@ -482,6 +512,10 @@ class Decoder(nn.Module):
         self.normalize_attention_input = hparams.normalize_attention_input
         self.normalize_AttRNN_output = hparams.normalize_AttRNN_output
         self.attention_type = hparams.attention_type
+        self.windowed_attention_range = hparams.windowed_attention_range if hasattr(hparams, 'windowed_attention_range') else 0
+        self.windowed_att_pos_offset =  hparams.windowed_att_pos_offset if hasattr(hparams, 'windowed_att_pos_offset') else 0
+        if self.windowed_attention_range:
+            self.exp_smoothing_factor = nn.Parameter( torch.ones(1) * 0.0 )
         self.attention_layers = hparams.attention_layers
         
         self.dump_attention_weights = False
@@ -503,10 +537,12 @@ class Decoder(nn.Module):
         self.second_decoder_cell = None
         self.attention_weights = None
         self.attention_weights_cum = None
+        self.attention_position = None
         self.saved_attention_weights = None
         self.saved_attention_weights_cum = None
         self.attention_context = None
         self.previous_location = None
+        self.attention_weights_scaler = None
         self.memory = None
         self.processed_memory = None
         self.mask = None
@@ -532,22 +568,16 @@ class Decoder(nn.Module):
             self.attention_layer = Attention(
                 hparams.attention_rnn_dim, self.memory_dim,
                 hparams.attention_dim, hparams.attention_location_n_filters,
-                hparams.attention_location_kernel_size)
-        elif self.attention_type == 1:
-            self.attention_layer = GMMAttention(
-                hparams.num_att_mixtures, hparams.attention_layers,
-                hparams.attention_rnn_dim, self.memory_dim,
-                hparams.attention_dim, hparams.attention_location_n_filters,
-                hparams.attention_location_kernel_size, hparams)
-        elif self.attention_type == 2:
-            self.attention_layer = DynamicConvolutionAttention(
-                hparams.attention_rnn_dim, self.memory_dim,
-                hparams.attention_dim, hparams.attention_location_n_filters,
                 hparams.attention_location_kernel_size,
-                hparams.dynamic_filter_num, hparams.dynamic_filter_len)
+                self.windowed_attention_range,
+                hparams.windowed_att_pos_learned,
+                self.windowed_att_pos_offset)
         else:
             print("attention_type invalid, valid values are... 0 and 1")
             raise
+        
+        if hasattr(hparams, 'use_cum_attention_scaler') and hparams.use_cum_attention_scaler:
+            self.attention_weights_scaler = nn.Parameter(torch.ones(1)*-2.0)
         
         self.decoder_residual_connection = hparams.decoder_residual_connection
         if self.decoder_residual_connection:
@@ -683,6 +713,14 @@ class Decoder(nn.Module):
         self.memory = memory
         if self.attention_type == 0:
             self.processed_memory = self.attention_layer.memory_layer(memory) # Linear Layer, [B, enc_T, enc_dim] -> [B, enc_T, attention_dim]
+            if self.windowed_attention_range:
+                attention_position = self.attention_position
+                if attention_position is not None and preserve is not None:
+                    attention_position *= preserve.squeeze(1)
+                    attention_position.detach_()
+                else:
+                    self.attention_position = memory.new_zeros(B)# [B]
+        
         elif self.attention_type == 1:
             self.previous_location = memory.new_zeros( B, 1, self.num_att_mixtures)
         self.mask = mask
@@ -745,7 +783,7 @@ class Decoder(nn.Module):
             hidden_att_contexts = None
         return mel_outputs, gate_outputs, alignments, hidden_att_contexts
     
-    def decode(self, decoder_input) -> Tuple[Tensor, Tensor, Tensor, Tensor]:
+    def decode(self, decoder_input: Tensor, memory_lengths: Tensor) -> Tuple[Tensor, Tensor, Tensor, Tensor]:
         """ Decoder step using stored states, attention and memory
         PARAMS
         ------
@@ -770,11 +808,13 @@ class Decoder(nn.Module):
         decoder_hidden        = self.decoder_hidden
         assert decoder_hidden is not None
         decoder_cell          = self.decoder_cell
-        assert decoder_cell is not None
-        second_decoder_hidden = self.second_decoder_hidden
-        assert second_decoder_hidden is not None
-        second_decoder_cell   = self.second_decoder_cell
-        assert second_decoder_cell is not None
+        second_decoder_rnn = self.second_decoder_rnn
+        if second_decoder_rnn is not None:
+            assert decoder_cell is not None
+            second_decoder_hidden = self.second_decoder_hidden
+            assert second_decoder_hidden is not None
+            second_decoder_cell   = self.second_decoder_cell
+            assert second_decoder_cell is not None
         memory = self.memory
         assert memory is not None
         processed_memory = self.processed_memory
@@ -793,31 +833,31 @@ class Decoder(nn.Module):
         _ = self.attention_rnn(cell_input, (attention_hidden, attention_cell))
         self.attention_hidden = attention_hidden = _[0]
         self.attention_cell   = attention_cell   = _[1]
-        del _
         
-        attention_weights_cat = torch.cat((attention_weights.unsqueeze(1), attention_weights_cum.unsqueeze(1)), dim=1)
+        scaled_attention_weights_cum = attention_weights_cum.unsqueeze(1)
+        if self.attention_weights_scaler is not None:
+            scaled_attention_weights_cum *= self.attention_weights_scaler
+        attention_weights_cat = torch.cat((attention_weights.unsqueeze(1), scaled_attention_weights_cum), dim=1)
         # [B, 1, enc_T] cat [B, 1, enc_T] -> [B, 2, enc_T]
         
         if self.attention_type == 0:
-            _ = self.attention_layer(attention_hidden, memory, processed_memory, attention_weights_cat, mask, None)
+            _ = self.attention_layer(attention_hidden, memory, processed_memory, attention_weights_cat, mask, memory_lengths, None, self.attention_position)
             self.attention_context = attention_context = _[0]
             self.attention_weights = attention_weights = _[1]
-        elif self.attention_type == 1:
-            _ = self.attention_layer(attention_hidden, memory, processed_memory, attention_weights_cat, mask, None)
-            #_ = self.attention_layer(self.attention_hidden, self.memory, self.previous_location, self.mask, score_mask_value)
-            self.attention_context = attention_context = _[0]
-            self.attention_weights = attention_weights = _[1]
-            #self.previous_location = _[2]
-        elif self.attention_type == 2:
-            _ = self.attention_layer(attention_hidden, memory, processed_memory, attention_weights_cat, mask, None)# attention_context is the encoder output that is to be used at the current frame(?)
-            #_ = self.attention_layer(self.attention_hidden, attention_weights_cat, self.memory, self.mask, attention_weights)# attention_context is the encoder output that is to be used at the current frame(?)
-            self.attention_context = attention_context = _[0]
-            self.attention_weights = attention_weights = _[1]
+            new_pos = _[2]
+            
+            attention_position = self.attention_position
+            assert attention_position is not None
+            exp_smoothing_factor = self.exp_smoothing_factor
+            assert exp_smoothing_factor is not None
+            
+            smooth_factor = torch.sigmoid(exp_smoothing_factor)
+            self.attention_position = (attention_position*smooth_factor) + (new_pos*(1-smooth_factor))
+            
+            attention_weights_cum += attention_weights
+            self.attention_weights_cum = attention_weights_cum
         else:
-            raise NotImplementedError(f"Attention Type {self.attention_type} Invalid")
-        
-        attention_weights_cum += attention_weights
-        self.attention_weights_cum = attention_weights_cum
+            raise NotImplementedError(f"Attention Type {self.attention_type} Invalid / Not Implemented / Deprecated")
         
         decoder_input = torch.cat( ( attention_hidden, attention_context), -1) # cat 6.475ms
         
@@ -827,7 +867,6 @@ class Decoder(nn.Module):
         if self.decoder_residual_connection:
             decoder_rnn_output = decoder_rnn_output + decoder_input
         
-        second_decoder_rnn = self.second_decoder_rnn
         if second_decoder_rnn is not None:
             second_decoder_state = self.second_decoder_rnn(decoder_rnn_output, (second_decoder_hidden, second_decoder_cell))
             self.second_decoder_hidden = second_decoder_hidden = second_decoder_state[0]
@@ -878,9 +917,9 @@ class Decoder(nn.Module):
         if self.prenet_noise:
             decoder_inputs = decoder_inputs + self.prenet_noise * torch.randn(decoder_inputs.shape, device=decoder_inputs.device, dtype=decoder_inputs.dtype)
         
-        if self.prenet_blur_max > 0.0:
-            rand_blur_strength = torch.rand(1).uniform_(self.prenet_blur_min, self.prenet_blur_max)
-            decoder_inputs = HeightGaussianBlur(decoder_inputs, blur_strength=rand_blur_strength)# [B, n_mel, dec_T]
+        #if self.prenet_blur_max > 0.0:
+        #    rand_blur_strength = torch.rand(1).uniform_(self.prenet_blur_min, self.prenet_blur_max)
+        #    decoder_inputs = HeightGaussianBlur(decoder_inputs, blur_strength=rand_blur_strength)# [B, n_mel, dec_T]
         
         decoder_inputs = self.parse_decoder_inputs(decoder_inputs)# [B, n_mel, dec_T] -> [dec_T, B, n_mel]
         
@@ -911,7 +950,7 @@ class Decoder(nn.Module):
             else:
                 decoder_input = self.prenet(mel_outputs[-1][:, :self.n_mel_channels]) # [B, n_mel] use last output for next input (like inference)
             
-            mel_output, gate_output, attention_weights, decoder_hidden_attention_context = self.decode(decoder_input)
+            mel_output, gate_output, attention_weights, decoder_hidden_attention_context = self.decode(decoder_input, memory_lengths)
             
             if self.dump_attention_weights:
                 attention_weights = attention_weights.cpu()
@@ -958,7 +997,7 @@ class Decoder(nn.Module):
         for i in range(self.max_decoder_steps):
             decoder_input = self.prenet(decoder_input[:, :self.n_mel_channels])
             
-            mel_output, gate_output_gpu, alignment, decoder_hidden_attention_context = self.decode(decoder_input)
+            mel_output, gate_output_gpu, alignment, decoder_hidden_attention_context = self.decode(decoder_input, memory_lengths)
             
             mel_outputs += [mel_output.squeeze(1)]
             gate_output_cpu = gate_output_gpu.cpu().float() # small operations e.g min(), max() and sigmoid() are faster on CPU # also .float() because Tensor.min() doesn't work on half precision CPU
@@ -1026,7 +1065,8 @@ class Tacotron2(nn.Module):
         
         self.encoder = Encoder(hparams)
         self.decoder = Decoder(hparams)
-        self.postnet = Postnet(hparams)
+        if not hasattr(hparams, 'use_postnet') or hparams.use_postnet:
+            self.postnet = Postnet(hparams)
         self.sylps_net = SylpsNet(hparams)
         self.emotion_net = EmotionNet(hparams)
         self.aux_emotion_net = AuxEmotionNet(hparams)
@@ -1069,7 +1109,8 @@ class Tacotron2(nn.Module):
             mask = mask.permute(1, 0, 2)
             # [B, n_mel, steps]
             outputs[0].data.masked_fill_(mask, 0.0)
-            outputs[1].data.masked_fill_(mask, 0.0)
+            if outputs[1] is not None:
+                outputs[1].data.masked_fill_(mask, 0.0)
             outputs[2].data.masked_fill_(mask[:, 0, :], 1e3)  # gate energies
         
         return outputs
@@ -1082,9 +1123,10 @@ class Tacotron2(nn.Module):
         if p_teacher_forcing == None:  teacher_force_till = self.teacher_force_till
         if drop_frame_rate == None:    drop_frame_rate    = self.drop_frame_rate
         
-        if drop_frame_rate > 0. and self.training:
-            # gt_mels shape (B, n_mel_channels, T_out),
-            gt_mels = dropout_frame(gt_mels, self.global_mean, output_lengths, drop_frame_rate)
+        with torch.no_grad():
+            if drop_frame_rate > 0. and self.training:
+                # gt_mels shape (B, n_mel_channels, T_out),
+                gt_mels = dropout_frame(gt_mels, self.global_mean, output_lengths, drop_frame_rate)
         
         memory = []
         
@@ -1125,7 +1167,7 @@ class Tacotron2(nn.Module):
                                                    return_hidden_state=return_hidden_state)
         
         # (Postnet) mel_outputs -> mel_outputs_postnet (learn a modifier for the output)
-        mel_outputs_postnet = self.postnet(mel_outputs)
+        mel_outputs_postnet = self.postnet(mel_outputs) if hasattr(self, 'postnet') else None
         
         # (Adv Postnet) learns to make spectrograms more realistic *looking* (instead of accurate)
         mel_outputs_adv = None
@@ -1176,7 +1218,7 @@ class Tacotron2(nn.Module):
         mel_outputs, gate_outputs, alignments, hidden_att_contexts = self.decoder.inference(memory, memory_lengths=text_lengths, return_hidden_state=return_hidden_state)
         
         # (Postnet) mel_outputs -> mel_outputs_postnet (learn a modifier for the output)
-        mel_outputs_postnet = self.postnet(mel_outputs)
+        mel_outputs_postnet = self.postnet(mel_outputs) if hasattr(self, 'postnet') else mel_outputs
         
         # (Adv Postnet) learns to make spectrograms more realistic *looking* (instead of accurate)
         if False and hasattr(self, "adversarial_postnet"):

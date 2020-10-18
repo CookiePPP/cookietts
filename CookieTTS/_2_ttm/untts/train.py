@@ -38,33 +38,6 @@ class LossExplosion(Exception):
     """Custom Exception Class. If Loss Explosion, raise Error and automatically restart training script from previous best_val_model checkpoint."""
     pass
 
-def create_mels():
-    stft = STFT.TacotronSTFT(
-                hparams.filter_length, hparams.hop_length, hparams.win_length,
-                hparams.n_mel_channels, hparams.sampling_rate, hparams.mel_fmin,
-                hparams.mel_fmax)
-
-    def save_mel(file):
-        audio, sampling_rate = load_wav_to_torch(file)
-        if sampling_rate != stft.sampling_rate:
-            raise ValueError("{} {} SR doesn't match target {} SR".format(file, 
-                sampling_rate, stft.sampling_rate))
-        audio_norm = audio / hparams.max_wav_value
-        audio_norm = audio_norm.unsqueeze(0)
-        audio_norm = torch.autograd.Variable(audio_norm, requires_grad=False)
-        melspec = stft.mel_spectrogram(audio_norm)
-        melspec = torch.squeeze(melspec, 0).cpu().numpy()
-        np.save(file.replace('.wav', ''), melspec)
-
-    import glob
-    wavs = glob.glob('/media/cookie/Samsung 860 QVO/ClipperDatasetV2/**/*.wav',recursive=True)
-    print(str(len(wavs))+" files being converted to mels")
-    for index, i in tqdm(enumerate(wavs), smoothing=0, total=len(wavs)):
-        if index < 0: continue
-        try: save_mel(i)
-        except Exception as ex: tqdm.write(i, " failed to process\n",ex,"\n")
-    assert 0
-
 
 class StreamingMovingAverage:
     def __init__(self, window_size):
@@ -180,12 +153,9 @@ def load_checkpoint(checkpoint_path, model, optimizer):
     print("Loading checkpoint '{}'".format(checkpoint_path))
     checkpoint_dict = torch.load(checkpoint_path, map_location='cpu')
     
-    #state_dict = {k.replace("encoder_speaker_embedding.weight","encoder.encoder_speaker_embedding.weight"): v for k,v in torch.load(checkpoint_path)['state_dict'].items()}
-    #model.load_state_dict(state_dict) # tmp for updating old models
-    
     model.load_state_dict(checkpoint_dict['state_dict']) # original
     
-    #if 'optimizer' in checkpoint_dict.keys(): optimizer.load_state_dict(checkpoint_dict['optimizer'])
+    if 'optimizer' in checkpoint_dict.keys(): optimizer.load_state_dict(checkpoint_dict['optimizer'])
     if 'amp' in checkpoint_dict.keys(): amp.load_state_dict(checkpoint_dict['amp'])
     if 'learning_rate' in checkpoint_dict.keys(): learning_rate = checkpoint_dict['learning_rate']
     #if 'hparams' in checkpoint_dict.keys(): hparams = checkpoint_dict['hparams']
@@ -235,77 +205,30 @@ def validate(model, criterion, valset, iteration, batch_size, n_gpus,
                                 shuffle=False, batch_size=batch_size,
                                 pin_memory=False, drop_last=True, collate_fn=collate_fn)
         val_loss_t = len_loss_t = loss_z_t = loss_w_t = loss_s_t = loss_att_t = dur_loss_z_t = dur_loss_w_t = dur_loss_s_t = 0.0
+        loss_dict_total = None
         for i, batch in tqdm(enumerate(val_loader), desc="Validation", total=len(val_loader), smoothing=0): # i = index, batch = stuff in array[i]
             x, y = model.parse_batch(batch)
             y_pred = model(x)
-            loss, len_loss, loss_z, loss_w, loss_s, loss_att, dur_loss_z, dur_loss_w, dur_loss_s = criterion(y_pred, y)
+            loss_dict = criterion(y_pred, y)
+            if loss_dict_total is None:
+                loss_dict_total = {k: 0. for k, v in loss_dict.items()}
             
             if hparams.distributed_run:
-                reduced_val_loss = reduce_tensor(loss.data, n_gpus).item()
-                reduced_len_loss = reduce_tensor(len_loss.data, n_gpus).item()
-                reduced_loss_z = reduce_tensor(loss_z.data, n_gpus).item()
-                reduced_loss_w = reduce_tensor(loss_w.data, n_gpus).item()
-                reduced_loss_s = reduce_tensor(loss_s.data, n_gpus).item()
-                reduced_loss_att = reduce_tensor(loss_att.data, n_gpus).item() if (loss_att is not None) else 0
-                reduced_dur_loss_z = reduce_tensor(dur_loss_z.data, n_gpus).item() if (dur_loss_z is not None) else 0
-                reduced_dur_loss_w = reduce_tensor(dur_loss_w.data, n_gpus).item() if (dur_loss_w is not None) else 0
-                reduced_dur_loss_s = reduce_tensor(dur_loss_s.data, n_gpus).item() if (dur_loss_s is not None) else 0
+                reduced_loss_dict = {k: reduce_tensor(v.data, n_gpus).item() if v is not None else 0. for k, v in loss_dict.items()}
             else:
-                reduced_val_loss = loss.item()
-                reduced_len_loss = len_loss.item()
-                reduced_loss_z = loss_z.item()
-                reduced_loss_w = loss_w.item()
-                reduced_loss_s = loss_s.item()
-                reduced_loss_att = loss_att.item() if (loss_att is not None) else 0
-                reduced_dur_loss_z = dur_loss_z.item() if (dur_loss_z is not None) else 0
-                reduced_dur_loss_w = dur_loss_w.item() if (dur_loss_w is not None) else 0
-                reduced_dur_loss_s = dur_loss_s.item() if (dur_loss_s is not None) else 0
+                reduced_loss_dict = {k: v.item() if v is not None else 0. for k, v in loss_dict.items()}
+            reduced_loss = reduced_loss_dict['loss']
             
-            val_loss_t += reduced_val_loss
-            len_loss_t += reduced_len_loss
-            loss_z_t += reduced_loss_z
-            loss_w_t += reduced_loss_w
-            loss_s_t += reduced_loss_s
-            loss_att_t += reduced_loss_att
-            dur_loss_z_t += reduced_dur_loss_z
-            dur_loss_w_t += reduced_dur_loss_w
-            dur_loss_s_t += reduced_dur_loss_s
+            for k in loss_dict_total.keys():
+                loss_dict_total[k] = loss_dict_total[k] + reduced_loss_dict[k]
             # end forloop
-        val_loss = val_loss_t / (i + 1)
-        len_loss = len_loss_t / (i + 1)
-        loss_z = loss_z_t / (i + 1)
-        loss_w = loss_w_t / (i + 1)
-        loss_s = loss_s_t / (i + 1)
-        loss_att = loss_att_t / (i + 1)
-        dur_loss_z = dur_loss_z_t / (i + 1)
-        dur_loss_w = dur_loss_w_t / (i + 1)
-        dur_loss_s = dur_loss_s_t / (i + 1)
+        loss_dict_total = {k: v/(i+1) for k, v in loss_dict_total.items()}
         # end torch.no_grad()
     model.train()
     if rank == 0:
-        tqdm.write("Validation loss {}: {:9f}".format(iteration, val_loss))
-        logger.log_validation(val_loss, len_loss, loss_z, loss_w, loss_s, loss_att, dur_loss_z, dur_loss_w, dur_loss_s, model, y, y_pred, iteration)
-    return val_loss
-
-
-def calculate_global_mean(data_loader, global_mean_npy, hparams):
-    if global_mean_npy and os.path.exists(global_mean_npy):
-        global_mean = np.load(global_mean_npy)
-        return to_gpu(torch.tensor(global_mean).half()) if hparams.fp16_run else to_gpu(torch.tensor(global_mean).float())
-    sums = []
-    frames = []
-    print('calculating global mean...')
-    for i, batch in tqdm(enumerate(data_loader), total=len(data_loader), smoothing=0.001):
-        text_padded, input_lengths, mel_padded, gate_padded,\
-            output_lengths, speaker_ids, torchmoji_hidden, preserve_decoder_states = batch
-        # padded values are 0.
-        sums.append(mel_padded.double().sum(dim=(0, 2)))
-        frames.append(output_lengths.double().sum())
-    global_mean = sum(sums) / sum(frames)
-    global_mean = to_gpu(global_mean.half()) if hparams.fp16_run else to_gpu(global_mean.float())
-    if global_mean_npy:
-        np.save(global_mean_npy, global_mean.cpu().numpy())
-    return global_mean
+        tqdm.write(f"Validation loss {iteration}: {reduced_loss:9f}")
+        logger.log_validation(loss_dict_total, model, y, y_pred, iteration)
+    return reduced_loss
 
 
 def train(output_directory, log_directory, checkpoint_path, warm_start, warm_start_force, n_gpus,
@@ -348,10 +271,10 @@ def train(output_directory, log_directory, checkpoint_path, warm_start, warm_sta
                 print(f"Layer: {layer} has been frozen")
     
     # define optimizer (any params without requires_grad are ignored)
-    optimizer = torch.optim.Adam(filter(lambda p: p.requires_grad, model.parameters()), lr=learning_rate, weight_decay=hparams.weight_decay)
-    #optimizer = apexopt.FusedAdam(filter(lambda p: p.requires_grad, model.parameters()), lr=learning_rate, weight_decay=hparams.weight_decay)
+    #optimizer = torch.optim.Adam(filter(lambda p: p.requires_grad, model.parameters()), lr=learning_rate, weight_decay=hparams.weight_decay)
+    optimizer = apexopt.FusedAdam(filter(lambda p: p.requires_grad, model.parameters()), lr=learning_rate, weight_decay=hparams.weight_decay)
     
-    if False and rank == 0:
+    if True and rank == 0:
         pytorch_total_params = sum(p.numel() for p in model.parameters())
         print("{:,} total parameters in model".format(pytorch_total_params))
         pytorch_total_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
@@ -445,11 +368,8 @@ def train(output_directory, log_directory, checkpoint_path, warm_start, warm_sta
                         if show_live_params:
                             print(internal_text)
                     n_restarts = n_restarts_override if (n_restarts_override is not None) else n_restarts or 0
-                    if not iteration % 50: # check actual learning rate every 20 iters (because I sometimes see learning_rate variable go out-of-sync with real LR)
-                        learning_rate = optimizer.param_groups[0]['lr']
                     # Learning Rate Schedule
                     if custom_lr:
-                        old_lr = learning_rate
                         if iteration < warmup_start:
                             learning_rate = warmup_start_lr
                         elif iteration < warmup_end:
@@ -463,36 +383,21 @@ def train(output_directory, log_directory, checkpoint_path, warm_start, warm_sta
                         assert learning_rate > -1e-8, "Negative Learning Rate."
                         if decrease_lr_on_restart:
                             learning_rate = learning_rate/(2**(n_restarts/3))
-                        if old_lr != learning_rate:
-                            for param_group in optimizer.param_groups:
-                                param_group['lr'] = learning_rate
+                        for param_group in optimizer.param_groups:
+                            param_group['lr'] = learning_rate
                     # /run external code every epoch, allows the run to be adjusting without restarts/
                     model.zero_grad()
                     x, y = model.parse_batch(batch)
                     y_pred = model(x)
                     
-                    loss, len_loss, loss_z, loss_w, loss_s, loss_att, dur_loss_z, dur_loss_w, dur_loss_s = criterion(y_pred, y)
+                    loss_dict = criterion(y_pred, y)
+                    loss = loss_dict['loss']
                     
                     if hparams.distributed_run:
-                        reduced_loss = reduce_tensor(loss.data, n_gpus).item()
-                        reduced_len_loss = reduce_tensor(len_loss.data, n_gpus).item()
-                        reduced_loss_z = reduce_tensor(loss_z.data, n_gpus).item()
-                        reduced_loss_w = reduce_tensor(loss_w.data, n_gpus).item()
-                        reduced_loss_s = reduce_tensor(loss_s.data, n_gpus).item()
-                        reduced_loss_att = reduce_tensor(loss_att.data, n_gpus).item() if (loss_att is not None) else 0
-                        reduced_dur_loss_z = reduce_tensor(dur_loss_z.data, n_gpus).item() if (dur_loss_z is not None) else 0
-                        reduced_dur_loss_w = reduce_tensor(dur_loss_w.data, n_gpus).item() if (dur_loss_w is not None) else 0
-                        reduced_dur_loss_s = reduce_tensor(dur_loss_s.data, n_gpus).item() if (dur_loss_s is not None) else 0
+                        reduced_loss_dict = {k: reduce_tensor(v.data, n_gpus).item() if v is not None else 0. for k, v in loss_dict.items()}
                     else:
-                        reduced_loss = loss.item()
-                        reduced_len_loss = len_loss.item()
-                        reduced_loss_z = loss_z.item()
-                        reduced_loss_w = loss_w.item()
-                        reduced_loss_s = loss_s.item()
-                        reduced_loss_att = loss_att.item() if (loss_att is not None) else 0
-                        reduced_dur_loss_z = dur_loss_z.item() if (dur_loss_z is not None) else 0
-                        reduced_dur_loss_w = dur_loss_w.item() if (dur_loss_w is not None) else 0
-                        reduced_dur_loss_s = dur_loss_s.item() if (dur_loss_s is not None) else 0
+                        reduced_loss_dict = {k: v.item() if v is not None else 0. for k, v in loss_dict.items()}
+                    reduced_loss = reduced_loss_dict['loss']
                     
                     if hparams.fp16_run:
                         with amp.scale_loss(loss, optimizer) as scaled_loss:
@@ -511,7 +416,7 @@ def train(output_directory, log_directory, checkpoint_path, warm_start, warm_sta
                     optimizer.step()
                     
                     # get current Loss Scale of first optimizer
-                    loss_scale = amp._amp_state.loss_scalers[0]._loss_scale if hparams.fp16_run else 32768
+                    loss_scale = amp._amp_state.loss_scalers[0]._loss_scale if hparams.fp16_run else 32768.
                     
                     # restart if training/model has collapsed
                     if (iteration > 1e3 and (reduced_loss > LossExplosionThreshold)) or (math.isnan(reduced_loss)) or (loss_scale < 1/4):
@@ -520,11 +425,11 @@ def train(output_directory, log_directory, checkpoint_path, warm_start, warm_sta
                     if not is_overflow and rank == 0:
                         duration = time.time() - start_time
                         average_loss = rolling_loss.process(reduced_loss)
-                        tqdm.write("{} [Train_loss:{:.4f} Avg:{:.4f} Len:{:.4f} z:{:.4f} w:{:.4f} s:{:.4f} att:{:.4f} dz:{:.4f} dw:{:.4f} ds:{:.4f}] [Grad Norm {:.4f}] "
+                        tqdm.write("{} [Train_loss:{:.4f} Avg:{:.4f}] [Grad Norm {:.4f}] "
                               "[{:.2f}s/it] [{:.3f}s/file] [{:.7f} LR] [{} LS]".format(
-                            iteration, reduced_loss, average_loss, reduced_len_loss, reduced_loss_z, reduced_loss_w, reduced_loss_s, reduced_loss_att, reduced_dur_loss_z, reduced_dur_loss_w, reduced_dur_loss_s, grad_norm,
+                            iteration, reduced_loss, average_loss, grad_norm,
                                 duration, (duration/(hparams.batch_size*n_gpus)), learning_rate, round(loss_scale)))
-                        logger.log_training(reduced_loss, reduced_len_loss, reduced_loss_z, reduced_loss_w, reduced_loss_s, reduced_loss_att, reduced_dur_loss_z, reduced_dur_loss_w, reduced_dur_loss_s, grad_norm, learning_rate, duration, iteration)
+                        logger.log_training(reduced_loss_dict, grad_norm, learning_rate, duration, iteration)
                         start_time = time.time()
                     
                     if is_overflow and rank == 0:

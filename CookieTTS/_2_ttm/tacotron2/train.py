@@ -221,11 +221,9 @@ def save_checkpoint(model, model_d, optimizer, optimizer_d, learning_rate, itera
     # get speaker names to ID
     speakerlist = load_filepaths_and_text(hparams.speakerlist)
     speaker_name_lookup = {x[1]: speaker_id_lookup[x[2]] for x in speakerlist if x[2] in speaker_id_lookup.keys()}
-
-    torch.save({'iteration': iteration,
+    
+    save_dict = {'iteration': iteration,
                 'state_dict': model.state_dict(),
-                'model_d': model_d.state_dict(),
-                'optimizer_d': optimizer_d.state_dict(),
                 'optimizer': optimizer.state_dict(),
                 'learning_rate': learning_rate,
                 #'amp': amp.state_dict(),
@@ -233,7 +231,11 @@ def save_checkpoint(model, model_d, optimizer, optimizer_d, learning_rate, itera
                 'speaker_id_lookup': speaker_id_lookup,
                 'speaker_name_lookup': speaker_name_lookup,
                 'best_validation_loss': best_validation_loss,
-                'average_loss': average_loss}, filepath)
+                'average_loss': average_loss }
+    if model_d is not None and optimizer_d is not None:
+        save_dict['model_d'] = model_d.state_dict()
+        save_dict['optimizer_d'] = optimizer_d.state_dict()
+    torch.save(save_dict, filepath)
     tqdm.write("Saving Complete")
 
 
@@ -369,7 +371,9 @@ def train(output_directory, log_directory, checkpoint_path, warm_start, warm_sta
     torch.cuda.manual_seed(hparams.seed)
 
     # initialize blank model
+    print('Initializing Tacotron2...')
     model = load_model(hparams)
+    print('Done')
     model.eval()
     model_d = GANDiscriminator(hparams).cuda()
     model_d.eval()
@@ -495,8 +499,9 @@ def train(output_directory, log_directory, checkpoint_path, warm_start, warm_sta
                 learning_rate = max(min_learning_rate, learning_rate) # output the largest number
                 for param_group in optimizer.param_groups:
                     param_group['lr'] = learning_rate
-                for param_group in optimizer_d.param_groups:
-                    param_group['lr'] = learning_rate * discriminator_lr_scale
+                if optimizer_d is not None:
+                    for param_group in optimizer_d.param_groups:
+                        param_group['lr'] = learning_rate * discriminator_lr_scale
             # /run external code every epoch, allows the run to be adjusting without restarts/
             
             optimizer.zero_grad()

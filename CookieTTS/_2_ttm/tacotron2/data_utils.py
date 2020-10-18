@@ -1,5 +1,6 @@
 import random
 import os
+os.environ["LRU_CACHE_CAPACITY"] = "3"
 import re
 import numpy as np
 import torch
@@ -241,8 +242,7 @@ class TextMelLoader(torch.utils.data.Dataset):
                 audio = audio[self.audio_offset:]
             self.max_wav_value = max(max_value, audio.max().item(), -audio.min().item()) # I'm not sure how, but sometimes the magnitude of audio exceeds the max of the datatype used before casting.
             if sampling_rate != self.stft.sampling_rate:
-                raise ValueError("{} {} SR doesn't match target {} SR".format(
-                    sampling_rate, self.stft.sampling_rate))
+                raise ValueError("{} SR doesn't match target {} SR".format(sampling_rate, self.stft.sampling_rate))
             audio_norm = audio / self.max_wav_value
             audio_norm = audio_norm.unsqueeze(0)
             audio_norm = torch.autograd.Variable(audio_norm, requires_grad=False)
@@ -280,7 +280,8 @@ class TextMelLoader(torch.utils.data.Dataset):
         preserve_decoder_state = torch.tensor(True if (filelist_index == prev_filelist_index) else False)# preserve model state if this iteration is continuing the file from the last iteration.
         continued_next_iter = torch.tensor(True if (filelist_index == next_filelist_index) else False)# whether this file continued into the next iteration
         
-        audiopath, text, speaker = self.audiopaths_and_text[filelist_index]
+        #audiopath, gtext, ptext, speaker_id, *_ = self.audiopaths_and_text[filelist_index]
+        audiopath, text, speaker_id, *_ = self.audiopaths_and_text[filelist_index]
         
         if not ignore_mel:
             # get mel
@@ -304,11 +305,12 @@ class TextMelLoader(torch.utils.data.Dataset):
         if not ignore_text:
             if random.random() < self.p_arpabet:# (randomly) convert to phonemes
                 text = self.arpa.get(text)
+            #text = ptext if random.random() < self.p_arpabet else gtext
             
             text = self.get_text(text)# convert text into tensor representation
         
         if not ignore_speaker:
-            speaker_id = self.get_speaker_id(speaker)# get speaker_id as tensor normalized [ 0 -> len(speaker_ids) ]
+            speaker_id = self.get_speaker_id(speaker_id)# get speaker_id as tensor normalized [ 0 -> len(speaker_ids) ]
         
         if not ignore_emotion:
             emotion_id = self.get_emotion_id(audiopath)# [1] IntTensor
@@ -325,6 +327,7 @@ class TextMelLoader(torch.utils.data.Dataset):
         path_path_len = min(len(audiopath_without_ext), 999)
         file_path_safe = audiopath_without_ext[0:path_path_len]
         hidden_state = np.load(file_path_safe + "_.npy")
+        #hidden_state = np.load(audiopath.replace('.wav','_tm.npy'))
         return torch.from_numpy(hidden_state).float()
     
     def get_emotion_id(self, audiopath):
