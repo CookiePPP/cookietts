@@ -20,7 +20,7 @@ class Tacotron2Logger(SummaryWriter):
     
     def log_validation(self, reduced_loss_dict, model, y, y_pred, iteration):
         # plot distribution of parameters
-        if iteration % 10000:
+        if iteration%5000 == 0:
             for tag, value in model.named_parameters():
                 tag = tag.replace('.', '/')
                 self.add_histogram(tag, value.data.cpu().numpy(), iteration)

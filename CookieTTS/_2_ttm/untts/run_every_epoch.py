@@ -25,18 +25,24 @@ decrease_lr_on_restart = 1 # Decrease the Learning Rate on a LossExplosionThresh
 n_restarts_override = None
 
 # Custom LR
-decay_start = 100000 # wait till decay_start to start decaying learning rate
-A_ = 3e-4
+decay_start = 200000 # wait till decay_start to start decaying learning rate
+A_ = 0.5e-4
 B_ = 40000
 C_ = 0.00000000
 min_learning_rate = 0.1e-8
+
+# Loss Scalars
+MelGlow_ls = 1.00
+DurGlow_ls = 0.10
+VarGlow_ls = 0.25
+# set to None to load from hparams.py
 
 warmup_start_lr = 0.1e-4
 warmup_start = checkpoint_iter + 0
 warmup_end   = warmup_start + (A_-warmup_start_lr)*1e6*1 # warmup will linearly increase LR by 1e-6 each iter till LR hits A_
 
-grad_clip_thresh = 100.
+grad_clip_thresh = 0.#500.
 
-best_model_margin = 1.50 # training loss margin
+best_model_margin = 0.01 # training loss margin
 validation_interval = 50 if iteration < 101 else (125 if iteration < 2000 else 250)
 # ----------------------------------- LIVE PARAMS UPDATE ----------------------------------- #

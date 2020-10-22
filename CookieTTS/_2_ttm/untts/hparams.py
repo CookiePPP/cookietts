@@ -111,6 +111,7 @@ def create_hparams(hparams_string=None, verbose=False):
         speaker_embedding_dim=64,
         
         # (Decoder) Decoder parameters
+        MelGlow_loss_scalar = 1.0,# Can be overriden by 'run_every_epoch.py'
         sigma=1.0,
         grad_checkpoint=0,
         n_flows=8,
@@ -122,7 +123,7 @@ def create_hparams(hparams_string=None, verbose=False):
         # (Decoder) Decoder Cond parameters
         cond_residual=False,
         cond_res_rezero=False,
-        cond_weightnorm=False, # Causes NaN Gradients late into training.
+        cond_weightnorm=True, # Causes NaN Gradients late into training.
         cond_layers=0,
         cond_act_func='lrelu',
         cond_padding_mode='zeros',
@@ -150,10 +151,10 @@ def create_hparams(hparams_string=None, verbose=False):
         
         # (DurationGlow) Generative Duration Predictor
         DurGlow_enable=True, # use Duration Glow?
-        DurGlow_loss_scalar = 0.25,
+        DurGlow_loss_scalar = 0.1,# Can be overriden by 'run_every_epoch.py'
         dg_sigma=1.0,
         dg_grad_checkpoint=0,
-        dg_n_flows=1,
+        dg_n_flows=4,
         dg_n_group=2,
         dg_n_early_every=10,
         dg_n_early_size=2,
@@ -162,7 +163,7 @@ def create_hparams(hparams_string=None, verbose=False):
         # (DurationGlow) Decoder Cond parameters
         dg_cond_residual=False,
         dg_cond_res_rezero=False,
-        dg_cond_weightnorm=False, # Can cause NaN Gradients late into training.
+        dg_cond_weightnorm=True, # Can cause NaN Gradients late into training.
         dg_cond_layers=0,
         dg_cond_act_func='lrelu',
         dg_cond_padding_mode='zeros',
@@ -172,7 +173,7 @@ def create_hparams(hparams_string=None, verbose=False):
         
         # (DurationGlow) WN parameters
         dg_wn_n_channels=256,
-        dg_wn_kernel_size=3,
+        dg_wn_kernel_size=5,
         dg_wn_dilations_w=1, # use list() to specify multiple dilations
         dg_wn_n_layers=1,
         dg_wn_res_skip=False,      # ignore unless using more than 1 layer
@@ -186,11 +187,11 @@ def create_hparams(hparams_string=None, verbose=False):
         dg_wn_cond_kernel_size=1,
         dg_wn_cond_hidden_channels=256,
         
-        # (VarGlow) Generative Duration Predictor
-        VarGlow_loss_scalar = 1.0,
-        var_sigma=1.0,
+        # (VarGlow) Variational (Perceived Loudness, F0, Energy) Predictor
+        VarGlow_loss_scalar = 1.0,# Can be overriden by 'run_every_epoch.py'
+        var_sigma=1.0,        # Ignore
         var_grad_checkpoint=0,# Ignore
-        var_n_flows=3,
+        var_n_flows=4,
         var_n_group=6,        # Ignore
         var_n_early_every=10, # Ignore
         var_n_early_size =2,  # Ignore
@@ -199,16 +200,16 @@ def create_hparams(hparams_string=None, verbose=False):
         # (VarGlow) Decoder Cond parameters
         var_cond_residual=False,
         var_cond_res_rezero=False,
-        var_cond_weightnorm=False, # Can cause NaN Gradients late into training.
+        var_cond_weightnorm=True, # Can cause NaN Gradients late into training.
         var_cond_layers=1,
         var_cond_act_func='lrelu',
         var_cond_padding_mode='zeros',
         var_cond_kernel_size=1,
-        var_cond_hidden_channels=256,
-        var_cond_output_channels=256,
+        var_cond_hidden_channels=512,
+        var_cond_output_channels=512,
         
         # (VarGlow) WN parameters
-        var_wn_n_channels=256,
+        var_wn_n_channels=512,
         var_wn_kernel_size=5,
         var_wn_dilations_w=1, # use list() to specify multiple dilations
         var_wn_n_layers=1,
@@ -221,7 +222,7 @@ def create_hparams(hparams_string=None, verbose=False):
         var_wn_cond_act_func='none',
         var_wn_cond_padding_mode='zeros',
         var_wn_cond_kernel_size=1,
-        var_wn_cond_hidden_channels=256,
+        var_wn_cond_hidden_channels=512,
     )
     
     if hparams_string:

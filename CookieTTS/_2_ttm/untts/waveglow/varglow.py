@@ -239,10 +239,7 @@ class VarGlow(nn.Module):
                 self.z_split_sizes.append(self.n_early_size)
             assert n_remaining_channels > 0, "n_remaining_channels is 0. (increase n_group or decrease n_early_every/n_early_size)"
             
-            if hparams.var_grad_checkpoint and (k+1)/hparams.var_n_flows <= hparams.var_grad_checkpoint:
-                mem_eff_layer = True
-            else:
-                mem_eff_layer = False
+            mem_eff_layer = True if hparams.var_grad_checkpoint and (k+1)/hparams.var_n_flows <= hparams.var_grad_checkpoint else False
             
             self.convinv.append( InvertibleConv1x1(n_remaining_channels, memory_efficient=mem_eff_layer) )
             self.WN.append( AffineCouplingBlock(WN, memory_efficient=mem_eff_layer, n_in_channels=n_remaining_channels//2,

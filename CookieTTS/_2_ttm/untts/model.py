@@ -2,10 +2,14 @@ from math import sqrt
 import random
 import numpy as np
 from numpy import finfo
-import torch
+
 from torch.autograd import Variable
-from torch import nn
-from torch.nn import functional as F
+from torch import Tensor
+from typing import List, Tuple, Optional
+
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
 from CookieTTS.utils.model.layers import ConvNorm, ConvNorm2D, LinearNorm
 from CookieTTS.utils.model.GPU import to_gpu
 from CookieTTS.utils.model.utils import get_mask_from_lengths, get_mask_3d
@@ -56,6 +60,32 @@ class LenPredictorAttention(nn.Module):
         else:
             attention = attention_override
         return attention.matmul(encoder_outputs)# [B, dec_T, enc_T] @ [B, enc_T, enc_dim] -> [B, dec_T, enc_dim]
+
+def get_attention_from_lengths(
+        memory:        Tensor,# FloatTensor[B, enc_T, enc_dim]
+        enc_durations: Tensor,# FloatTensor[B, enc_T]
+        text_lengths:  Tensor #  LongTensor[B]
+        ):
+    B, enc_T, mem_dim = memory.shape
+    
+    mask = get_mask_from_lengths(text_lengths)
+    enc_durations.masked_fill_(~mask, 0.0)
+    
+    enc_durations = enc_durations.round()#  [B, enc_T]
+    dec_T = enc_durations.sum(dim=1).max().item()# [B, enc_T] -> int
+    
+    attention_contexts = torch.zeros(B, dec_T, mem_dim)# [B, dec_T, enc_dim]
+    for i in range(B):
+        mem_temp = []
+        for j in range(enc_durations):
+            duration = enc_durations[i, j]
+            
+            # [B, enc_T, enc_dim] -> [1, enc_dim] -> [duration, enc_dim]
+            mem_temp.append( memory[i, j:j+1].repeat(duration, 1) )
+        mem_temp = torch.cat(mem_temp, dim=0)# [[duration, enc_dim], ...] -> [dec_T, enc_dim]
+        attention_contexts[i, :mem_temp.shape[0]] = mem_temp
+    
+    return attention_contexts# [B, dec_T, enc_dim]
 
 
 class MelEncoder(nn.Module):
@@ -273,6 +303,33 @@ class Decoder(nn.Module):
         mel_outputs = self.melglow.infer(cond, sigma=sigma)
         return mel_outputs, attention_scores
 
+class LnBatchNorm1d(nn.Module):
+    """
+    Invertible Log() and BatchNorm1d()
+    PARAMS:
+        - same args/kwargs as BatchNorm1d
+        
+        - clamp_min:
+            minimum value before log() operation.
+    """
+    def __init__(self, *args, clamp_min: float=0.01, **kwargs):
+        super(LnBatchNorm1d, self).__init__()
+        self.norm = nn.BatchNorm1d(*args, **kwargs)
+        self.clamp_min = clamp_min
+    
+    def forward(self, x):
+        x_log = x.clamp(min=self.clamp_min).log()
+        y = self.norm(x_log)
+        return y
+    
+    def inverse(self, y):
+        mean = self.norm.running_mean
+        var = self.norm.running_var
+        x_log = (y*var.sqrt()[None, :, None])+mean[None, :, None]
+        
+        x = x_log.exp()
+        return x
+    
 
 class UnTTS(nn.Module):
     def __init__(self, hparams):
@@ -283,6 +340,7 @@ class UnTTS(nn.Module):
         self.bn_pl     = nn.BatchNorm1d(1, momentum=0.01, affine=False)
         self.bn_f0     = nn.BatchNorm1d(1, momentum=0.01, affine=False)
         self.bn_energy = nn.BatchNorm1d(1, momentum=0.01, affine=False)
+        self.lbn_duration=LnBatchNorm1d(1, momentum=0.01, affine=False, clamp_min=0.1)
         
         self.embedding = nn.Embedding(
             hparams.n_symbols, hparams.symbols_embedding_dim)
@@ -363,8 +421,9 @@ class UnTTS(nn.Module):
         
         # DurationGlow
         enc_durations = alignments.sum(dim=1) # [B, dec_T, enc_T] -> [B, enc_T]
-        enc_durations = enc_durations.unsqueeze(1).repeat(1, 2, 1)# [B, enc_T] -> [B, 2, enc_T]# does this even make sense?
-        dur_z, dur_log_s_sum, dur_logdet_w_sum = self.duration_glow(enc_durations, memory.transpose(1, 2))
+        enc_durations = enc_durations.unsqueeze(1)# [B, enc_T] -> [B, 1, enc_T]
+        ln_enc_durations = self.lbn_duration(enc_durations).repeat(1, 2, 1)# Norm and [B, 1, enc_T] -> [B, 2, enc_T]
+        dur_z, dur_log_s_sum, dur_logdet_w_sum = self.duration_glow(ln_enc_durations, memory.transpose(1, 2))
                                                                 #  ([B, enc_T]   , [B, enc_dim, enc_T]   )
         
         attention_contexts = alignments @ memory
@@ -373,9 +432,10 @@ class UnTTS(nn.Module):
         # Variances Inpainter
         # cond -> attention_contexts(+perc_loudness)(+f0)(+energy)
         # x/z  -> perc_loudness + f0 + energy
-        perc_loudness = perc_loudness.unsqueeze(-1).repeat(1, 1, f0.size(2))
-        drop_cond_chance = 0.5
-        perc_loudness_maybe = item_dropout(perc_loudness, drop_cond_chance, 0.05)# [B, 1]
+        perc_loudness = perc_loudness.unsqueeze(-1).repeat(1, 1, f0.size(2))# [B, 1] -> [B, 1, dec_T]
+        
+        drop_cond_chance = 0.5 # Add noise and randomly drop item from batch
+        perc_loudness_maybe = item_dropout(perc_loudness, drop_cond_chance, 0.05)# [B, 1, dec_T]
         f0_maybe            = item_dropout(f0           , drop_cond_chance, 0.05)# [B, 1, dec_T]
         energy_maybe        = item_dropout(energy       , drop_cond_chance, 0.05)# [B, 1, dec_T]
         
@@ -407,29 +467,87 @@ class UnTTS(nn.Module):
         }
         return outputs
     
-    def inference(self, text, speaker_ids, gt_mels=None, output_lengths=None, text_lengths=None, sigma=1.0):
+    def update_device(self, *inputs):
+        target_device = next(self.parameters()).device
+        for input in inputs:
+            if type(input) == Tensor:
+                input.to(target_device)
+    
+    def inference(self,
+            text:             Tensor,            #  LongTensor[B, enc_T]
+            speaker_ids:      Tensor,            #  LongTensor[B]
+            torchmoji_hidden: Tensor,            # FloatTensor[B, embed] 
+            sylps:         Optional[Tensor]=None,# FloatTensor[B]        or None
+            text_lengths:  Optional[Tensor]=None,#  LongTensor[B]        or None
+            durations:     Optional[Tensor]=None,# FloatTensor[B, enc_T] or None
+            perc_loudness: Optional[Tensor]=None,# FloatTensor[B]        or None
+            f0:            Optional[Tensor]=None,# FloatTensor[B, dec_T] or None
+            energy:        Optional[Tensor]=None,# FloatTensor[B, dec_T] or None
+            mel_sigma: float=1.0, dur_sigma: float=1.0, var_sigma: float=1.0):
+        assert not self.training, "model must be in eval() mode"
+        self.update_device(text, speaker_ids, torchmoji_hidden, sylps, text_lengths, durations, perc_loudness, f0, energy)
+        B, enc_T = text.shape
+        
         if text_lengths is None:
-            text_lengths = torch.ones((text.shape[0],)).to(text)*text.shape[1]
+            text_lengths = torch.ones((B,)).to(text)*enc_T
+        assert text_lengths is not None
         
         melenc_outputs = self.mel_encoder(gt_mels, output_lengths, speaker_ids=speaker_ids) if (self.mel_encoder is not None and not self.melenc_ignore) else None# [B, dec_T, melenc_dim]
         
-        embedded_text = self.embedding(text).transpose(1, 2) # [B, embed, sequence]
-        encoder_outputs, pred_loudness = self.encoder(embedded_text, speaker_ids=speaker_ids) # [B, enc_T, enc_dim]
+        embedded_text = self.embedding(text).transpose(1, 2)#    [B, embed, sequence]
+        encoder_outputs, pred_sylps = self.encoder(embedded_text, text_lengths, speaker_ids=speaker_ids)# [B, enc_T, enc_dim]
         
+        assert sylps is not None # needs to be updated with pred_sylps soon ^TM
+        
+        memory = [encoder_outputs,]
         if self.speaker_embedding_dim:
             embedded_speakers = self.speaker_embedding(speaker_ids)[:, None]
-            embedded_speakers = embedded_speakers.repeat(1, encoder_outputs.size(1), 1)
-            encoder_outputs = torch.cat((encoder_outputs, embedded_speakers), dim=2) # [batch, enc_T, enc_dim]
+            embedded_speakers = embedded_speakers.repeat(1, enc_T, 1)
+            memory.append(embedded_speakers)# [B, enc_T, enc_dim]
+        if sylps is not None:
+            sylps = sylps[:, None, None]# [B] -> [B, 1, 1]
+            sylps = sylps.repeat(1, enc_T, 1)
+            memory.append(sylps)# [B, enc_T, enc_dim]
+        if torchmoji_hidden is not None:
+            emotion_embed = torchmoji_hidden.unsqueeze(1)# [B, C] -> [B, 1, C]
+            emotion_embed = self.torchmoji_linear(emotion_embed)# [B, 1, in_C] -> [B, 1, out_C]
+            emotion_embed = emotion_embed.repeat(1, enc_T, 1)
+            memory.append(emotion_embed)#   [B, enc_T, enc_dim]
+        memory = torch.cat(memory, dim=2)# [[B, enc_T, enc_dim], [B, enc_T, speaker_dim]] -> [B, enc_T, enc_dim+speaker_dim]
         
-        # predict length of each input
-        enc_out_mask = get_mask_from_lengths(text_lengths).unsqueeze(-1)# [B, enc_T, 1]
-        encoder_lengths = self.length_predictor(encoder_outputs, enc_out_mask)# [B, enc_T, enc_dim]
-        encoder_lengths = encoder_lengths.clamp(0.001, 4096)
-        output_lengths = encoder_lengths.sum((1,)).round().int()# [B, enc_T] -> [B]
+        # DurationGlow
+        ln_enc_durations = self.duration_glow.infer(memory.transpose(1, 2), sigma=dur_sigma)
+                                                #  ([B, enc_dim, enc_T]   ,                )
+        enc_durations = self.lbn_duration.inverse(ln_enc_durations)[:, 0]# [B, 2, enc_T] -> [B, enc_T]
+        
+        attention_contexts = get_attention_from_lengths(memory, enc_durations, text_lengths)
+                           #                -> [B, dec_T, enc_dim]
+        
+        
+        perc_loudness = perc_loudness[:, None, None].repeat(1, 1, dec_T)
+                                                  # [B]        -> [B, 1, dec_T]
+        f0            = f0.unsqueeze(1)           # [B, dec_T] -> [B, 1, dec_T]
+        energy        = energy.unsqueeze(1)       # [B, dec_T] -> [B, 1, dec_T]
+        
+        incomplete_variances = torch.cat( (attention_contexts.transpose(1, 2),
+                                perc_loudness, f0, energy), dim=1)# -> [B, C, dec_T]
+        variances = self.variance_inpainter.infer(incomplete_variances, sigma=1.0)
+        
+        global_cond = None
+        if self.melenc_enable: # take all current info, and produce global cond tokens which can be randomly sampled from later
+            global_cond = torch.randn(B, n_tokens)# [B, n_tokens]
         
         # Decoder
-        mel_outputs, attention_scores = self.decoder.infer(encoder_outputs, melenc_outputs, encoder_lengths, output_lengths, cond_lens=text_lengths, sigma=sigma)
-        # [B, dec_T, emb] -> [B, n_mel, dec_T] # Series of Flows
+        cond = [attention_contexts.transpose(1, 2), variances]
+        if global_cond is not None:
+            cond.append(global_cond)
+        cond = torch.cat(cond, dim=1)
+        spect = self.decoder.infer(cond, sigma=mel_sigma)
         
-        return self.mask_outputs(
-            [mel_outputs, attention_scores, None, None, None])
+        outputs = {
+            "spect":           spect,
+            "enc_frames": enc_frames,
+            "f0":                 f0,
+            "energy":         energy,
+        }
+        return outputs

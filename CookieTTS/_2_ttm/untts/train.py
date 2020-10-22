@@ -148,7 +148,7 @@ def warm_start_model(checkpoint_path, model, ignore_layers):
     return model, iteration, saved_lookup
 
 
-def load_checkpoint(checkpoint_path, model, optimizer):
+def load_checkpoint(checkpoint_path, model, optimizer, best_validation_loss=1e3):
     assert os.path.isfile(checkpoint_path)
     print("Loading checkpoint '{}'".format(checkpoint_path))
     checkpoint_dict = torch.load(checkpoint_path, map_location='cpu')
@@ -195,7 +195,7 @@ def save_checkpoint(model, optimizer, learning_rate, iteration, hparams, best_va
     tqdm.write("Saving Complete")
 
 
-def validate(model, criterion, valset, iteration, batch_size, n_gpus,
+def validate(model, criterion, valset, loss_scalars, iteration, batch_size, n_gpus,
              collate_fn, logger, distributed_run, rank):
     """Handles all the validation scoring and printing"""
     model.eval()
@@ -209,7 +209,7 @@ def validate(model, criterion, valset, iteration, batch_size, n_gpus,
         for i, batch in tqdm(enumerate(val_loader), desc="Validation", total=len(val_loader), smoothing=0): # i = index, batch = stuff in array[i]
             x, y = model.parse_batch(batch)
             y_pred = model(x)
-            loss_dict = criterion(y_pred, y)
+            loss_dict = criterion(y_pred, y, loss_scalars)
             if loss_dict_total is None:
                 loss_dict_total = {k: 0. for k, v in loss_dict.items()}
             
@@ -390,7 +390,12 @@ def train(output_directory, log_directory, checkpoint_path, warm_start, warm_sta
                     x, y = model.parse_batch(batch)
                     y_pred = model(x)
                     
-                    loss_dict = criterion(y_pred, y)
+                    loss_scalars = {
+                        "MelGlow_ls": MelGlow_ls,
+                        "DurGlow_ls": DurGlow_ls,
+                        "VarGlow_ls": VarGlow_ls,
+                    }
+                    loss_dict = criterion(y_pred, y, loss_scalars)
                     loss = loss_dict['loss']
                     
                     if hparams.distributed_run:
@@ -405,13 +410,16 @@ def train(output_directory, log_directory, checkpoint_path, warm_start, warm_sta
                     else:
                         loss.backward()
                     
-                    if hparams.fp16_run:
-                        grad_norm = torch.nn.utils.clip_grad_norm_(
-                            amp.master_params(optimizer), grad_clip_thresh)
-                        is_overflow = math.isinf(grad_norm) or math.isnan(grad_norm)
+                    if grad_clip_thresh:
+                        if hparams.fp16_run:
+                            grad_norm = torch.nn.utils.clip_grad_norm_(
+                                amp.master_params(optimizer), grad_clip_thresh)
+                            is_overflow = math.isinf(grad_norm) or math.isnan(grad_norm)
+                        else:
+                            grad_norm = torch.nn.utils.clip_grad_norm_(
+                                model.parameters(), grad_clip_thresh)
                     else:
-                        grad_norm = torch.nn.utils.clip_grad_norm_(
-                            model.parameters(), grad_clip_thresh)
+                        grad_norm = 0.0
                     
                     optimizer.step()
                     
@@ -446,7 +454,7 @@ def train(output_directory, log_directory, checkpoint_path, warm_start, warm_sta
                         if rank == 0 and os.path.exists(save_file_check_path):
                             os.remove(save_file_check_path)
                         # perform validation and save "best_model" depending on validation loss
-                        val_loss = validate(model, criterion, valset, iteration,
+                        val_loss = validate(model, criterion, valset, loss_scalars, iteration,
                                  hparams.val_batch_size, n_gpus, collate_fn, logger,
                                  hparams.distributed_run, rank) #validate (0.8 forcing)
                         if use_scheduler:
