@@ -71,7 +71,12 @@ def warm_start_model(checkpoint_path, model):
     assert os.path.isfile(checkpoint_path)
     print("Warm starting model from checkpoint '{}'".format(checkpoint_path))
     checkpoint_dict = torch.load(checkpoint_path, map_location='cpu')
-    model.load_state_dict(checkpoint_dict['state_dict'])
+    model_dict = model.state_dict()
+    pretrained_dict = checkpoint_dict['state_dict']
+    filtered_dict = {k: v for k,v in pretrained_dict.items() if k in model_dict and pretrained_dict[k].shape == model_dict[k].shape}
+    model_dict_missing = {k: v for k,v in pretrained_dict.items() if k not in model_dict}
+    print("model_dict_missing.keys() =", model_dict_missing.keys())
+    model.load_state_dict(filtered_dict)
     return model
 
 
@@ -190,7 +195,7 @@ def GTA_Synthesis(output_directory, checkpoint_path, n_gpus,
             sorted_speaker_ids.append(sorted_speaker_id)
         
         x, _ = model.parse_batch(batch)
-        mel_outputs, mel_outputs_postnet, _, alignments, *_, additional = model(x, teacher_force_till=9999, p_teacher_forcing=1.0, drop_frame_rate=0.0, return_hidden_state=use_hidden_state)
+        mel_outputs, mel_outputs_postnet, _, alignments, *_, additional = model(x, teacher_force_till=9999, p_teacher_forcing=1.0, drop_frame_rate=0.0, p_emotionnet_embed=1.0, return_hidden_state=use_hidden_state)
         if use_hidden_state:
             hidden_att_contexts = additional[0]# [[B, dim],] -> [B, dim]
             hidden_att_contexts = hidden_att_contexts.data.cpu()
@@ -222,7 +227,7 @@ def GTA_Synthesis(output_directory, checkpoint_path, n_gpus,
             save_path_hidden = hidden_path+offset_append+'.npy' if use_hidden_state else '' # ext = '.hdn.npy' or '.hdn1.npy' ... '.hdn599.npy'
             
             if verify_outputs or max_mse or max_mae:
-                gt_mel = train_set.get_mel(wav_path)
+                gt_mel = train_set.get_mel(wav_path.replace('.wav','.npy')) if train_set.load_mel_from_disk else train_set.get_mel(wav_path)
                 orig_shape = list(gt_mel.shape)
                 MAE = torch.nn.functional.l1_loss(mel[:model.n_mel_channels, :], gt_mel).item()
                 MSE = torch.nn.functional.mse_loss(mel[:model.n_mel_channels, :], gt_mel).item()
@@ -245,7 +250,7 @@ def GTA_Synthesis(output_directory, checkpoint_path, n_gpus,
                 print(f"Target shape {orig_shape} does not match generated mel shape {mel_shape}.\nFilepath: '{wav_path}'\n")
                 continue
             
-            print(f"PATH: '{wav_path}'\nText Length: {input_lengths[k].item()}\nMel Shape:{mel_shape}\nSpeaker_ID: {speaker_id}\nTarget Shape: {orig_shape}\nMSE: {MSE}\nMAE: {MAE}\n")
+            print(f"PATH: '{wav_path}'\nText Length: {input_lengths[k].item()}\nMel Shape:{mel_shape}\nSpeaker_ID: {speaker_id}\nTarget Shape: {orig_shape}\nMSE: {MSE}\nMAE: {MAE}")
             
             if not args.do_not_save_mel:
                 mel = mel.numpy()
@@ -259,12 +264,14 @@ def GTA_Synthesis(output_directory, checkpoint_path, n_gpus,
                 np.save(save_path_hidden, hidden_att_context)
             if args.save_letter_durations and hparams.p_arpabet == 0.:
                 durs = durations[k]
+                print(f"durs.std() = {durs.std()}, durs.mean() = {durs.mean()}, durs.max()/len = {durs.max()/orig_shape[1]}, durs.min() = {durs.min()}, durs.topk(5)[0] = {durs.topk(min(5, durs.view(-1).shape[0]))[0]}")
                 durs = durs.numpy()
                 durs = durs.astype(np.float16) if fp16_save else hidden_att_context
                 duration_path = wav_path.replace('.wav','_gdur.npy')
                 np.save(duration_path, durs)
             if args.save_phone_durations and hparams.p_arpabet == 1.:
                 durs = durations[k]
+                print(f"durs.std() = {durs.std()}, durs.mean() = {durs.mean()}, durs.max()/len = {durs.max()/orig_shape[1]}, durs.min() = {durs.min()}, durs.topk(5)[0] = {durs.topk(min(5, durs.view(-1).shape[0]))[0]}")
                 durs = durs.numpy()
                 durs = durs.astype(np.float16) if fp16_save else hidden_att_context
                 duration_path = wav_path.replace('.wav','_pdur.npy')
@@ -296,6 +303,7 @@ def GTA_Synthesis(output_directory, checkpoint_path, n_gpus,
             
             map = f"{wav_path}|{save_path}|{speaker_id}|{save_path_hidden}|{duration_path}|{save_path_enc_out}\n"
             f.write(map) # write paths to text file
+            print("")
         
         duration = time.time() - duration
         avg_duration = rolling_sum.process(duration)
@@ -409,9 +417,11 @@ if __name__ == '__main__':
         from apex import amp
     
     # cookie stuff
-    hparams.load_mel_from_disk = False
-    hparams.training_files = hparams.training_files.replace("mel_train","train").replace("_merged.txt",".txt")
-    hparams.validation_files = hparams.validation_files.replace("mel_val","val").replace("_merged.txt",".txt")
+    #hparams.load_mel_from_disk = False
+    #hparams.training_files = hparams.training_files.replace("mel_train","train")
+    hparams.training_files = hparams.training_files.replace("_merged.txt",".txt")
+    #hparams.validation_files = hparams.validation_files.replace("mel_val","val")
+    hparams.validation_files = hparams.validation_files.replace("_merged.txt",".txt")
     
     if not args.use_validation_files:
         hparams.batch_size = hparams.batch_size * 8 # no gradients stored so batch size can go up a bunch

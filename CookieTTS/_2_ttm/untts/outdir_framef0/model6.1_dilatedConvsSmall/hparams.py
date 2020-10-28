@@ -7,9 +7,9 @@ def create_hparams(hparams_string=None, verbose=False):
     
     from CookieTTS._2_ttm.tacotron2.utils_hparam import HParams
     hparams = HParams(
-        ##################################
-        ## Experiment Parameters        ##
-        ##################################
+        ################################
+        # Experiment Parameters        #
+        ################################
         epochs=1000,
         iters_per_checkpoint=1000,
         seed=1234,
@@ -24,9 +24,9 @@ def create_hparams(hparams_string=None, verbose=False):
         print_layer_names_during_startup=True,
         n_tensorboard_outputs=4, # Number of items to show in tensorboard images section (up to val_batch_size). Ordered by text length e.g: clip with most text will be first.
         
-        ##################################
-        ## Data Parameters              ##
-        ##################################
+        ################################
+        # Data Parameters              #
+        ################################
         speakerlist='/media/cookie/Samsung 860 QVO/ClipperDatasetV2/filelists/speaker_ids.txt',
         use_saved_speakers=True, # use the speaker lookups saved inside the model instead of generating again
         raw_speaker_ids=True, # use the speaker IDs found in filelists for the internal IDs. Values over max_speakers will crash (as intended).
@@ -49,9 +49,9 @@ def create_hparams(hparams_string=None, verbose=False):
         silence_pad_start = 0,
         silence_pad_end   = 0,
         
-        ##################################
-        ## Audio Parameters             ##
-        ##################################
+        ################################
+        # Audio Parameters             #
+        ################################
         max_wav_value=32768.0,
         sampling_rate=48000,
         filter_length=2400,
@@ -61,9 +61,9 @@ def create_hparams(hparams_string=None, verbose=False):
         mel_fmin=0.0,
         mel_fmax=16000.0,
         
-        ##################################
-        ## Optimization Hyperparameters ##
-        ##################################
+        ################################
+        # Optimization Hyperparameters #
+        ################################
         use_saved_learning_rate=False,
         learning_rate=0.1e-5,
         weight_decay=1e-9,#1e-6,
@@ -78,54 +78,9 @@ def create_hparams(hparams_string=None, verbose=False):
         mask_padding=True,#mask values by setting them to the same values in target and predicted
         masked_select=True,#mask values by removing them from the calculation
         
-        
-        #########################################
-        ## Optuna Random Hyperparameter Search ##
-        ######################################### 
-        optuna_hyperparam_search = False,
-        hyperparam_bounds = { # dict of hparams to text, along with bounds and types
-            "n_flows": {
-                "min"  : 4,
-                "max"  : 10,
-                "scale": "linear", # options ["linear", "log"]
-                "dtype": "int",    # options ["int", "float", "categorical"]
-            },
-            "n_channels": {
-                "min"  : 128,
-                "max"  : 512,
-                "scale": "linear", # options ["linear", "log"]
-                "dtype": "int",    # options ["int", "float", "categorical"]
-            },
-            "dg_n_flows": {
-                "min"  : 4,
-                "max"  : 10,
-                "scale": "linear", # options ["linear", "log"]
-                "dtype": "int",    # options ["int", "float", "categorical"]
-            },
-            "dg_wn_n_channels": {
-                "min"  : 128,
-                "max"  : 512,
-                "scale": "linear", # options ["linear", "log"]
-                "dtype": "int",    # options ["int", "float", "categorical"]
-            },
-            "var_n_flows": {
-                "min"  : 4,
-                "max"  : 10,
-                "scale": "linear", # options ["linear", "log"]
-                "dtype": "int",    # options ["int", "float", "categorical"]
-            },
-            "var_wn_n_channels": {
-                "min"  : 128,
-                "max"  : 512,
-                "scale": "linear", # options ["linear", "log"]
-                "dtype": "int",    # options ["int", "float", "categorical"]
-            },
-        },
-        optuna_n_iters = 20000,# how many iters to run each experiment for
-        
-        ##################################
-        ## Model Parameters             ##
-        ##################################
+        ################################
+        # Model Parameters             #
+        ################################
         n_symbols=len(symbols),
         symbols_embedding_dim=512,
         n_speakers=512,
@@ -161,9 +116,6 @@ def create_hparams(hparams_string=None, verbose=False):
         # (Memory)
         speaker_embedding_dim=64,
         
-        #############################
-        ##  MelGlow / DecoderGlow  ##
-        #############################
         # (Decoder) Decoder parameters
         MelGlow_loss_scalar = 1.0,# Can be overriden by 'run_every_epoch.py'
         sigma=1.0,
@@ -188,8 +140,8 @@ def create_hparams(hparams_string=None, verbose=False):
         # (Decoder) WN parameters
         wn_n_channels=256,
         wn_kernel_size=3,
-        wn_dilations_w=None, # use list() to specify multiple dilations
-        wn_n_layers=6,# 1,  2,  3,  4,  5,  6,  7
+        wn_dilations_w=[1,2,4,8,16], # use list() to specify multiple dilations
+        wn_n_layers=5,# 1,  2,  3,  4,  5,  6,  7
                       # 1,  2,  4,  8, 16, 32, 64
                       # 3,  5,  9, 17, 33, 65,129
         wn_res_skip=True,       # enable when using more than 1 layer
@@ -203,16 +155,13 @@ def create_hparams(hparams_string=None, verbose=False):
         wn_cond_kernel_size=1,
         wn_cond_hidden_channels=256,
         
-        ###############################
-        ##  CVarGlow / DurationGlow  ##
-        ###############################
         # (DurationGlow) Generative Duration Predictor
         DurGlow_enable=True, # use Duration Glow?
         DurGlow_loss_scalar = 0.1,# Can be overriden by 'run_every_epoch.py'
         dg_sigma=1.0,
         dg_grad_checkpoint=0,
-        dg_n_flows=8,
-        dg_n_group=8,
+        dg_n_flows=4,
+        dg_n_group=2,
         dg_n_early_every=10,
         dg_n_early_size=2,
         dg_mix_first=True,#True = WaveGlow style, False = WaveFlow style
@@ -231,7 +180,7 @@ def create_hparams(hparams_string=None, verbose=False):
         # (DurationGlow) WN parameters
         dg_wn_n_channels=128,
         dg_wn_kernel_size=3,
-        dg_wn_dilations_w=None, # use list() to specify multiple dilations
+        dg_wn_dilations_w=[1,2,4,8,16], # use list() to specify multiple dilations
         dg_wn_n_layers=5,
         dg_wn_res_skip=True,       # ignore unless using more than 1 layer
         dg_wn_merge_res_skip=False,# ignore unless using more than 1 layer
@@ -244,14 +193,13 @@ def create_hparams(hparams_string=None, verbose=False):
         dg_wn_cond_kernel_size=1,
         dg_wn_cond_hidden_channels=256,
         
-        ##############################
-        ##  VarianceGlow / VarGlow  ##
-        ##############################
         # (VarGlow) Variational (Perceived Loudness, F0, Energy) Predictor
         VarGlow_loss_scalar = 1.0,# Can be overriden by 'run_every_epoch.py'
+        drop_cond_chance    = 1.0,# Chance that the inputs (Perceived Loudness, F0, Energy) aren't given.
+                                  # Attention Context will be given regardless so can be set to 1. without large losses
         var_sigma=1.0,        # Ignore
         var_grad_checkpoint=0,# Ignore
-        var_n_flows=12,
+        var_n_flows=6,
         var_n_group=6,        # Ignore
         var_n_early_every=10, # Ignore
         var_n_early_size =2,  # Ignore
@@ -269,10 +217,10 @@ def create_hparams(hparams_string=None, verbose=False):
         var_cond_output_channels=512,
         
         # (VarGlow) WN parameters
-        var_wn_n_channels=192,
+        var_wn_n_channels=256,
         var_wn_kernel_size=3,
-        var_wn_dilations_w=None, # use list() to specify multiple dilations
-        var_wn_n_layers=6,# 6 Layers = RF of 65 per Flow
+        var_wn_dilations_w=[1,2,4,8,16,32], # use list() to specify multiple dilations
+        var_wn_n_layers=6,# RF = 65 per Flow
         var_wn_res_skip=True,       # ignore unless using more than 1 layer
         var_wn_merge_res_skip=False,# ignore unless using more than 1 layer
         var_wn_seperable_conv=False,

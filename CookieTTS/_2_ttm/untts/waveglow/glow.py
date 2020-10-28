@@ -40,7 +40,7 @@ def GTU(input_a, input_b, n_channels):
     return acts
 
 
-weight_norm = False
+weight_norm = True
 class WN(nn.Module):
     """
     This is the WaveNet like layer for the affine coupling.  The primary difference

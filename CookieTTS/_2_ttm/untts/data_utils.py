@@ -273,6 +273,7 @@ class TextMelLoader(torch.utils.data.Dataset):
         next_filelist_index, next_spectrogram_offset = self.dataloader_indexes[index+self.total_batch_size] if index+self.total_batch_size < self.len else (None, None)
         
         audiopath, text, speaker = self.audiopaths_and_text[filelist_index]
+        self.audiopath = audiopath
         
         # get mel-spect from audio
         mel, audio, sampling_rate = self.get_mel(audiopath) # get mel/AEF
@@ -303,9 +304,18 @@ class TextMelLoader(torch.utils.data.Dataset):
         torchmoji = self.get_torchmoji_hidden(audiopath)
         
         perc_loudness = self.get_perc_loudness(audio, sampling_rate)
-        f0 = self.get_pitch(audio, self.sampling_rate, self.hop_length)[int(spectrogram_offset):int(spectrogram_offset+self.truncated_length)]
+        f0, voiced_mask = self.get_pitch(audio, self.sampling_rate, self.hop_length)[int(spectrogram_offset):int(spectrogram_offset+self.truncated_length)]
         energy = self.get_energy(mel)[int(spectrogram_offset):int(spectrogram_offset+self.truncated_length)]
-        return (text, mel, speaker_id, alignment, torchmoji, perc_loudness, f0, energy, sylps)
+        
+        char_f0          = self.get_charavg_from_frames(f0                 , alignment)# [enc_T]
+        char_voiced_mask = self.get_charavg_from_frames(voiced_mask.float(), alignment)# [enc_T]
+        char_energy      = self.get_charavg_from_frames(energy             , alignment)# [enc_T]
+        
+        return (text       , mel      , speaker_id   ,#     ([0], [1], [2],
+                alignment  , torchmoji, perc_loudness,#      [3], [4], [5],
+                f0         , energy   , sylps        ,#      [6], [7], [8],
+                voiced_mask,                          #      [9],
+                char_f0    , char_voiced_mask, char_energy)# [10],[11],[12])
     
     def get_alignments(self, audiopath, arpa=False):
         if arpa:
@@ -317,9 +327,19 @@ class TextMelLoader(torch.utils.data.Dataset):
     
     def get_perc_loudness(self, audio, sampling_rate):
         meter = pyln.Meter(sampling_rate) # create BS.1770 meter
-        loudness = meter.integrated_loudness(audio.numpy()) # measure loudness
+        loudness = meter.integrated_loudness(audio.numpy()) # measure loudness (in dB)
         perc_loudness = torch.tensor(loudness)
         return perc_loudness# []
+    
+    def get_charavg_from_frames(self, x, alignment):# [dec_T], [dec_T, enc_T]
+        norm_alignment    =      alignment / alignment.sum(dim=0, keepdim=True).clamp(min=0.01)
+        # [dec_T, enc_T] <- [dec_T, enc_T] / [dec_T, 1]
+        
+        x.float().unsqueeze(0)# [dec_T] -> [1, dec_T]
+        y = x @ norm_alignment# [1, dec_T] @ [dec_T, enc_T] -> [1, enc_T]
+        
+        assert not (torch.isinf(y) | torch.isnan(y)).any()
+        return y.squeeze(0)# [enc_T]
     
     def get_pitch(self, audio, sampling_rate, hop_length):
         # Extract Pitch/f0 from raw waveform using PyWORLD
@@ -336,7 +356,15 @@ class TextMelLoader(torch.utils.data.Dataset):
             audio, sampling_rate,
             frame_period=(hop_length/sampling_rate)*1000.,
         )  # For hop size 256 frame period is 11.6 ms
-        return torch.from_numpy(f0).float()  # (Number of Frames) = (654,)
+        
+        f0 = torch.from_numpy(f0).float().clamp(min=0.0, max=800)  # (Number of Frames) = (654,)
+        voiced_mask = (f0>3)# voice / unvoiced flag
+        if voiced_mask.sum() > 0:
+            voiced_f0_mean = f0[voiced_mask].mean()
+            f0[~voiced_mask] = voiced_f0_mean
+        
+        assert not (torch.isinf(f0) | torch.isnan(f0)).any(), f"f0 from pyworld is NaN. Info below\nlen(audio) = {len(audio)}\nf0 = {f0}\naudiopath = {self.audiopath.replace('.npy','.wav')}\nsampling_rate = {sampling_rate}"
+        return f0, voiced_mask# [dec_T], [dec_T]
     
     def get_energy(self, spect):
         # Extract energy
@@ -403,15 +431,19 @@ class TextMelCollate():
         max_target_len = max([x[1].size(1) for x in batch])
         
         # include mel padded, gate padded and speaker ids
-        mel_padded = torch.ones(B, num_mels, max_target_len) * self.pad_value
-        output_lengths = torch.LongTensor(B)
-        speaker_ids = torch.LongTensor(B)
-        alignments = torch.zeros(B, max_target_len, max_input_len)# [B, dec_T, enc_T]
+        mel_padded       = torch.ones(B, num_mels, max_target_len) * self.pad_value
+        output_lengths   = torch.LongTensor(B)
+        speaker_ids      = torch.LongTensor(B)
+        alignments       = torch.zeros(B, max_target_len, max_input_len)# [B, dec_T, enc_T]
         torchmoji_hidden = torch.FloatTensor(B, batch[0][4].shape[0]) if (batch[0][3] is not None) else None
-        perc_loudnesss = torch.zeros(B)
-        f0s            = torch.zeros(B, max_target_len)
-        energys        = torch.zeros(B, max_target_len)
-        sylps          = torch.zeros(B)
+        perc_loudnesss   = torch.zeros(B)
+        sylps            = torch.zeros(B)
+        f0s              = torch.zeros(B, max_target_len)
+        energys          = torch.zeros(B, max_target_len)
+        voiced_mask      = torch.zeros(B, max_target_len)
+        char_f0          = torch.zeros(B, max_input_len)
+        char_voiced_mask = torch.zeros(B, max_input_len)
+        char_energy      = torch.zeros(B, max_input_len)
         
         for i in range(len(ids_sorted_decreasing)):
             mel = batch[ids_sorted_decreasing[i]][1]
@@ -430,13 +462,26 @@ class TextMelCollate():
             perc_loudnesss[i] = batch[ids_sorted_decreasing[i]][5]
             
             f0 = batch[ids_sorted_decreasing[i]][6]
-            f0s[i, :f0.shape[0]]            = f0
+            f0s[i, :f0.shape[0]] = f0
             
             energy = batch[ids_sorted_decreasing[i]][7]
-            energys[i, :energy.shape[0]]        = energy
+            energys[i, :energy.shape[0]] = energy
             
             sylps[i] = batch[ids_sorted_decreasing[i]][8]
+            
+            vmask = batch[ids_sorted_decreasing[i]][9]
+            voiced_mask[i, :vmask.shape[0]] = vmask
+            
+            f0 = batch[ids_sorted_decreasing[i]][10]
+            char_f0[i, :f0.shape[0]] = f0
+            
+            vmask = batch[ids_sorted_decreasing[i]][11]
+            char_voiced_mask[i, :vmask.shape[0]] = vmask
+            
+            energy = batch[ids_sorted_decreasing[i]][12]
+            char_energy[i, :energy.shape[0]] = energy
         
         model_inputs = (text_padded, mel_padded, speaker_ids, input_lengths, output_lengths,
-                                 alignments, torchmoji_hidden, perc_loudnesss, f0s, energys, sylps)
+                        alignments, torchmoji_hidden, perc_loudnesss, f0s, energys, sylps,
+                        voiced_mask, char_f0, char_voiced_mask, char_energy)
         return model_inputs

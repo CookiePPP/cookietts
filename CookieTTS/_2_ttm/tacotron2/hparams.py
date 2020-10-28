@@ -21,8 +21,8 @@ def create_hparams(hparams_string=None, verbose=False):
         dist_url="tcp://127.0.0.1:54321",
         cudnn_enabled=True,
         cudnn_benchmark=False,
-        ignore_layers=["layers_here"],
-        frozen_modules=["none-N/A"], # only the module names are required e.g: "encoder." will freeze all parameters INSIDE the encoder recursively
+        ignore_layers= ["layers_here"],
+        frozen_modules=["layers_here"], # only the module names are required e.g: "encoder." will freeze all parameters INSIDE the encoder recursively
         print_layer_names_during_startup=True,
         
         ################################
@@ -174,7 +174,7 @@ def create_hparams(hparams_string=None, verbose=False):
         attention_dim=128, # 128 Layer baseline # Used for Key-Query Dim
         
         # (Decoder) Attention Type 0 Parameters
-        windowed_attention_range = 3,# set to 0 to disable
+        windowed_attention_range = 64,# set to 0 to disable
                                      # will set the forward and back distance the model can attend to.
                                      # 2 will give the model 5 characters it can attend to at any one time.
                                      # This will also allow more stable generation with longer text inputs and save VRAM during inference.

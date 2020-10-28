@@ -16,7 +16,7 @@ from CookieTTS.utils.model.utils import get_mask_from_lengths, get_mask_3d
 from CookieTTS._2_ttm.untts.fastpitch.length_predictor import TemporalPredictor
 from CookieTTS._2_ttm.untts.fastpitch.transformer import PositionalEmbedding
 from CookieTTS._2_ttm.untts.waveglow.glow import FlowDecoder
-from CookieTTS._2_ttm.untts.waveglow.cvarglow import CVarGlow
+from CookieTTS._2_ttm.untts.waveglow.durglow import DurationGlow
 from CookieTTS._2_ttm.untts.waveglow.varglow import VarGlow
 
 drop_rate = 0.5
@@ -200,7 +200,7 @@ class Encoder(nn.Module):
         - Three 1-d convolution banks
         - Bidirectional LSTM
     """
-    def __init__(self, hparams, global_cond_dim):
+    def __init__(self, hparams):
         super(Encoder, self).__init__() 
         self.encoder_speaker_embed_dim = hparams.encoder_speaker_embed_dim
         if self.encoder_speaker_embed_dim:
@@ -236,7 +236,8 @@ class Encoder(nn.Module):
                             batch_first=True, bidirectional=True)
         self.LReLU = nn.LeakyReLU(negative_slope=0.01) # LeakyReLU
         
-        self.cond_conv = nn.Linear(hparams.encoder_LSTM_dim, global_cond_dim) # predicts Preceived Loudness Mu/Logvar from LSTM Hidden State
+        cond_dim = 2
+        self.cond_conv = nn.Linear(hparams.encoder_LSTM_dim, cond_dim) # predicts Preceived Loudness Mu/Logvar from LSTM Hidden State
     
     def forward(self, text, text_lengths=None, speaker_ids=None, enc_dropout=0.2):
         if self.encoder_speaker_embed_dim:
@@ -302,11 +303,8 @@ class Decoder(nn.Module):
         return mel_outputs
 
 class MaskedBatchNorm1d(nn.BatchNorm1d):
-    def __init__(self, *args, eval_only_momentum=True, **kwargs):
+    def __init__(self, *args, **kwargs):
         super(MaskedBatchNorm1d, self).__init__(*args, **kwargs)
-        self.iters_ = torch.tensor(0).long()
-        self.eval_only_momentum = eval_only_momentum # use momentum only for eval (set to True for hidden layers)
-        self.momentum_eps = max(self.momentum, 0.01)
     
     def forward(self,
             x:               Tensor      ,# [B, C, T]
@@ -318,43 +316,13 @@ class MaskedBatchNorm1d(nn.BatchNorm1d):
         
         if x_mask is not None and x_dims == 3:# must be [B, C, T] and have mask
             x.masked_fill_(~x_mask.unsqueeze(1), 0.0)
-            x_masked_permuted = x.permute(0, 2, 1)[x_mask]# [B, C, T] -> [B*T, C]
-            
-            masked_y = super(MaskedBatchNorm1d, self).forward(x_masked_permuted)
-            
+            masked_y = super(MaskedBatchNorm1d, self).forward(x.permute(0, 2, 1)[x_mask])# [B, C, T] -> [B*T, C] -> [B, C, T]
             y = x.permute(0, 2, 1)# [B, C, T] -> [B, T, C]
-            
-            if not self.eval_only_momentum and ( self.iters_ > 2.0/self.momentum_eps ):
-                masked_y  = (x_masked_permuted-self.running_mean.detach())/self.running_var.detach().sqrt()
-            
-            y[x_mask] = masked_y# [B*T, C]
+            y[x_mask] = masked_y#   [B*T, C]  =  [B*T, C]
             y = y.transpose(1, 2)#  [B, T, C] -> [B, C, T]
         else:
             y = super(MaskedBatchNorm1d, self).forward(x)# [B, C, T] -> [B*T, C] -> [B, C, T]
-            if not self.eval_only_momentum and ( self.iters_ > 2.0/self.momentum_eps ):
-                y  = (x-self.running_mean.detach())/self.running_var.detach().sqrt()
-        with torch.no_grad():
-            self.iters_ += 1
         return y# [B, C, T] or [B, C]
-    
-    def inverse(self,
-            y:               Tensor      ,# [B, C, T]
-            x_mask: Optional[Tensor]=None,# [B, T]
-            ):
-        y_shape = y.shape
-        if len(y_shape) == 2:# if 2 dims, assume shape is [B, C]
-            y = y.unsqueeze(-1)# [B, C] -> [B, C, T]
-            assert x_mask is None, "x_mask cannot be used without a time dimension on the input y"
-        assert y.shape[1] == self.num_features, f"input must be shape [B, {self.num_features}, T], expected {self.num_features} input channels but found {y.shape[1]}"
-        with torch.no_grad():
-            mean = self.running_mean
-            var = self.running_var
-            x = (y*var.sqrt()[None, :, None])+mean[None, :, None]
-            if x_mask is not None:
-                x.masked_fill_(~x_mask, 0.0)
-            if len(y_shape) == 2:
-                x.squeeze(-1)
-        return x
 
 class LnBatchNorm1d(nn.Module):
     """
@@ -377,14 +345,12 @@ class LnBatchNorm1d(nn.Module):
         return y
     
     def inverse(self, y, x_mask=None):
-        #mean = self.norm.running_mean
-        #var = self.norm.running_var
-        #x_log = (y*var.sqrt()[None, :, None])+mean[None, :, None]
-        x_log = self.norm.inverse(y)
+        mean = self.norm.running_mean
+        var = self.norm.running_var
+        x_log = (y*var.sqrt()[None, :, None])+mean[None, :, None]
         
         x = x_log.exp()
-        if x_mask is not None:
-            x.masked_fill_(~x_mask, 0.0)
+        x.masked_fill_(~x_mask, 0.0)
         x.clamp_(min=self.clamp_min, max=self.clamp_max)
         return x
 
@@ -394,20 +360,13 @@ class UnTTS(nn.Module):
         self.n_mel_channels = hparams.n_mel_channels
         self.melenc_enable  = hparams.melenc_enable
         
-        self.bn_pl      = MaskedBatchNorm1d(1, momentum=0.10, eval_only_momentum=False, affine=False)
-        self.bn_energy  = MaskedBatchNorm1d(1, momentum=0.05, eval_only_momentum=False, affine=False)
-        self.bn_cenergy = MaskedBatchNorm1d(1, momentum=0.05, eval_only_momentum=False, affine=False)
-        self.lbn_duration =   LnBatchNorm1d(1, momentum=0.05, eval_only_momentum=False, affine=False,
-                                                                      clamp_min=0.75, clamp_max=60.)
-        
+        self.bn_pl     = MaskedBatchNorm1d(1, momentum=0.01, affine=False)
         if (hparams.f0_log_scale if hasattr(hparams, 'f0_log_scale') else False):
-            self.bn_f0  =     LnBatchNorm1d(1, momentum=0.05, eval_only_momentum=False, affine=False,
-                                                                     clamp_min=0.01, clamp_max=800.)
-            self.bn_cf0 =     LnBatchNorm1d(1, momentum=0.05, eval_only_momentum=False, affine=False,
-                                                                     clamp_min=0.01, clamp_max=800.)
+            self.bn_f0 =     LnBatchNorm1d(1, momentum=0.01, affine=False, clamp_min=0.01, clamp_max=800.)
         else:
-            self.bn_f0  = MaskedBatchNorm1d(1, momentum=0.05, eval_only_momentum=False, affine=False)
-            self.bn_cf0 = MaskedBatchNorm1d(1, momentum=0.05, eval_only_momentum=False, affine=False)
+            self.bn_f0 = MaskedBatchNorm1d(1, momentum=0.01, affine=False)
+        self.bn_energy = MaskedBatchNorm1d(1, momentum=0.01, affine=False)
+        self.lbn_duration =  LnBatchNorm1d(1, momentum=0.01, affine=False, clamp_min=0.75, clamp_max=60.)
         
         self.embedding = nn.Embedding(
             hparams.n_symbols, hparams.symbols_embedding_dim)
@@ -417,33 +376,30 @@ class UnTTS(nn.Module):
         
         self.torchmoji_linear = LinearNorm(hparams.torchMoji_attDim, hparams.torchMoji_crushed_dim)
         
-        enc_global_dim = 2
-        self.encoder = Encoder(hparams, enc_global_dim*2)
-        cond_input_dim = enc_global_dim+hparams.torchMoji_crushed_dim+hparams.encoder_LSTM_dim
-                       #    sylps/pl   +       torchmoji_dim         +     encoder_outputs
+        self.encoder = Encoder(hparams)
         
         self.speaker_embedding_dim = hparams.speaker_embedding_dim
         if self.speaker_embedding_dim:
             self.speaker_embedding = nn.Embedding(hparams.n_speakers, self.speaker_embedding_dim)
-            cond_input_dim += self.speaker_embedding_dim
         
-        self.cvar_glow = CVarGlow(hparams, cond_input_dim) if hparams.DurGlow_enable else None
+        cond_input_dim = self.speaker_embedding_dim + 1     + hparams.torchMoji_crushed_dim + hparams.encoder_LSTM_dim
+                               #           speaker          + sylps +         torchmoji_dim         +     encoder_outputs
+        self.duration_glow = DurationGlow(hparams, cond_input_dim) if hparams.DurGlow_enable else None
         
-        cond_input_dim += 3# char f0, char energy, char voiced_mask
-        self.var_glow = VarGlow(hparams, cond_input_dim)
+        self.drop_cond_chance = float(hparams.drop_cond_chance) if hasattr(hparams, 'drop_cond_chance') else 0.5
+        cond_input_dim += 3# perc_loudness + f0 + energy
+        self.variance_inpainter = VarGlow(hparams, cond_input_dim)
         
         melenc_input_dim = None
         self.mel_encoder = MelEncoder(hparams, melenc_input_dim, hparams.melenc_output_dim) if hparams.melenc_enable else None
         
-        cond_input_dim += 3# frame f0, frame energy, voiced_mask
         hparams.cond_input_dim = cond_input_dim
         self.decoder = Decoder(hparams)
     
     @torch.no_grad()
     def parse_batch(self, batch):
-        text_padded, mel_padded, speaker_ids, text_lengths, output_lengths,\
-                 alignments, torchmoji_hidden, perc_loudness, f0, energy, sylps,\
-                 voiced_mask, char_f0, char_voiced, char_energy = batch
+        text_padded, mel_padded, speaker_ids, text_lengths, output_lengths, \
+                 alignments, torchmoji_hidden, perc_loudness, f0, energy, sylps = batch
         text_padded    = to_gpu(text_padded).long()
         mel_padded     = to_gpu(mel_padded).float()
         speaker_ids    = to_gpu(speaker_ids.data).long()
@@ -452,44 +408,29 @@ class UnTTS(nn.Module):
         alignments     = to_gpu(alignments).float()
         if torchmoji_hidden is not None:
             torchmoji_hidden = to_gpu(torchmoji_hidden).float()
-        perc_loudness = to_gpu(perc_loudness).float()
-        f0            = to_gpu(f0).float()
-        energy        = to_gpu(energy).float()
-        sylps         = to_gpu(sylps).float()
-        voiced_mask   = to_gpu(voiced_mask).bool()
-        char_f0       = to_gpu(char_f0).float()
-        char_voiced   = to_gpu(char_voiced).float()
-        char_energy   = to_gpu(char_energy).float()
+        perc_loudness  = to_gpu(perc_loudness).float()
+        f0             = to_gpu(f0).float()
+        energy         = to_gpu(energy).float()
+        sylps          = to_gpu(sylps).float()
+        voiced_mask    = to_gpu(voiced_mask).bool()
         
         return (
-            (text_padded, mel_padded, speaker_ids, text_lengths, output_lengths, alignments, torchmoji_hidden, perc_loudness, f0, energy, sylps, voiced_mask, char_f0, char_voiced, char_energy),
-            (mel_padded, text_lengths, output_lengths, perc_loudness, f0, energy, sylps, voiced_mask, char_f0, char_voiced, char_energy))
+            (text_padded, mel_padded, speaker_ids, text_lengths, output_lengths, alignments, torchmoji_hidden, perc_loudness, f0, energy, sylps, voiced_mask),
+            (mel_padded, text_lengths, output_lengths, perc_loudness, f0, energy, sylps, voiced_mask))
             # returns ((x),(y)) as (x) for training input, (y) for ground truth/loss calc
     
     def forward(self, inputs):
-        text, gt_mels, speaker_ids, text_lengths, output_lengths,\
-            alignments, torchmoji_hidden, perc_loudness, f0, energy,\
-            sylps, voiced_mask, char_f0, char_voiced, char_energy = inputs
+        text, gt_mels, speaker_ids, text_lengths, output_lengths, \
+               alignments, torchmoji_hidden, perc_loudness, f0, energy, sylps, voiced_mask = inputs
         
         # zero mean unit variance normalization of features
-        with torch.no_grad():
-            perc_loudness = self.bn_pl(perc_loudness.unsqueeze(1))# [B] -> [B, 1]
-            
-            mask = get_mask_from_lengths(output_lengths)# [B, dec_T]
-            f0            = self.bn_f0    (f0.unsqueeze(1)         , (voiced_mask&mask))# [B, dec_T] -> [B, 1, dec_T]
-            energy        = self.bn_energy(energy.unsqueeze(1)     , mask              )# [B, dec_T] -> [B, 1, dec_T]
-            
-            mask = get_mask_from_lengths(text_lengths)# [B, enc_T]
-            char_f0       = self.bn_cf0    (char_f0.unsqueeze(1)    , mask)# [B, 1, enc_T]
-            char_energy   = self.bn_cenergy(char_energy.unsqueeze(1), mask)# [B, 1, enc_T]
-            char_voiced   = char_voiced.unsqueeze(1)# [B, 1, enc_T]
-            
-            mask = get_mask_from_lengths(text_lengths)# [B, T]
-            enc_durations = alignments.sum(dim=1).unsqueeze(1) # [B, dec_T, enc_T] -> [B, enc_T] -> [B, 1, enc_T]
-            ln_enc_durations = self.lbn_duration(enc_durations, mask)# [B, 1, enc_T] Norm 
+        mask = get_mask_from_lengths(output_lengths)# [B, T]
+        perc_loudness = self.bn_pl    (perc_loudness.unsqueeze(1)                  )# [B]        -> [B, 1]
+        f0            = self.bn_f0    (f0.unsqueeze(1)         , (voiced_mask&mask))# [B, dec_T] -> [B, 1, dec_T]
+        energy        = self.bn_energy(energy.unsqueeze(1)     , mask              )# [B, dec_T] -> [B, 1, dec_T]
         
         embedded_text = self.embedding(text).transpose(1, 2)#    [B, embed, sequence]
-        encoder_outputs, enc_global_outputs = self.encoder(embedded_text, text_lengths, speaker_ids=speaker_ids)# [B, enc_T, enc_dim]
+        encoder_outputs, pred_sylps = self.encoder(embedded_text, text_lengths, speaker_ids=speaker_ids)# [B, enc_T, enc_dim]
         memory = [encoder_outputs,]
         if self.speaker_embedding_dim:
             embedded_speakers = self.speaker_embedding(speaker_ids)[:, None]
@@ -499,44 +440,48 @@ class UnTTS(nn.Module):
             sylps = sylps[:, None, None]# [B] -> [B, 1, 1]
             sylps = sylps.repeat(1, encoder_outputs.size(1), 1)
             memory.append(sylps)# [B, enc_T, enc_dim]
-        if perc_loudness is not None:
-            perc_loudness = perc_loudness[..., None]# [B, 1] -> [B, 1, 1]
-            perc_loudness = perc_loudness.repeat(1, encoder_outputs.size(1), 1)
-            memory.append(perc_loudness)# [B, enc_T, enc_dim]
         if torchmoji_hidden is not None:
             emotion_embed = torchmoji_hidden.unsqueeze(1)# [B, C] -> [B, 1, C]
             emotion_embed = self.torchmoji_linear(emotion_embed)# [B, 1, in_C] -> [B, 1, out_C]
             emotion_embed = emotion_embed.repeat(1, encoder_outputs.size(1), 1)
             memory.append(emotion_embed)#   [B, enc_T, enc_dim]
         memory = torch.cat(memory, dim=2)# [[B, enc_T, enc_dim], [B, enc_T, speaker_dim]] -> [B, enc_T, enc_dim+speaker_dim]
-        assert not (torch.isnan(memory) | torch.isinf(memory)).any(), 'Inf/NaN Loss at memory'
         
-        # CVarGlow
-        cvar_gt = torch.cat((ln_enc_durations, char_f0, char_energy, char_voiced), dim=1).repeat(1, 2, 1)# [B, 4, enc_T] -> [B, 8, enc_T]
-        cvar_z, cvar_log_s_sum, cvar_logdet_w_sum = self.cvar_glow(cvar_gt, memory.transpose(1, 2))
-                                                               #  ([B, enc_T], [B, enc_dim, enc_T])
-        
-        memory = torch.cat((memory, char_f0.transpose(1, 2),
-                                char_energy.transpose(1, 2), char_voiced.transpose(1, 2)), dim=2)# enc_dim += 3
+        # DurationGlow
+        mask = get_mask_from_lengths(text_lengths)# [B, T]
+        enc_durations = alignments.sum(dim=1) # [B, dec_T, enc_T] -> [B, enc_T]
+        enc_durations = enc_durations.unsqueeze(1)# [B, enc_T] -> [B, 1, enc_T]
+        ln_enc_durations = self.lbn_duration(enc_durations, mask).repeat(1, 2, 1)# Norm and [B, 1, enc_T] -> [B, 2, enc_T]
+        dur_z, dur_log_s_sum, dur_logdet_w_sum = self.duration_glow(ln_enc_durations, memory.transpose(1, 2))
+                                                                #  ([B, enc_T]   , [B, enc_dim, enc_T]   )
         
         attention_contexts = alignments @ memory
         #             [B, dec_T, enc_T] @ [B, enc_T, enc_dim] -> [B, dec_T, enc_dim]
         
         # Variances Inpainter
-        # cond -> attention_contexts
-        # x/z  -> voiced_mask + f0 + energy
+        # cond -> attention_contexts(+perc_loudness)(+f0)(+energy)
+        # x/z  -> perc_loudness + f0 + energy
+        perc_loudness = perc_loudness.unsqueeze(-1).repeat(1, 1, f0.size(2))# [B, 1] -> [B, 1, dec_T]
         
-        var_gt = torch.cat((voiced_mask.to(f0.dtype).unsqueeze(1), f0, energy), dim=1)
+        drop_cond_chance = self.drop_cond_chance # Add noise and randomly drop item from batch
+        perc_loudness_maybe = item_dropout(perc_loudness, drop_cond_chance, 0.05)# [B, 1, dec_T]
+        f0_maybe            = item_dropout(f0           , drop_cond_chance, 0.05)# [B, 1, dec_T]
+        energy_maybe        = item_dropout(energy       , drop_cond_chance, 0.05)# [B, 1, dec_T]
+        
+        incomplete_variances = torch.cat( (attention_contexts.transpose(1, 2),
+                                perc_loudness_maybe, f0_maybe, energy_maybe), dim=1)# -> [B, C, dec_T]
+        
+        var_gt = torch.cat((perc_loudness, f0, energy), dim=1)
         var_gt = var_gt.repeat(1, 2, 1)
-        variance_z, variance_log_s_sum, variance_logdet_w_sum = self.var_glow(var_gt, attention_contexts.transpose(1, 2))
+        variance_z, variance_log_s_sum, variance_logdet_w_sum = self.variance_inpainter(var_gt, incomplete_variances)
         
         global_cond = None
         if self.melenc_enable: # take all current info, and produce global cond tokens which can be randomly sampled from later
-            melenc_input = torch.cat((gt_mels, attention_contexts, voiced_mask.float(), f0, energy), dim=1)
-            global_cond, mu, logvar = self.mel_encoder(melenc_input, output_lengths)# [B, n_tokens]
+            melenc_input = torch.cat((gt_mels, attention_contexts, perc_loudness, f0, energy), dim=1)
+            global_cond = self.mel_encoder(melenc_input, output_lengths)# [B, n_tokens]
         
         # Decoder
-        cond = [attention_contexts.transpose(1, 2), voiced_mask.to(f0.dtype).unsqueeze(1), f0, energy]
+        cond = [attention_contexts.transpose(1, 2), perc_loudness, f0, energy]
         if global_cond is not None:
             cond.append(global_cond)
         cond = torch.cat(cond, dim=1)
@@ -544,11 +489,10 @@ class UnTTS(nn.Module):
                                     #   [B, n_mel, dec_T], [B, dec_T, enc_dim] # Series of Flows
         
         outputs = {
-             "melglow": [z    , log_s_sum    , logdet_w_sum    ],
-            "cvarglow": [cvar_z, cvar_log_s_sum, cvar_logdet_w_sum],
-             "varglow": [variance_z, variance_log_s_sum, variance_logdet_w_sum],
-               "sylps": [enc_global_outputs, sylps],
-           "perc_loud": [enc_global_outputs, perc_loudness],
+            "melglow": [z    , log_s_sum    , logdet_w_sum    ],
+            "durglow": [dur_z, dur_log_s_sum, dur_logdet_w_sum],
+            "varglow": [variance_z, variance_log_s_sum, variance_logdet_w_sum],
+            "sylps"  : [pred_sylps, sylps],
         }
         return outputs
     
@@ -590,9 +534,7 @@ class UnTTS(nn.Module):
         melenc_outputs = self.mel_encoder(gt_mels, output_lengths, speaker_ids=speaker_ids) if (self.mel_encoder is not None and not self.melenc_ignore) else None# [B, dec_T, melenc_dim]
         
         embedded_text = self.embedding(text).transpose(1, 2)#    [B, embed, sequence]
-        encoder_outputs, enc_global_outputs = self.encoder(embedded_text, text_lengths, speaker_ids=speaker_ids)# [B, enc_T, enc_dim]
-        sylps = enc_global_outputs[:, 0:1]# [B, 1]
-        perc_loudness = enc_global_outputs[:, 2:3]# [B, 1]
+        encoder_outputs, pred_sylps = self.encoder(embedded_text, text_lengths, speaker_ids=speaker_ids)# [B, enc_T, enc_dim]
         
         assert sylps is not None # needs to be updated with pred_sylps soon ^TM
         
@@ -602,43 +544,48 @@ class UnTTS(nn.Module):
             embedded_speakers = embedded_speakers.repeat(1, enc_T, 1)
             memory.append(embedded_speakers)# [B, enc_T, enc_dim]
         if sylps is not None:
-            sylps = sylps[..., None]# [B, 1] -> [B, 1, 1]
+            sylps = sylps[:, None, None]# [B] -> [B, 1, 1]
             sylps = sylps.repeat(1, enc_T, 1)
             memory.append(sylps)# [B, enc_T, enc_dim]
-        if perc_loudness is not None:
-            perc_loudness = perc_loudness[..., None]# [B, 1] -> [B, 1, 1]
-            perc_loudness = perc_loudness.repeat(1, enc_T, 1)
-            memory.append(perc_loudness)# [B, enc_T, enc_dim]
         if torchmoji_hidden is not None:
             emotion_embed = torchmoji_hidden.unsqueeze(1)# [B, C] -> [B, 1, C]
             emotion_embed = self.torchmoji_linear(emotion_embed)# [B, 1, in_C] -> [B, 1, out_C]
             emotion_embed = emotion_embed.repeat(1, enc_T, 1)
             memory.append(emotion_embed)#   [B, enc_T, enc_dim]
         memory = torch.cat(memory, dim=2)# [[B, enc_T, enc_dim], [B, enc_T, speaker_dim]] -> [B, enc_T, enc_dim+speaker_dim]
-        assert not (torch.isnan(memory) | torch.isinf(memory)).any(), 'Inf/NaN Loss at memory'
         
-        # CVarGlow
+        # DurationGlow
         mask = get_mask_from_lengths(text_lengths)# [B, T]
-        cvars = self.cvar_glow.infer(memory.transpose(1, 2), sigma=dur_sigma)
-                                 #  ([B, enc_dim, enc_T]   ,                )
-        norm_char_f0     = cvars[:, 1:2]
-        norm_char_energy = cvars[:, 2:3]
-        char_voiced      = cvars[:, 3:4]
-        char_f0          = self.bn_cf0.inverse(norm_char_f0)
-        char_energy      = self.bn_cenergy.inverse(norm_char_energy)
+        ln_enc_durations = self.duration_glow.infer(memory.transpose(1, 2), sigma=dur_sigma)
+                                                #  ([B, enc_dim, enc_T]   ,                )
+        enc_durations = self.lbn_duration.inverse(ln_enc_durations, mask)[:, 0]# [B, 2, enc_T] -> [B, enc_T]
+        #enc_durations = ln_enc_durations.exp()[:, 0]# [B, 2, enc_T] -> [B, enc_T]
         
-        enc_durations = self.lbn_duration.inverse(cvars[:, :1], mask)# [B, 8, enc_T] -> [B, 1, enc_T]
-        memory = torch.cat((memory, cvars[:, 1:4].transpose(1, 2)), dim=2)# [B, enc_T, enc_dim] +cat+ [B, enc_T, 3]
-        
-        attention_contexts = get_attention_from_lengths(memory, enc_durations[:, 0, :], text_lengths)
+        attention_contexts = get_attention_from_lengths(memory, enc_durations, text_lengths)
                            #                -> [B, dec_T, enc_dim]
         B, dec_T, enc_dim = attention_contexts.shape
         
-        variances = self.var_glow.infer(attention_contexts.transpose(1, 2), sigma=var_sigma)
+        if perc_loudness is None:
+            perc_loudness = torch.zeros(B, 1, dec_T, device=attention_contexts.device, dtype=attention_contexts.dtype)
+        else:
+            perc_loudness = perc_loudness[:, None, None].repeat(1, 1, dec_T)
+                                # [B]        -> [B, 1, dec_T]
+        
+        if f0 is None:
+            f0 = torch.zeros(B, 1, dec_T, device=attention_contexts.device, dtype=attention_contexts.dtype)
+        else:
+            f0 = f0.unsqueeze(1)# [B, dec_T] -> [B, 1, dec_T]
+        if energy is None:
+            energy = torch.zeros(B, 1, dec_T, device=attention_contexts.device, dtype=attention_contexts.dtype)
+        else:
+            energy = energy.unsqueeze(1)# [B, dec_T] -> [B, 1, dec_T]
+        
+        incomplete_variances = torch.cat( (attention_contexts.transpose(1, 2),
+                                perc_loudness, f0, energy), dim=1)# -> [B, C, dec_T]
+        variances = self.variance_inpainter.infer(incomplete_variances, sigma=var_sigma)
         variances = variances.chunk(2, dim=1)[0]# [B, 3, dec_T]
-        voiced_mask = variances[:, 0, :]
-        f0          = self.bn_f0    .inverse(variances[:, 1:2, :]).squeeze(1)
-        energy      = self.bn_energy.inverse(variances[:, 2:3, :]).squeeze(1)
+        f0     = variances[:, 1, :]
+        energy = variances[:, 2, :]
         
         global_cond = None
         if self.melenc_enable: # take all current info, and produce global cond tokens which can be randomly sampled from later
@@ -652,13 +599,9 @@ class UnTTS(nn.Module):
         spect = self.decoder.infer(cond, sigma=mel_sigma)
         
         outputs = {
-            "spect"            :         spect,
-            "char_durs"        : enc_durations,
-            "char_voiced"      :   char_voiced,
-            "char_f0"          :       char_f0,
-            "char_energy"      :   char_energy,
-            "frame_voiced_mask":   voiced_mask,
-            "frame_f0"         :            f0,
-            "frame_energy"     :        energy,
+            "spect":              spect,
+            "enc_frames": enc_durations,
+            "f0":                    f0,
+            "energy":            energy,
         }
         return outputs

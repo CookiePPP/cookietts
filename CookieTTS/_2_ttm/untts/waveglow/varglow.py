@@ -182,6 +182,7 @@ class VarGlow(nn.Module):
         self.cond_in_channels = cond_in_channels # output dim of MelEncoder
         self.mix_first = hparams.var_mix_first
         self.speaker_embed_dim = 0
+        self.z_channels = 6
         
         cond_output_channels = hparams.var_cond_output_channels
         
@@ -326,7 +327,7 @@ class VarGlow(nn.Module):
         else:
             cond = cond_res # completely reform the input into something else
         
-        batch_dim, group_steps = z.shape
+        batch_dim, _, group_steps = z.shape
         z = z.view(batch_dim, self.n_group, -1) # [B, n_mel, T] -> [B, n_mel/8, T*8]
         #cond = F.interpolate(cond, size=z.shape[-1]) # [B, enc_dim, T] -> [B, enc_dim/8, T*8]
         
@@ -349,7 +350,7 @@ class VarGlow(nn.Module):
             if k % self.n_early_every == 0 and k:
                 z = torch.cat((remained_z.pop(), z), 1)
         
-        z = z.view(batch_dim, -1)
+        z = z.view(batch_dim, self.z_channels, -1)
         return z, logdet
     
     @torch.no_grad()

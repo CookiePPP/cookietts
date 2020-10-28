@@ -171,9 +171,9 @@ class WN(nn.Module):
         return self.end(output).chunk(2, 1)
 
 
-class DurationGlow(nn.Module):
+class CVarGlow(nn.Module):
     def __init__(self, hparams, cond_input_dim):
-        super(DurationGlow, self).__init__()
+        super(CVarGlow, self).__init__()
         assert(hparams.n_group % 2 == 0)
         self.n_flows = hparams.dg_n_flows
         self.n_group = hparams.dg_n_group
@@ -328,7 +328,7 @@ class DurationGlow(nn.Module):
         else:
             cond = cond_res # completely reform the input into something else
         
-        batch_dim, group_steps = z.shape
+        batch_dim, _, group_steps = z.shape
         z = z.view(batch_dim, self.n_group, -1) # [B, n_mel, T] -> [B, n_mel/8, T*8]
         #cond = F.interpolate(cond, size=z.shape[-1]) # [B, enc_dim, T] -> [B, enc_dim/8, T*8]
         
@@ -351,13 +351,13 @@ class DurationGlow(nn.Module):
             if k % self.n_early_every == 0 and k:
                 z = torch.cat((remained_z.pop(), z), 1)
         
-        z = z.view(batch_dim, -1)
+        z = z.view(batch_dim, self.n_group, -1)
         return z, logdet
     
     @torch.no_grad()
     def infer(self, cond, speaker_ids=None, sigma=1.):
         batch_size, enc_dim, frames = cond.shape
-        z = cond.new_empty((batch_size, self.z_channels, frames)) # [B, n_mel, T]
+        z = cond.new_empty((batch_size, self.n_group, frames)) # [B, n_mel, T]
         if sigma > 0.0:
             z.normal_(std=sigma)
         z, _ = self.inverse(z, cond, speaker_ids)
