@@ -26,7 +26,7 @@ n_restarts_override = None
 
 # Custom LR
 decay_start = 200000 # wait till decay_start to start decaying learning rate
-A_ = 1.0e-4
+A_ = 0.10e-4
 B_ = 40000
 C_ = 0.00000000
 min_learning_rate = 0.1e-8

@@ -74,7 +74,7 @@ def create_hparams(hparams_string=None, verbose=False):
         val_batch_size=16,# for more precise comparisons between models, constant batch_size is useful
         
         use_TBPTT=False,
-        truncated_length=1000, # max mel length till truncation.
+        truncated_length=512, # max mel length till truncation.
         mask_padding=True,#mask values by setting them to the same values in target and predicted
         masked_select=True,#mask values by removing them from the calculation
         
@@ -161,48 +161,6 @@ def create_hparams(hparams_string=None, verbose=False):
         # (Memory)
         speaker_embedding_dim=64,
         
-        #############################
-        ##  MelGlow / DecoderGlow  ##
-        #############################
-        # (Decoder) Decoder parameters
-        MelGlow_loss_scalar = 1.0,# Can be overriden by 'run_every_epoch.py'
-        sigma=1.0,
-        grad_checkpoint=0,
-        n_flows=6,
-        n_group=256,
-        n_early_every=4,
-        n_early_size=40,
-        mix_first=True,#True = WaveGlow style, False = WaveFlow style
-        
-        # (Decoder) Decoder Cond parameters
-        cond_residual=False,
-        cond_res_rezero=False,
-        cond_weightnorm=True, # Causes NaN Gradients late into training.
-        cond_layers=0,
-        cond_act_func='lrelu',
-        cond_padding_mode='zeros',
-        cond_kernel_size=1,
-        cond_hidden_channels=256,
-        cond_output_channels=256,
-        
-        # (Decoder) WN parameters
-        wn_n_channels=256,
-        wn_kernel_size=3,
-        wn_dilations_w=None, # use list() to specify multiple dilations
-        wn_n_layers=6,# 1,  2,  3,  4,  5,  6,  7
-                      # 1,  2,  4,  8, 16, 32, 64
-                      # 3,  5,  9, 17, 33, 65,129
-        wn_res_skip=True,       # enable when using more than 1 layer
-        wn_merge_res_skip=False,# disable when using more than 1 layer
-        wn_seperable_conv=False,
-        
-        # (Decoder) WN Cond parameters
-        wn_cond_layers=1,
-        wn_cond_act_func='none',
-        wn_cond_padding_mode='zeros',
-        wn_cond_kernel_size=1,
-        wn_cond_hidden_channels=256,
-        
         ###############################
         ##  CVarGlow / DurationGlow  ##
         ###############################
@@ -211,7 +169,7 @@ def create_hparams(hparams_string=None, verbose=False):
         DurGlow_loss_scalar = 0.1,# Can be overriden by 'run_every_epoch.py'
         dg_sigma=1.0,
         dg_grad_checkpoint=0,
-        dg_n_flows=8,
+        dg_n_flows=16,
         dg_n_group=8,
         dg_n_early_every=10,
         dg_n_early_size=2,
@@ -283,6 +241,48 @@ def create_hparams(hparams_string=None, verbose=False):
         var_wn_cond_padding_mode='zeros',
         var_wn_cond_kernel_size=1,
         var_wn_cond_hidden_channels=512,
+        
+        #############################
+        ##  MelGlow / DecoderGlow  ##
+        #############################
+        # (Decoder) Decoder parameters
+        MelGlow_loss_scalar = 1.0,# Can be overriden by 'run_every_epoch.py'
+        sigma=1.0,
+        grad_checkpoint=0,
+        n_flows=10,
+        n_group=256,
+        n_early_every=4,
+        n_early_size=8,
+        mix_first=True,#True = WaveGlow style, False = WaveFlow style
+        
+        # (Decoder) Decoder Cond parameters
+        cond_residual=False,
+        cond_res_rezero=False,
+        cond_weightnorm=True, # Causes NaN Gradients late into training.
+        cond_layers=0,
+        cond_act_func='lrelu',
+        cond_padding_mode='zeros',
+        cond_kernel_size=1,
+        cond_hidden_channels=256,
+        cond_output_channels=256,
+        
+        # (Decoder) WN parameters
+        wn_n_channels=256,
+        wn_kernel_size=3,
+        wn_dilations_w=None, # use list() to specify multiple dilations
+        wn_n_layers=6,# 1,  2,  3,  4,  5,  6,  7
+                      # 1,  2,  4,  8, 16, 32, 64
+                      # 3,  5,  9, 17, 33, 65,129
+        wn_res_skip=True,       # enable when using more than 1 layer
+        wn_merge_res_skip=False,# disable when using more than 1 layer
+        wn_seperable_conv=False,
+        
+        # (Decoder) WN Cond parameters
+        wn_cond_layers=1,
+        wn_cond_act_func='none',
+        wn_cond_padding_mode='zeros',
+        wn_cond_kernel_size=1,
+        wn_cond_hidden_channels=256,
     )
     
     if hparams_string:

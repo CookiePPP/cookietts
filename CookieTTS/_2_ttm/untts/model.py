@@ -591,8 +591,10 @@ class UnTTS(nn.Module):
         
         embedded_text = self.embedding(text).transpose(1, 2)#    [B, embed, sequence]
         encoder_outputs, enc_global_outputs = self.encoder(embedded_text, text_lengths, speaker_ids=speaker_ids)# [B, enc_T, enc_dim]
-        sylps = enc_global_outputs[:, 0:1]# [B, 1]
-        perc_loudness = enc_global_outputs[:, 2:3]# [B, 1]
+        if sylps is None:
+            sylps = enc_global_outputs[:, 0:1]# [B, 1]
+        if perc_loudness is None:
+            perc_loudness = enc_global_outputs[:, 2:3]# [B, 1]
         
         assert sylps is not None # needs to be updated with pred_sylps soon ^TM
         

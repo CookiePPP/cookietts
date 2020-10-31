@@ -294,9 +294,6 @@ class TextMelLoader(torch.utils.data.Dataset):
             torch.ones(self.stft.n_mel_channels, self.silence_pad_end)*self.silence_value, # add silence to end of file
             ), dim=1)# arr -> [n_mel, dec_T]
         
-        # take a segment.
-        mel = mel[..., int(spectrogram_offset):int(spectrogram_offset+self.truncated_length)]
-        
         speaker_id = self.get_speaker_id(speaker) # get speaker_id as tensor normalized [ 0 -> len(speaker_ids) ]
         
         alignment = self.get_alignments(audiopath, arpa=use_phones)
@@ -304,8 +301,14 @@ class TextMelLoader(torch.utils.data.Dataset):
         torchmoji = self.get_torchmoji_hidden(audiopath)
         
         perc_loudness = self.get_perc_loudness(audio, sampling_rate)
-        f0, voiced_mask = self.get_pitch(audio, self.sampling_rate, self.hop_length)[int(spectrogram_offset):int(spectrogram_offset+self.truncated_length)]
-        energy = self.get_energy(mel)[int(spectrogram_offset):int(spectrogram_offset+self.truncated_length)]
+        f0, voiced_mask = self.get_pitch(audio, self.sampling_rate, self.hop_length)
+        energy = self.get_energy(mel)
+        
+        f0          = f0[int(spectrogram_offset):int(spectrogram_offset+self.truncated_length)]
+        voiced_mask = voiced_mask[int(spectrogram_offset):int(spectrogram_offset+self.truncated_length)]
+        energy      = energy[int(spectrogram_offset):int(spectrogram_offset+self.truncated_length)]
+        alignment   = alignment[int(spectrogram_offset):int(spectrogram_offset+self.truncated_length), :]
+        mel         = mel[..., int(spectrogram_offset):int(spectrogram_offset+self.truncated_length)]
         
         char_f0          = self.get_charavg_from_frames(f0                 , alignment)# [enc_T]
         char_voiced_mask = self.get_charavg_from_frames(voiced_mask.float(), alignment)# [enc_T]
