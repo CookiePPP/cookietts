@@ -161,7 +161,7 @@ class Mel2Samp(torch.utils.data.Dataset):
                             #print(f"'{file[0]}' is too short")
                             self.audio_files.remove(file); i_offset-=1; continue
                     else:
-                        audio_data, sample_r, *_ = load_wav_to_torch(file[0])
+                        audio_data, sample_r = load_wav_to_torch(file[0])
                         if audio_data.size(0) <= segment_length: # check if audio file is shorter than segment_length
                             print(f"'{file[0]}' is too short")
                             self.audio_files.remove(file); i_offset-=1; continue
@@ -219,9 +219,7 @@ class Mel2Samp(torch.utils.data.Dataset):
         looking_for_long_enough_audio_file = True
         while looking_for_long_enough_audio_file:
             noise_path = random.sample(self.noise_files, 1)[0] # get random noisy audio file path
-            noise_audio, noise_sr, max_magnitude = load_wav_to_torch(noise_path) # load audio file
-            max_magnitude = max(max_magnitude, noise_audio.max().item(), -noise_audio.min().item())
-            noise_audio /= max_magnitude
+            noise_audio, noise_sr = load_wav_to_torch(noise_path) # load audio file
             noise_audio = torch.from_numpy(librosa.core.resample(noise_audio.numpy(), noise_sr, self.sampling_rate, type='scipy'))
             if noise_audio.shape[0] > audio.shape[0]: # if noisy audio is file is longer than clean audio, exit While loop.
                 looking_for_long_enough_audio_file = False

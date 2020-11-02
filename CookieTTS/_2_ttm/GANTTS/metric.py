@@ -94,13 +94,8 @@ def test_MCD_and_f0():
     srcMel = torch.clamp(srcMel, -4.0, 4.0)
     # print(srcMel.shape,  srcMel.max(), srcMel.min())
     audio, sr = load_wav_to_torch(audio_path)
-    # print(audio.shape, audio.max(), audio.min())
-    audio_norm = audio / hparams.max_wav_value
-    audio_norm = audio_norm.unsqueeze(0)
-    audio_norm = torch.autograd.Variable(audio_norm, requires_grad=False)
-
-    # print(audio_norm.shape, audio_norm.max(), audio_norm.min())
-    dstMel = stft.mel_spectrogram(audio_norm)
+    
+    dstMel = stft.mel_spectrogram(audio.unsqueeze(0)
     # print(dstMel.shape, dstMel.max(), dstMel.min())
     # mcc = stft.cepstrum_from_audio(audio_norm)
     # print('mcc', mcc.shape, mcc.max(), mcc.min())

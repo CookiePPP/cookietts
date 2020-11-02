@@ -91,5 +91,5 @@ def dynamic_range_decompression(x, C=1, clip_val=1e-5):
     C: compression factor used to compress
     """
     x = torch.exp(x) / C
-    x[x<(clip_val+1e-6)] = 0.0
+    x[x<(clip_val+1e-7)] = 0.0
     return x

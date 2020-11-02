@@ -161,9 +161,7 @@ class TextMelLoader(torch.utils.data.Dataset):
         audiopath, _, speaker_id, _, duration_path, enc_out_path = self.audiopaths_and_text[index]
         encoder_outputs = torch.from_numpy(np.load(enc_out_path)).float()# [enc_T, enc_dim]
         durations = torch.from_numpy(np.load(duration_path)).float()     # [enc_T]
-        audio, sampling_rate, max_value = load_wav_to_torch(audiopath)   # [T]
-        max_wav_value = max(max_value, audio.max().item(), -audio.min().item())
-        audio = audio/max_wav_value
+        audio, sampling_rate = load_wav_to_torch(audiopath)   # [T]
         
         max_audio_start = audio.size(0) - self.segment_length
         audio_start = random.randint(0, max_audio_start//self.hop_length)*self.hop_length

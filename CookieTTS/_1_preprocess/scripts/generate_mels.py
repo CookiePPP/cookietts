@@ -49,16 +49,11 @@ def multiprocess_gen_mels(audiopaths_internal):
         if index < 0: continue
         #try:
         file = path.replace(".npy",".wav")
-        audio, sampling_rate, max_wav_value = load_wav_to_torch(file)
-        max_wav_value = max(max_wav_value, audio.max(), -audio.min()) # expect the impossible
+        audio, sampling_rate = load_wav_to_torch(file)
         if sampling_rate != stft.sampling_rate:
             raise ValueError("{} {} SR doesn't match target {} SR".format(file, 
                 sampling_rate, stft.sampling_rate))
-        audio_norm = audio / max_wav_value
-        audio_norm = audio_norm.unsqueeze(0)
-        audio_norm = torch.autograd.Variable(audio_norm, requires_grad=False)
-        melspec = stft.mel_spectrogram(audio_norm)
-        melspec = torch.squeeze(melspec, 0).cpu().numpy()
+        melspec = stft.mel_spectrogram(audio.unsqueeze(0)).squeeze(0).cpu().numpy()
         np.save(file.replace('.wav', ''), melspec)
         if not index % 1000:
             print(total-index)

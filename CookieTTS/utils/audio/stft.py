@@ -154,26 +154,31 @@ class STFT(torch.nn.Module):
 class TacotronSTFT(torch.nn.Module):
     def __init__(self, filter_length=1024, hop_length=256, win_length=1024,
                  n_mel_channels=80, sampling_rate=22050, mel_fmin=0.0,
-                 mel_fmax=8000.0, stft_dtype=torch.float32):
+                 mel_fmax=8000.0, clamp_val=1e-5, stft_dtype=torch.float32):
         super(TacotronSTFT, self).__init__()
         self.n_mel_channels = n_mel_channels
-        self.sampling_rate = sampling_rate
-        self.stft_fn = STFT(filter_length, hop_length, win_length, dtype=stft_dtype)
+        self.sampling_rate  = sampling_rate
+        self.clip_val = clamp_val
+        self.stft_fn  = STFT(filter_length, hop_length, win_length, dtype=stft_dtype)
         mel_basis = librosa_mel_fn(
             sampling_rate, filter_length, n_mel_channels, mel_fmin, mel_fmax)
         mel_basis = torch.from_numpy(mel_basis).float()
         self.register_buffer('mel_basis', mel_basis)
     
     def spectral_normalize(self, magnitudes):
-        output = dynamic_range_compression(magnitudes)
+        output = dynamic_range_compression(magnitudes, clip_val=self.clip_val)
         return output
     
     def spectral_de_normalize(self, magnitudes):
-        output = dynamic_range_decompression(magnitudes)
+        output = dynamic_range_decompression(magnitudes, clip_val=self.clip_val)
         return output
     
+    def get_mel(self, audiopath):
+        
+        return y
+    
     @torch.no_grad()
-    def mel_spectrogram(self, y, ref_level_db = 20, magnitude_power=1.5):
+    def mel_spectrogram(self, y):
         """Computes mel-spectrograms from a batch of waves
         PARAMS
         ------

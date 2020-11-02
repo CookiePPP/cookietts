@@ -248,25 +248,21 @@ class TextMelLoader(torch.utils.data.Dataset):
         return d
     
     def get_mel(self, filename):
-        audio, sampling_rate, max_value = load_wav_to_torch(filename.replace('.npy','.wav'))
+        audio, sampling_rate = load_wav_to_torch(filename.replace('.npy','.wav'))
         if self.audio_offset: # used for extreme GTA'ing
             audio = audio[self.audio_offset:]
-        self.max_wav_value = max(max_value, audio.max().item(), -audio.min().item()) # I'm not sure how, but sometimes the magnitude of audio exceeds the max of the datatype used before casting.
         if sampling_rate != self.stft.sampling_rate:
             raise ValueError("{} {} SR doesn't match target {} SR".format(
                 sampling_rate, self.stft.sampling_rate))
-        audio_norm = audio / self.max_wav_value
-        audio_norm = audio_norm.unsqueeze(0)
         
         if not self.load_mel_from_disk:
-            melspec = self.stft.mel_spectrogram(audio_norm)
-            melspec = torch.squeeze(melspec, 0)
+            melspec = self.stft.mel_spectrogram(audio.unsqueeze(0)).squeeze(0)
         else:
             melspec = torch.from_numpy(np.load(filename, allow_pickle=True)).float()
             assert melspec.size(0) == self.stft.n_mel_channels, (
                 'Mel dimension mismatch: given {}, expected {}'.format(
                     melspec.size(0), self.stft.n_mel_channels))
-        return melspec, audio_norm[0], sampling_rate
+        return melspec, audio_norm, sampling_rate
     
     def get_mel_text_pair(self, index):
         filelist_index, spectrogram_offset = self.dataloader_indexes[index]

@@ -45,11 +45,7 @@ def create_mels():
         if sampling_rate != stft.sampling_rate:
             raise ValueError("{} {} SR doesn't match target {} SR".format(file, 
                 sampling_rate, stft.sampling_rate))
-        audio_norm = audio / hparams.max_wav_value
-        audio_norm = audio_norm.unsqueeze(0)
-        audio_norm = torch.autograd.Variable(audio_norm, requires_grad=False)
-        melspec = stft.mel_spectrogram(audio_norm)
-        melspec = torch.squeeze(melspec, 0).cpu().numpy()
+        melspec = stft.mel_spectrogram(audio.unsqueeze(0)).squeeze(0).cpu().numpy()
         np.save(file.replace('.wav', ''), melspec)
 
     import glob

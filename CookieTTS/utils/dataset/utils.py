@@ -3,18 +3,37 @@ import torch
 from scipy.io.wavfile import read
 import soundfile as sf
 
-def load_wav_to_torch(full_path):
-    if full_path.endswith('wav'):
-        sampling_rate, data = read(full_path) # scipy only supports .wav but reads faster...
-    else:
-        data, sampling_rate = sf.read(full_path, always_2d=True)[:,0] # than soundfile.
+def load_wav_to_torch(full_path, target_sr=None, min_sr=None, return_empty_on_exception=False):
+    sampling_rate = None
+    try:
+        data, sampling_rate = sf.read(full_path, always_2d=True)# than soundfile.
+    except Exception as ex:
+        print(f"'{full_path}' failed to load.\nException:")
+        print(ex)
+        if return_empty_on_exception:
+            return [], sampling_rate or target_sr or 48000
+    
+    assert min_sr < sampling_rate, f'Expected sampling_rate greater than or equal to {min_sr:.0f}, got {sampling_rate:.0f}.\nPath = "{full_path}"'
+    
+    if len(data.shape) > 1:
+        data = data[:, 0]
+        assert len(data) > 2# check duration of audio file is > 2 samples (because otherwise the slice operation was on the wrong dimension)
     
     if np.issubdtype(data.dtype, np.integer): # if audio data is type int
         max_mag = -np.iinfo(data.dtype).min # maximum magnitude = min possible value of intXX
     else: # if audio data is type fp32
         max_mag = max(np.amax(data), -np.amin(data))
         max_mag = (2**31)+1 if max_mag > (2**15) else ((2**15)+1 if max_mag > 1.01 else 1.0) # data should be either 16-bit INT, 32-bit INT or [-1 to 1] float32
-    return torch.FloatTensor(data.astype(np.float32)), sampling_rate, max_mag
+    
+    data = torch.FloatTensor(data.astype(np.float32))/max_mag
+    
+    if target_sr is not None and sampling_rate != target_sr:
+        if (torch.isinf(data) | torch.isnan(data)).any() and return_empty_on_exception:# resample will crash with inf/NaN inputs. return_empty_on_exception will return empty arr instead of except
+            return [], sampling_rate or target_sr or 48000
+        data = torch.from_numpy(librosa.core.resample(data.numpy(), sampling_rate, target_sr))
+        sampling_rate = target_sr
+    
+    return data, sampling_rate
 
 
 def load_filepaths_and_text(filename, split="|"):
