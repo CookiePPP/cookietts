@@ -5,7 +5,7 @@ from CookieTTS.utils.text.symbols import symbols
 def create_hparams(hparams_string=None, verbose=False):
     """Create model hyperparameters. Parse nondefault from given string."""
     
-    from CookieTTS._2_ttm.tacotron2.utils_hparam import HParams
+    from CookieTTS.utils.utils_hparam import HParams
     hparams = HParams(
         ################################
         # Experiment Parameters        #

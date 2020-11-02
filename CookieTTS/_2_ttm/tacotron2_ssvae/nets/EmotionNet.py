@@ -4,7 +4,7 @@ import torch.nn.functional as F
 import torch.nn.init as init
 from torch.nn.utils import weight_norm as norm
 import numpy as np
-import CookieTTS._2_ttm.tacotron2.module as mm
+import CookieTTS._2_ttm.tacotron2_ssvae.module as mm
 from CookieTTS.utils.model.layers import ConvNorm, LinearNorm
 
 EPSILON = 1e-6 # smallest value that will not result in inf in fp16

@@ -1,4 +1,3 @@
-import tensorflow as tf
 from CookieTTS.utils.text.symbols import symbols
 
 

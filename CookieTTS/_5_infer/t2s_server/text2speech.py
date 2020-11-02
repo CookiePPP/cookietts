@@ -15,7 +15,7 @@ from unidecode import unidecode
 import nltk # sentence spliting
 from nltk import sent_tokenize
 
-from CookieTTS._2_ttm.tacotron2.model import Tacotron2, load_model
+from CookieTTS._2_ttm.tacotron2_ssvae.model import Tacotron2, load_model
 from CookieTTS._4_mtw.waveglow.denoiser import Denoiser
 from CookieTTS.utils.text import text_to_sequence
 from CookieTTS.utils.dataset.utils import load_filepaths_and_text

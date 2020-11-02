@@ -11,18 +11,19 @@ def create_hparams(hparams_string=None, verbose=False):
         # Experiment Parameters        #
         ################################
         epochs=1000,
-        iters_per_checkpoint=250,
-        iters_per_validation=250,
+        iters_per_checkpoint=1000,
+        iters_per_validation=1000,
         seed=1234,
         dynamic_loss_scaling=True,
-        fp16_run=True,
+        fp16_run=False,
         distributed_run=True,
         dist_backend="nccl",
         dist_url="tcp://127.0.0.1:54321",
         cudnn_enabled=True,
         cudnn_benchmark=False,
-        ignore_layers= ["layers_here"],
-        frozen_modules=["layers_here"], # only the module names are required e.g: "encoder." will freeze all parameters INSIDE the encoder recursively
+        #ignore_layers=["decoder.attention_layer.F.2.weight", "decoder.attention_layer.F.2.bias","decoder.attention_layer.F.0.linear_layer.weight","decoder.attention_layer.F.0.linear_layer.bias"],
+        ignore_layers=["encoder.lstm.weight_ih_l0","encoder.lstm.weight_hh_l0","encoder.lstm.bias_ih_l0","encoder.lstm.bias_hh_l0","encoder.lstm.weight_ih_l0_reverse","encoder.lstm.weight_hh_l0_reverse","encoder.lstm.bias_ih_l0_reverse","encoder.lstm.bias_hh_l0_reverse","decoder.attention_rnn.weight_ih","decoder.attention_rnn.weight_hh","decoder.attention_rnn.bias_ih","decoder.attention_rnn.bias_hh","decoder.attention_layer.query_layer.linear_layer.weight","decoder.attention_layer.memory_layer.linear_layer.weight","decoder.decoder_rnn.weight_ih","decoder.linear_projection.linear_layer.weight","decoder.gate_layer.linear_layer.weight"],
+        frozen_modules=["none-N/A"], # only the module names are required e.g: "encoder." will freeze all parameters INSIDE the encoder recursively
         print_layer_names_during_startup=True,
         
         ################################
@@ -99,7 +100,7 @@ def create_hparams(hparams_string=None, verbose=False):
         # (EmotionNet) Semi-supervised VAE/Classifier
         emotion_classes = ['neutral','anxious','happy','annoyed','sad','confused','smug','angry','whispering','shouting','sarcastic','amused','surprised','singing','fear','serious'],
         emotionnet_latent_dim=32,# unsupervised Latent Dim
-        emotionnet_encoder_outputs_dropout=0.75,# Encoder Outputs Dropout
+        emotionnet_encoder_outputs_dropout=0.7,# Encoder Outputs Dropout
         emotionnet_RNN_dim=128, # GRU dim to summarise Encoder Outputs
         emotionnet_classifier_layer_dropout=0.25, # Dropout ref, speaker and summarised Encoder outputs.
                                                   # Which are used to predict zs and zu
@@ -113,7 +114,7 @@ def create_hparams(hparams_string=None, verbose=False):
         # (AuxEmotionNet)
         auxemotionnet_layer_dims=[256,],# width of each layer, LeakyReLU() is used between hiddens
                                         # input is TorchMoji hidden, outputs to classifier layer and zu param predictor
-        auxemotionnet_encoder_outputs_dropout=0.75,# Encoder Outputs Dropout
+        auxemotionnet_encoder_outputs_dropout=0.7,# Encoder Outputs Dropout
         auxemotionnet_RNN_dim=128, # GRU dim to summarise Encoder outputs
         auxemotionnet_classifier_layer_dropout=0.25, # Dropout ref, speaker and summarised Encoder outputs.
                                                      # Which are used to predict zs and zu params
@@ -154,16 +155,16 @@ def create_hparams(hparams_string=None, verbose=False):
         # (Decoder) AttentionRNN
         attention_rnn_dim=1280, # 1024 baseline
         AttRNN_extra_decoder_input=True,# False baseline # Feed DecoderRNN Hidden State into AttentionRNN
-        AttRNN_hidden_dropout_type='dropout',# options ('dropout','zoneout')
+        AttRNN_hidden_dropout_type='zoneout',# options ('dropout','zoneout')
         p_AttRNN_hidden_dropout=0.1,# 0.1 baseline
         
         # (Decoder) DecoderRNN
         decoder_rnn_dim=512, # 1024 baseline
-        DecRNN_hidden_dropout_type='dropout',# options ('dropout','zoneout')
-        p_DecRNN_hidden_dropout=0.0,# 0.1 baseline
+        DecRNN_hidden_dropout_type='zoneout',# options ('dropout','zoneout')
+        p_DecRNN_hidden_dropout=0.15,# 0.1 baseline
         decoder_residual_connection=False,# residual connections with the AttentionRNN hidden state and Attention/Memory Context
         # Optional Second Decoder
-        second_decoder_rnn_dim=0,# 0 baseline # Extra DecoderRNN to learn more complex patterns # set to 0 to disable layer.
+        second_decoder_rnn_dim=512,# 0 baseline # Extra DecoderRNN to learn more complex patterns # set to 0 to disable layer.
         second_decoder_residual_connection=True,# residual connections between the DecoderRNNs
         
         # (Decoder) Attention parameters
@@ -172,14 +173,6 @@ def create_hparams(hparams_string=None, verbose=False):
         # 1 -> GMMAttention (Long-form Synthesis)
         # 1 -> Dynamic Convolution Attention (Long-form Synthesis)
         attention_dim=128, # 128 Layer baseline # Used for Key-Query Dim
-        
-        # (Decoder) Attention Type 0 Parameters
-        windowed_attention_range = 64,# set to 0 to disable
-                                     # will set the forward and back distance the model can attend to.
-                                     # 2 will give the model 5 characters it can attend to at any one time.
-                                     # This will also allow more stable generation with longer text inputs and save VRAM during inference.
-        windowed_att_pos_offset=1.25,# Offset the current_pos by this amount.
-        windowed_att_pos_learned=True,
         
         # (Decoder) Attention Type 0 (and 2) Parameters
         attention_location_n_filters=32,   # 32 baseline
@@ -200,14 +193,13 @@ def create_hparams(hparams_string=None, verbose=False):
         dynamic_filter_len=21, # 21 baseline # currently only 21 is supported
         
         # (Postnet) Mel-post processing network parameters
-        use_postnet=False,
         postnet_embedding_dim=512,
         postnet_kernel_size=5,
         postnet_n_convolutions=6,
         postnet_residual_connections=2,# False baseline, int > 0 == n_layers in each residual block
         
         # (Adversarial Postnet Generator) - modifies the tacotron output to look convincingly fake instead of just accurate.
-        use_postnet_generator_and_discriminator=False,
+        use_postnet_generator_and_discriminator=True,
         adv_postnet_noise_dim=128,
         adv_postnet_embedding_dim=384,
         adv_postnet_kernel_size=3,
@@ -228,11 +220,11 @@ def create_hparams(hparams_string=None, verbose=False):
         weight_decay=1e-6,
         grad_clip_thresh=1.0,# overriden by 'run_every_epoch.py'
         
-        batch_size=40,     # controls num of files processed in parallel per GPU
-        val_batch_size=40, # for more precise comparisons between models, constant batch_size is useful
+        batch_size=16,     # controls num of files processed in parallel per GPU
+        val_batch_size=16, # for more precise comparisons between models, constant batch_size is useful
         
-        use_TBPTT=False,# continue truncated files into the next training iteration
-        truncated_length=1000, # max mel length till truncation.
+        use_TBPTT=True,# continue truncated files into the next training iteration
+        truncated_length=800, # max mel length till truncation.
         mask_padding=True,#mask values by setting them to the same values in target and predicted
         masked_select=True,#mask values by removing them from the calculation
         
@@ -243,7 +235,7 @@ def create_hparams(hparams_string=None, verbose=False):
         ################################
         # Loss Weights/Scalars         #
         ################################
-        LL_SpectLoss=False,# Use Log-likelihood loss on Decoder and Postnet outputs.
+        LL_SpectLoss=True,# Use Log-likelihood loss on Decoder and Postnet outputs.
                            # This will cause Tacotron to produce a normal Spectrogram and a logvar Spectrogram.
                            # The logvar spectrogram will represent the confidence of the model on it's prediction,
                            # and can be used to calcuate the std (error) tacotron expects that element to have.
@@ -269,11 +261,11 @@ def create_hparams(hparams_string=None, verbose=False):
         dis_postnet_scalar = 0.1,# Loss Scalar for discriminator on normal not-GAN postnet
         dis_spect_scalar   = 0.1,# Loss Scalar for discriminator on normal recurrent spect outputs
         
-        zsClassificationNCELoss = 0.00, # EmotionNet Classification Loss (Negative Cross Entropy)
+        zsClassificationNCELoss = 0.15, # EmotionNet Classification Loss (Negative Cross Entropy)
         zsClassificationMAELoss = 0.00, # EmotionNet Classification Loss (Mean Absolute Error)
         zsClassificationMSELoss = 0.00, # EmotionNet Classification Loss (Mean Squared Error)
         
-        auxClassificationNCELoss = 0.00, # AuxEmotionNet NCE Classification Loss
+        auxClassificationNCELoss = 0.15, # AuxEmotionNet NCE Classification Loss
         auxClassificationMAELoss = 0.00, # AuxEmotionNet MAE Classification Loss
         auxClassificationMSELoss = 0.00, # AuxEmotionNet MSE Classification Loss
         
