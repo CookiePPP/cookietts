@@ -599,38 +599,6 @@ if True:
     print('Done!'); step_complete+=1
     
     
-    # (if using FastPitch or FastSpeech2) Generate and save pitch and energy information for every clip
-    if False: # WIP. Easier to process inside dataloader than preprocess right now.
-        print(f'{step_complete:>3}/{step_total:<3} Saving Energy and Pitch for each Dataset')
-        # https://github.com/rishikksh20/FastSpeech2/blob/master/dataset/audio_processing.py#L47-L70
-        # pitch and energy func taken from rishikksh20/FastSpeech2
-        # Minor modifications to use STFT func from NVIDIA's Tacotron2 repo.
-        def energy(x):
-            # Extract energy
-            S = librosa.magphase(stft(x))[0]
-            e = np.sqrt(np.sum(S ** 2, axis=0))  # np.linalg.norm(S, axis=0)
-            return e.squeeze()  # (Number of frames) => (654,)
-        
-        def pitch(x, sampling_rate, hop_length):
-            # Extract Pitch/f0 from raw waveform using PyWORLD
-            x = x.astype(np.float64)
-            """
-            f0_floor : float
-                Lower F0 limit in Hz.
-                Default: 71.0
-            f0_ceil : float
-                Upper F0 limit in Hz.
-                Default: 800.0
-            """
-            f0, timeaxis = pw.dio(
-                x, sampling_rate,
-                frame_period=hop_length/sampling_rate*1000,
-            )  # For hop size 256 frame period is 11.6 ms
-            return f0  # (Number of Frames) = (654,)
-        
-        print('Saving Energy and Pitch Saved!'); step_complete+=1
-    
-    
     # (if using torchMoji) Generate and save torchMoji hidden states for every clip
     if True:
         print(f'{step_complete:>3}/{step_total:<3} Running TorchMoji on Dataset')
