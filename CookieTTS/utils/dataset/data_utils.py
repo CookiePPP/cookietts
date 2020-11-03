@@ -330,20 +330,21 @@ class TextMelLoader(torch.utils.data.Dataset):
         is_not_last_iter = index+self.total_batch_size < self.len
         next_filelist_index, next_spectrogram_offset = self.dataloader_indexes[index+self.total_batch_size] if is_not_last_iter else (None, None)
         
-        output['preserve_prev_state'] = torch.tensor(True if (filelist_index == prev_filelist_index) else False)# preserve model state if this iteration is continuing the file from the last iteration.
-        output['continued_next_iter'] = torch.tensor(True if (filelist_index == next_filelist_index) else False)# whether this file continued into the next iteration
+        output['pres_prev_state'] = torch.tensor(True if (filelist_index == prev_filelist_index) else False)# preserve model state if this iteration is continuing the file from the last iteration.
+        output['cont_next_iter'] = torch.tensor(True if (filelist_index == next_filelist_index) else False)# whether this file continued into the next iteration
         
         #audiopath, gtext, ptext, speaker_id, *_ = self.filelist[filelist_index]
         audiopath, text, speaker_id, *_ = self.filelist[filelist_index]
+        output['audiopath'] = audiopath
         
-        if True or any(arg in ['gt_audio','gt_mel','frame_f0','frame_energy','frame_voiced','frame_voiced'] for arg in args):
+        if True or any(arg in ['gt_audio','gt_mel','gt_frame_f0','gt_frame_energy','gt_frame_voiced','gt_char_f0','gt_char_energy','gt_char_voiced'] for arg in args):
             audio, sampling_rate = self.get_audio(audiopath)
             if 'gt_audio' in args:
                 output['gt_audio'] = audio
             if 'sampling_rate' in args:
-                output['sampling_rate'] = torch.tensor(sampling_rate)
+                output['sampling_rate'] = torch.tensor(float(sampling_rate))
         
-        if 'gt_mel' in args:
+        if any([arg in ('gt_mel','dtw_pred_mel') for arg in args]):
             # get mel
             mel = self.get_mel_from_audio(audio, sampling_rate)
             
@@ -352,13 +353,14 @@ class TextMelLoader(torch.utils.data.Dataset):
                 torch.ones(self.stft.n_mel_channels, self.silence_pad_start)*self.silence_value, # add silence to start of file
                 mel,# get mel-spec as tensor from audiofile.
                 torch.ones(self.stft.n_mel_channels, self.silence_pad_end)*self.silence_value, # add silence to end of file
-                ), dim=1)# arr -> [n_mel, dec_T]
+                ), dim=1)# arr -> [n_mel, mel_T]
             
             init_mel = F.pad(mel, (self.context_frames, 0))[:, int(spectrogram_offset):int(spectrogram_offset)+self.context_frames]
             # initial input to the decoder. zeros if this is first segment of this file, else last frame of prev segment.
             
-            # take a segment.
-            output['gt_mel'] = mel
+            output['gt_mel']   = mel
+            output['init_mel'] = init_mel
+            del mel, init_mel
         
         if any([arg in ('pred_mel','dtw_pred_mel') for arg in args]):
             if os.path.exists( os.path.splitext(audiopath)[0]+'_pred.npy' ):
@@ -369,20 +371,24 @@ class TextMelLoader(torch.utils.data.Dataset):
                     torch.ones(self.stft.n_mel_channels, self.silence_pad_start)*self.silence_value, # add silence to start of file
                     pred_mel,# get mel-spec as tensor from audiofile.
                     torch.ones(self.stft.n_mel_channels, self.silence_pad_end)*self.silence_value, # add silence to end of file
-                    ), dim=1)# arr -> [n_mel, dec_T]
+                    ), dim=1)# arr -> [n_mel, mel_T]
                 
                 output['pred_mel'] = pred_mel
+                
+                if 'dtw_pred_mel' in args:# Pred mel Time-Warping to align more accurately with target mel
+                    output['dtw_pred_mel'] = DTW(output['pred_mel'].unsqueeze(0), output['gt_mel'].unsqueeze(0),
+                             scale_factor=self.dtw_scale_factor, range_=self.dtw_range).squeeze(0)
+                del pred_mel
         
-                if 'dtw_pred_mel' in args:
-                    output['dtw_pred_mel'] = 
+        if 'gt_sylps' in args:
+            gt_sylps = self.get_syllables_per_second(text, len(audio)/sampling_rate)# [] FloatTensor
+            output['gt_sylps'] = gt_sylps
+            del gt_sylps
         
-        if 'gt_sylps':
-            sylps = self.get_syllables_per_second(text, len(audio)/sampling_rate)# [] FloatTensor
-            output['sylps'] = sylps
-        
-        if any([arg in ('text', 'alignment','char_f0','char_voiced','char_energy') for arg in args]):
+        if any([arg in ('text', 'gt_sylps', 'alignment','gt_char_f0','gt_char_voiced','gt_char_energy') for arg in args]):
             output['gtext_str'] = text
             output['ptext_str'] = self.arpa.get(text)
+            del text
             
             use_phones = random.random() < self.p_arpabet
             output['text_str'] = output['ptext_str'] if use_phones else output['gtext_str']
@@ -390,39 +396,40 @@ class TextMelLoader(torch.utils.data.Dataset):
                 output['text'] = output['ptext_str'] if use_phones else output['gtext_str']# (randomly) convert to phonemes
                 output['text'] = self.get_text(output['text'])# convert text into tensor representation
         
-        if 'speaker_id' in args:
-            speaker_id = self.get_speaker_id(speaker_id)# get speaker_id as tensor normalized [ 0 -> len(speaker_ids) ]
-            output['speaker_id'] = speaker_id
+        if any(arg in ('speaker_id','speaker_id_ext') for arg in args):
+            output['speaker_id_ext'] = speaker_id_ext
+            output['speaker_id'] = self.get_speaker_id(speaker_id_ext)# get speaker_id as tensor normalized [ 0 -> len(speaker_ids) ]
         
-        if any([arg in ['emotion_id','emotion_onehot'] for arg in args]):
-            emotion_id = self.get_emotion_id(audiopath)# [1] IntTensor
-            output['emotion_id']     = emotion_id
-            emotion_onehot = self.one_hot_embedding(emotion_id, num_classes=self.n_classes+1).squeeze(0)[:-1]# [n_classes]
-            output['emotion_onehot'] = emotion_onehot
+        if any([arg in ['gt_emotion_id','gt_emotion_onehot'] for arg in args]):
+            output['gt_emotion_id'] = self.get_emotion_id(audiopath)# [1] IntTensor
+            gt_emotion_onehot = self.one_hot_embedding(gt_emotion_id, num_classes=self.n_classes+1).squeeze(0)[:-1]# [n_classes]
+            output['gt_emotion_onehot'] = gt_emotion_onehot
         
         if 'torchmoij_hdn' in args:
             torchmoji = self.get_torchmoji_hidden( os.path.splitext(audiopath)[0]+'_tm.npy' )
             output['torchmoij_hdn'] = torchmoji
         
-        if 'perc_loudness' in args:
-            output['perc_loudness'] = self.get_perc_loudness(audio, sampling_rate)
+        if 'gt_perc_loudness' in args:
+            output['gt_perc_loudness'] = self.get_perc_loudness(audio, sampling_rate)
         
-        if any([arg in ('frame_f0','frame_voiced','char_f0','char_voiced') for arg in args]):
+        if any([arg in ('gt_frame_f0','gt_frame_voiced','gt_char_f0','gt_char_voiced') for arg in args]):
             f0, voiced_mask = self.get_pitch(audio, self.sampling_rate, self.hop_length)
-            output['frame_f0']     = f0
-            output['frame_voiced'] = voiced_mask
+            output['gt_frame_f0']     = f0
+            output['gt_frame_voiced'] = voiced_mask
         
-        if any([arg in ('frame_energy','char_energy') for arg in args]):
-            output['frame_energy'] = self.get_energy(mel)
+        if any([arg in ('gt_frame_energy','gt_char_energy') for arg in args]):
+            output['gt_frame_energy'] = self.get_energy(mel)
         
-        if any([arg in ('alignment','char_f0','char_voiced','char_energy') for arg in args]):
+        if any([arg in ('alignment','gt_char_f0','gt_char_voiced','gt_char_energy') for arg in args]):
             output['alignment'] = alignment = self.get_alignments(audiopath, arpa=use_phones)
-            if 'char_f0' in args:
-                output['char_f0']     = self.get_charavg_from_frames(f0                 , alignment)# [enc_T]
-            if 'char_voiced' in args:
-                output['char_voiced'] = self.get_charavg_from_frames(voiced_mask.float(), alignment)# [enc_T]
-            if 'char_energy' in args:
-                output['char_energy'] = self.get_charavg_from_frames(energy             , alignment)# [enc_T]
+            if 'gt_char_f0' in args:
+                output['gt_char_f0']     = self.get_charavg_from_frames(f0                 , alignment)# [txt_T]
+            if 'gt_char_voiced' in args:
+                output['gt_char_voiced'] = self.get_charavg_from_frames(voiced_mask.float(), alignment)# [txt_T]
+            if 'gt_char_energy' in args:
+                output['gt_char_energy'] = self.get_charavg_from_frames(output['gt_frame_energy'], alignment)# [txt_T]
+            if 'gt_char_dur' in args:
+                output['gt_char_dur'] = alignment.sum(0)# [mel_T, txt_T] -> [txt_T]
         
         ########################
         ## Trim into Segments ##
@@ -431,12 +438,12 @@ class TextMelLoader(torch.utils.data.Dataset):
             max_start = mel.shape[-1] - self.max_segment_length
             spectrogram_offset = random.randint(0, max_start) if max_start > 0 else 0
         
-        if 'frame_f0' in output:
-            output['frame_f0']     = output['frame_f0'][int(spectrogram_offset):int(spectrogram_offset+self.max_segment_length)]
-            output['frame_voiced'] = output['frame_voiced'][int(spectrogram_offset):int(spectrogram_offset+self.max_segment_length)]
+        if 'gt_frame_f0' in output:
+            output['gt_frame_f0']     = output['gt_frame_f0'][int(spectrogram_offset):int(spectrogram_offset+self.max_segment_length)]
+            output['gt_frame_voiced'] = output['gt_frame_voiced'][int(spectrogram_offset):int(spectrogram_offset+self.max_segment_length)]
         
-        if 'frame_energy' in output:
-            output['frame_energy'] = output['frame_energy'][int(spectrogram_offset):int(spectrogram_offset+self.max_segment_length)]
+        if 'gt_frame_energy' in output:
+            output['gt_frame_energy'] = output['gt_frame_energy'][int(spectrogram_offset):int(spectrogram_offset+self.max_segment_length)]
         
         if 'alignment' in output:
             output['alignment'] = output['alignment'][int(spectrogram_offset):int(spectrogram_offset+self.truncated_length), :]
@@ -447,10 +454,10 @@ class TextMelLoader(torch.utils.data.Dataset):
         if 'pred_mel' in output:
             output['pred_mel'] = output['pred_mel'][: , int(spectrogram_offset):int(spectrogram_offset+self.max_segment_length)]
         
-        return output
+        if 'dtw_pred_mel' in output:
+            output['dtw_pred_mel'] = output['dtw_pred_mel'][: , int(spectrogram_offset):int(spectrogram_offset+self.max_segment_length)]
         
-        return (text, mel, speaker_id, torchmoji, preserve_decoder_state, continued_next_iter, init_mel, sylps, emotion_id, emotion_onehot, index)
-             # ( 0  ,  1 ,     2     ,     3    ,             4         ,            5       ,     6   ,   7  ,     8     ,        9      ,  10  )
+        return output
     
     def get_torchmoji_hidden(self, fpath):
         hidden_state = np.load(fpath)
@@ -464,27 +471,73 @@ class TextMelLoader(torch.utils.data.Dataset):
         alignment = np.load(alignpath)
         return torch.from_numpy(alignment).float()
     
+    def get_perc_loudness(self, audio, sampling_rate):
+        meter = pyln.Meter(sampling_rate) # create BS.1770 meter
+        loudness = meter.integrated_loudness(audio.numpy()) # measure loudness (in dB)
+        gt_perc_loudness = torch.tensor(loudness)
+        return gt_perc_loudness# []
+    
+    def get_charavg_from_frames(self, x, alignment):# [mel_T], [mel_T, txt_T]
+        norm_alignment   =      alignment / alignment.sum(dim=0, keepdim=True).clamp(min=0.01)
+        # [mel_T, txt_T] <- [mel_T, txt_T] / [mel_T, 1]
+        
+        x.float().unsqueeze(0)# [mel_T] -> [1, mel_T]
+        y = x @ norm_alignment# [1, mel_T] @ [mel_T, txt_T] -> [1, txt_T]
+        
+        assert not (torch.isinf(y) | torch.isnan(y)).any()
+        return y.squeeze(0)# [txt_T]
+    
+    def get_pitch(self, audio, sampling_rate, hop_length):
+        # Extract Pitch/f0 from raw waveform using PyWORLD
+        audio = audio.numpy().astype(np.float64)
+        """
+        f0_floor : float
+            Lower F0 limit in Hz.
+            Default: 71.0
+        f0_ceil : float
+            Upper F0 limit in Hz.
+            Default: 800.0
+        """
+        f0, timeaxis = pw.dio(
+            audio, sampling_rate,
+            frame_period=(hop_length/sampling_rate)*1000.,
+        )  # For hop size 256 frame period is 11.6 ms
+        
+        f0 = torch.from_numpy(f0).float().clamp(min=0.0, max=800)  # (Number of Frames) = (654,)
+        voiced_mask = (f0>3)# voice / unvoiced flag
+        if voiced_mask.sum() > 0:
+            voiced_f0_mean = f0[voiced_mask].mean()
+            f0[~voiced_mask] = voiced_f0_mean
+        
+        assert not (torch.isinf(f0) | torch.isnan(f0)).any(), f"f0 from pyworld is NaN. Info below\nlen(audio) = {len(audio)}\nf0 = {f0}\nsampling_rate = {sampling_rate}"
+        return f0, voiced_mask# [mel_T], [mel_T]
+    
+    def get_energy(self, spect):
+        # Extract energy
+        energy = torch.sqrt(torch.sum(spect[4:]**2, dim=0))# [n_mel, mel_T] -> [mel_T]
+        return energy# [mel_T]
+    
     def get_emotion_id(self, audiopath):
-        emotion_id = self.n_classes # int
+        gt_emotion_id = self.n_classes # int
         if len(audiopath.split("_")) >= 6:
             emotions = audiopath.split("_")[4].lower().split(" ") # e.g: ["neutral",]
             for emotion in reversed(emotions):
                 try:
-                    emotion_id = self.emotion_classes.index(emotion) # INT in set {0, 1, ... n_classes-1}
+                    gt_emotion_id = self.emotion_classes.index(emotion) # INT in set {0, 1, ... n_classes-1}
                 except:
                     pass
-        return torch.LongTensor([emotion_id,]) # [1]
+        return torch.LongTensor([gt_emotion_id,]) # [1]
     
     def get_syllables_per_second(self, text, dur_s):
         n_syl = syllables.estimate(text)
         sylps = n_syl/dur_s
         return torch.tensor(sylps) # []
     
-    def get_perc_loudness(self, audio, sampling_rate):
+    def get_gt_perc_loudness(self, audio, sampling_rate):
         meter = pyln.Meter(sampling_rate) # create BS.1770 meter
         loudness = meter.integrated_loudness(audio.numpy()) # measure loudness (in dB)
-        perc_loudness = torch.tensor(loudness)
-        return perc_loudness# []
+        gt_perc_loudness = torch.tensor(loudness)
+        return gt_perc_loudness# []
     
     def get_speaker_id(self, speaker_id):
         """Convert external speaker_id to internel [0 to max_speakers] range speaker_id"""
@@ -508,60 +561,156 @@ class TextMelCollate():
     """
     def __init__(self, hparams):
         self.n_frames_per_step = hparams.n_frames_per_step
-        self.n_classes = len(hparams.emotion_classes)
-        self.context_frames = hparams.context_frames
+        self.n_classes = len(getattr(hparams, "emotion_classes", list())
+        self.context_frames = getattr(hparams, "context_frames", 1)
+        self.sort_text_len_decending = True
+    
+    def collate_left(self, tensor_arr, max_len=None, dtype=None, device=None, index_lookup=None, pad_val=0.0, check_const_channels=True):
+        """
+        Take array of tensors and spit out a merged version. (left aligned, fill any empty areas with pad_val)
+        Optional Index Lookup.
+        PARAMS:
+            max_len: Output Tensor Length
+            dtype: Output Tensor Datatype
+            index_lookup: A dict of indexes incase there is a specific order the items should be ordered
+            pad_val: Value used to fill empty space in the output Tensor
+            check_const_channels: Enable/Disable Assertion for constant channel dim in inputs.
+        INPUT:
+            [[C, T?], [C, T?], [C, T?], [C, T?], ...]
+            or
+            [[T?], [T?], [T?], [T?], [T?], ...]
+            or
+            [[C], [C], [C], [C], [C], ...]
+            or
+            [[1], [1], [1], [1], ...]
+            or
+            [[], [], [], [], ...]
+        OUTPUT:
+            [B, C, T]
+            or
+            [B, T]
+            or
+            [B, C]
+            or
+            [B]
+        """
+        B = len(tensor_arr)
+        max_len = max(x.shape[-1] for x in tensor_arr) if max_len is None else max_len
+        dtype = tensor_arr[0].dtype if dtype is None else dtype
+        device = tensor_arr[0].device if device is None else device
+        if index_lookup is None:
+            index_lookup = {i:i for i in range(B)}
+        else:
+            assert len(index_lookup.keys()) == B, f'lookup has {len(index_lookup.keys())} keys, expected {B}.'
+        
+        if all(len(tensor_arr[i].view(-1)) == 1 for i in range(B)):
+            output = torch.zeros(B, device=device, dtype=dtype)
+            for i, _ in enumerate(tensor_arr):
+                output[i] = tensor_arr[index_lookup[i]].to(device, dtype)
+        elif len(tensor_arr[0].shape) == 1:
+            output = torch.ones(B, max_len, device=device, dtype=dtype)
+            if pad_val:
+                output *= pad_val
+            for i, _ in enumerate(tensor_arr):
+                item = tensor_arr[index_lookup[i]].to(device, dtype)
+                output[i, :item.shape[1]] = item
+        elif len(tensor_arr[0].shape) == 2:
+            C = max(tensor_arr[i].shape[1] for i in range(B))
+            if check_const_channels:
+                assert all(C == item.shape[1] for item in tensor_arr), f'an item in input has channel_dim != channel_dim of the first item.\n{"\n".join(["Shape "+str(i)+" = "+str(item.shape) for i, item in enumerate(tensor_arr)])}'
+            output = torch.ones(B, C, max_len, device=device, dtype=dtype)
+            if pad_val:
+                output *= pad_val
+            for i, _ in enumerate(tensor_arr):
+                item = tensor_arr[index_lookup[i]].to(device, dtype)
+                output[i, :item.shape[0], :item.shape[1]] = item
+        else:
+            raise Exception(f"Unexpected input shape, got {len(tensor_arr[0].shape)} dims and expected 1 or 2 dims.")
+        return output
+    
+    def collatea(self, *args, check_const_channels=False, **kwargs):
+        return self.collatek(*args, check_const_channels=check_const_channels, **kwargs)
+    
+    def collatek(self, batch, key, index_lookup, dtype=None, pad_val=0.0, ignore_missing_key=True, check_const_channels=True):
+        if ignore_missing_key and not any(key in item for item in batch):
+            return None
+        else:
+            assert all(key in item for item in batch), f'item in batch is missing key "{key}"'
+        
+        if all(type(item[key]) == torch.Tensor for key in batch.keys()):
+            return self.collate_left([item[key] for item in batch], dtype=dtype, index_lookup=index_lookup, pad_val=pad_val, check_const_channels=check_const_channels)
+        elif not any(type(item[key]) == torch.Tensor for key in batch.keys()):
+            assert dtype is None, f'dtype specified as "{dtype}" but input has no Tensors.'
+            arr = (item[key] for item in batch)
+            return [arr[index_lookup[i]] for i, _ in enumerate(arr)]
+        else:
+            raise Exception(f"Mixed types found in batch items, key is '{key}'")
     
     def __call__(self, batch):
-        """Collate's training batch from normalized text and mel-spectrogram
-        PARAMS
-        ------
-        batch: [text_normalized, mel_normalized]
         """
-        # Right zero-pad all one-hot text sequences to max input length
-        input_lengths, ids_sorted_decreasing = torch.sort(
-            torch.LongTensor([len(x[0]) for x in batch]),
-            dim=0, descending=True)
-        max_input_len = input_lengths[0]
+        Collate's training batch from __getitem__ input features
+        (this the merging all the features loaded from each audio file into the same tensors so the model can process together)
+        PARAMS
+            batch: [{"text": text[txt_T], "gt_mel": gt_mel[n_mel, mel_T]}, {"text": text, "gt_mel": gt_mel}, ...]
+        ------
+        RETURNS
+            out: {"text": text_batch, "gt_mel": gt_mel_batch}
+        """
+        B = len(batch)# Batch Size
         
-        text_padded = torch.LongTensor(len(batch), max_input_len)
-        text_padded.zero_()
-        for i in range(len(ids_sorted_decreasing)):
-            text = batch[ids_sorted_decreasing[i]][0]
-            text_padded[i, :text.size(0)] = text
+        if self.sort_text_len_decending and all("text" in item for item in batch):# if text, reorder entire batch to go from longest text -> shortest text.
+            input_lengths, ids_sorted = torch.sort(
+                torch.LongTensor([len(item['text']) for item in batch]), dim=0, descending=True)
+        else:
+            ids_sorted = {x:x for x in range(B)}# elif no text, batch can be whatever order it's loaded in
         
-        # Right zero-pad mel-spec
-        num_mels = batch[0][1].size(0)
-        max_target_len = max([x[1].size(1) for x in batch])
-        if max_target_len % self.n_frames_per_step != 0:
-            max_target_len += self.n_frames_per_step - max_target_len % self.n_frames_per_step
-            assert max_target_len % self.n_frames_per_step == 0
+        out['text']              = self.collatek(batch, 'text',              ids_sorted, dtype=torch.long )# [B, txt_T]
+        out['gtext_str']         = self.collatek(batch, 'gtext_str',         ids_sorted, dtype=None       )# [str, ...]
+        out['ptext_str']         = self.collatek(batch, 'ptext_str',         ids_sorted, dtype=None       )# [str, ...]
+        out['text_str']          = self.collatek(batch, 'text_str',          ids_sorted, dtype=None       )# [str, ...]
+        out['audiopath']         = self.collatek(batch, 'audiopath',         ids_sorted, dtype=None       )# [str, ...]
         
-        # include mel padded, gate padded and speaker ids
-        mel_padded = torch.zeros(len(batch), num_mels, max_target_len)
-        gate_padded = torch.zeros(len(batch), max_target_len)
-        output_lengths = torch.LongTensor(len(batch))
-        speaker_ids = torch.LongTensor(len(batch))
-        torchmoji_hidden = torch.FloatTensor(len(batch), batch[0][3].shape[0])
-        preserve_decoder_states = torch.FloatTensor(len(batch))
-        sylps = torch.FloatTensor(len(batch))
-        emotion_id = torch.FloatTensor(len(batch))
-        emotion_onehot = torch.FloatTensor(len(batch), self.n_classes)
-        init_mel = torch.FloatTensor(len(batch), num_mels, self.context_frames)
+        out['alignment']         = self.collatea(batch, 'alignment',         ids_sorted, dtype=torch.float)# [B, mel_T, txt_T]
         
-        for i in range(len(ids_sorted_decreasing)):
-            mel = batch[ids_sorted_decreasing[i]][1]
-            mel_padded[i, :, :mel.size(1)] = mel
-            gate_padded[i, mel.size(1)-(~batch[ids_sorted_decreasing[i]][5]).long():] = 1# set positive gate if this file isn't going to be continued next iter. (i.e: if this is the last segment of the file.)
-            output_lengths[i] = mel.size(1)
-            speaker_ids[i] = batch[ids_sorted_decreasing[i]][2]
-            if torchmoji_hidden is not None:
-                torchmoji_hidden[i] = batch[ids_sorted_decreasing[i]][3]
-            preserve_decoder_states[i] = batch[ids_sorted_decreasing[i]][4]
-            init_mel[i] = batch[ids_sorted_decreasing[i]][6]
-            sylps[i] = batch[ids_sorted_decreasing[i]][7]
-            emotion_id[i] = batch[ids_sorted_decreasing[i]][8]
-            emotion_onehot[i] = batch[ids_sorted_decreasing[i]][9]
+        out['gt_sylps']          = self.collatek(batch, 'gt_sylps',          ids_sorted, dtype=torch.float)# [B]
+        out['torchmoij_hdn']     = self.collatek(batch, 'torchmoij_hdn',     ids_sorted, dtype=torch.float)# [B, C]
         
-        model_inputs = (text_padded, input_lengths, mel_padded, gate_padded, output_lengths, speaker_ids,
-                         torchmoji_hidden, preserve_decoder_states, init_mel, sylps, emotion_id, emotion_onehot)
-        return model_inputs
+        out['speaker_id']        = self.collatek(batch, 'speaker_id',        ids_sorted, dtype=torch.long )# [B]
+        out['speaker_id_ext']    = self.collatek(batch, 'speaker_id_ext',    ids_sorted, dtype=None       )# [int, ...]
+        
+        out['gt_emotion_id']     = self.collatek(batch, 'gt_emotion_id',     ids_sorted, dtype=torch.long )# [B]
+        out['gt_emotion_onehot'] = self.collatek(batch, 'gt_emotion_onehot', ids_sorted, dtype=torch.long )# [B, n_emotions]
+        
+        out['init_mel']          = self.collatek(batch, 'init_mel',          ids_sorted, dtype=torch.float)# [B, C, context]
+        out['pres_prev_state']   = self.collatek(batch, 'pres_prev_state',   ids_sorted, dtype=torch.bool )# [B]
+        out['cont_next_iter']    = self.collatek(batch, 'cont_next_iter',    ids_sorted, dtype=torch.bool )# [B]
+        
+        out['gt_mel']            = self.collatek(batch, 'gt_mel',            ids_sorted, dtype=torch.float)# [B, C, mel_T]
+        out['pred_mel']          = self.collatek(batch, 'pred_mel',          ids_sorted, dtype=torch.float)# [B, C, mel_T]
+        out['dtw_pred_mel']      = self.collatek(batch, 'dtw_pred_mel',      ids_sorted, dtype=torch.float)# [B, C, mel_T]
+        
+        out['gt_frame_f0']       = self.collatek(batch, 'gt_frame_f0',       ids_sorted, dtype=torch.float)# [B, mel_T]
+        out['gt_frame_energy']   = self.collatek(batch, 'gt_frame_energy',   ids_sorted, dtype=torch.float)# [B, mel_T]
+        out['gt_frame_voiced']   = self.collatek(batch, 'gt_frame_voiced',   ids_sorted, dtype=torch.float)# [B, mel_T]
+        
+        out['gt_char_f0']        = self.collatek(batch, 'gt_char_f0',        ids_sorted, dtype=torch.float)# [B, txt_T]
+        out['gt_char_energy']    = self.collatek(batch, 'gt_char_energy',    ids_sorted, dtype=torch.float)# [B, txt_T]
+        out['gt_char_voiced']    = self.collatek(batch, 'gt_frame_voiced',   ids_sorted, dtype=torch.float)# [B, txt_T]
+        out['gt_char_dur']       = self.collatek(batch, 'gt_char_dur',       ids_sorted, dtype=torch.float)# [B, txt_T]
+        
+        out['gt_perc_loudness']  = self.collatek(batch, 'gt_perc_loudness',  ids_sorted, dtype=torch.float)# [B]
+        
+        out['gt_audio']          = self.collatek(batch, 'gt_audio',          ids_sorted, dtype=torch.float)# [B, wav_T]
+        out['sampling_rate']     = self.collatek(batch, 'sampling_rate',     ids_sorted, dtype=torch.float)# [B]
+        
+        if all('gt_mel' in item for item in batch):
+            mel_T = max(item['gt_mel'].shape[-1] for item in batch)
+            out['gt_gate_logits'] = torch.zeros(B, mel_T, dtype=torch.float)
+            for i in range(B):
+                out['gt_gate_logits'][i, mel.size(1)-(~batch[ids_sorted[i]]['cont_next_iter']).long():] = 1
+                # set positive gate if this file isn't going to be continued next iter.
+                # (i.e: if this is the last segment of the file.)
+        
+        out = {k:v for k,v in out.items() if v is not None} # remove any entries with "None" values.
+        
+        return out

@@ -21,6 +21,12 @@ def replace_args(args, replace_dict={}):
         new_args.append(new_arg)
     return tuple(set(new_args))
 
+def rename_argdict(argdict, replace_dict={}, invert=True):
+    if invert:
+        replace_args = {v:k for k,v in replace_dict.items()}
+    argdict = {replace_dict[k] if k in replace_dict else k: v for k,v in argdict.items()}
+    return argdict
+
 def force(func, *args, **kwargs):
     valid_kwargs = get_args(func)
     return func(*args, **{k:v for k,v in kwargs.items() if k in valid_kwargs})
