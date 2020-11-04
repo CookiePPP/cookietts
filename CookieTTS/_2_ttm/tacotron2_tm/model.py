@@ -1,8 +1,9 @@
 from math import sqrt
+import random
 import numpy as np
 from numpy import finfo
+
 import torch
-from torch.autograd import Variable
 from torch import nn
 from torch.nn import functional as F
 
@@ -14,8 +15,7 @@ from CookieTTS.utils.model.GPU import to_gpu
 from CookieTTS.utils.model.utils import get_mask_from_lengths, dropout_frame
 
 from CookieTTS._2_ttm.tacotron2_ssvae.nets.SylpsNet import SylpsNet
-from CookieTTS._2_ttm.tacotron2_ssvae.nets.EmotionNet import EmotionNet
-from CookieTTS._2_ttm.tacotron2_ssvae.nets.AuxEmotionNet import AuxEmotionNet
+from CookieTTS._2_ttm.untts.model import MaskedBatchNorm1d, LnBatchNorm1d
 
 drop_rate = 0.5
 
@@ -100,26 +100,26 @@ class Attention(nn.Module):
             [B, AttRNN_dim] FloatTensor
                 attention rnn last output
         memory:
-            [B, enc_T, enc_dim] FloatTensor
+            [B, txt_T, enc_dim] FloatTensor
                 encoder outputs
         processed_memory:
-            [B, enc_T, proc_enc_dim] FloatTensor
+            [B, txt_T, proc_enc_dim] FloatTensor
                 processed encoder outputs
         attention_weights_cat:
-            [B, 2 (or 3), enc_T] FloatTensor
+            [B, 2 (or 3), txt_T] FloatTensor
                 previous, cummulative (and sometimes exp_avg) attention weights
         mask:
-            [B, enc_T] BoolTensor
+            [B, txt_T] BoolTensor
                 mask for padded data
         attention_weights: (Optional)
-            [B, enc_T] FloatTensor
+            [B, txt_T] FloatTensor
                 optional override attention_weights
                 useful for duration predictor attention or perfectly copying a clip with an alternative speaker.
         """
-        B, enc_T, enc_dim = memory.shape
+        B, txt_T, enc_dim = memory.shape
         
         if attention_weights is None:
-            processed = self.location_layer(attention_weights_cat) # [B, 2, enc_T] # conv1d, matmul
+            processed = self.location_layer(attention_weights_cat) # [B, 2, txt_T] # conv1d, matmul
             processed.add_( self.query_layer(attention_hidden_state.unsqueeze(1)).expand_as(processed_memory) ) # unsqueeze, matmul, expand_as, add_
             processed.add_( processed_memory ) # add_
             alignment = self.v( torch.tanh( processed ) ).squeeze(-1) # tanh, matmul, squeeze
@@ -134,28 +134,28 @@ class Attention(nn.Module):
                     
                     mask_start = (current_pos-self.windowed_attention_range).clamp(min=0).round() # [B]
                     mask_end = mask_start+(self.windowed_attention_range*2)                       # [B]
-                    pos_mask = torch.arange(enc_T, device=current_pos.device).unsqueeze(0).repeat(B, 1)  # [B, enc_T]
-                    pos_mask = (pos_mask >= mask_start.unsqueeze(1).repeat(1, enc_T)) & (pos_mask <= mask_end.unsqueeze(1).repeat(1, enc_T))# [B, enc_T]
+                    pos_mask = torch.arange(txt_T, device=current_pos.device).unsqueeze(0).repeat(B, 1)  # [B, txt_T]
+                    pos_mask = (pos_mask >= mask_start.unsqueeze(1).repeat(1, txt_T)) & (pos_mask <= mask_end.unsqueeze(1).repeat(1, txt_T))# [B, txt_T]
                     
                     # attention_weights_cat[pos_mask].view(B, self.windowed_attention_range*2+1) # for inference masked_select later
                     
-                    mask = mask | ~pos_mask# [B, enc_T] & [B, enc_T] -> [B, enc_T]
-                alignment.data.masked_fill_(mask, score_mask_value)#    [B, enc_T]
+                    mask = mask | ~pos_mask# [B, txt_T] & [B, txt_T] -> [B, txt_T]
+                alignment.data.masked_fill_(mask, score_mask_value)#    [B, txt_T]
             
-            attention_weights = F.softmax(alignment, dim=1)# [B, enc_T] # softmax along encoder tokens dim
+            attention_weights = F.softmax(alignment, dim=1)# [B, txt_T] # softmax along encoder tokens dim
         attention_context = torch.bmm(attention_weights.unsqueeze(1), memory)# unsqueeze, bmm
-                                      # [B, 1, enc_T] @ [B, enc_T, enc_dim] -> [B, 1, enc_dim]
+                                      # [B, 1, txt_T] @ [B, txt_T, enc_dim] -> [B, 1, enc_dim]
         
         attention_context = attention_context.squeeze(1)# [B, 1, enc_dim] -> [B, enc_dim] # squeeze
         
-        new_pos = (attention_weights*torch.arange(enc_T, device=attention_weights.device).expand(B, -1)).sum(1)
-                       # ([B, enc_T] * [B, enc_T]).sum(1) -> [B]
+        new_pos = (attention_weights*torch.arange(txt_T, device=attention_weights.device).expand(B, -1)).sum(1)
+                       # ([B, txt_T] * [B, txt_T]).sum(1) -> [B]
         
-        return attention_context, attention_weights, new_pos# [B, enc_dim], [B, enc_T]
+        return attention_context, attention_weights, new_pos# [B, enc_dim], [B, txt_T]
 
 
 class Prenet(nn.Module):
-    def __init__(self, in_dim, sizes, p_prenet_dropout, prenet_batchnorm):
+    def __init__(self, in_dim, sizes, p_prenet_dropout, prenet_batchnorm, bn_momentum):
         super(Prenet, self).__init__()
         in_sizes = [in_dim] + sizes[:-1]
         self.layers = nn.ModuleList(
@@ -165,11 +165,17 @@ class Prenet(nn.Module):
         self.prenet_batchnorm = prenet_batchnorm
         self.p_prenet_input_dropout = 0.
         
-        self.batchnorms = nn.ModuleList([ nn.BatchNorm1d(size) for size in sizes ]) if self.prenet_batchnorm else None
+        self.batchnorms = None
+        if self.prenet_batchnorm:
+            self.batchnorms = nn.ModuleList([ MaskedBatchNorm1d(size, eval_only_momentum=False, momentum=bn_momentum) for size in sizes ])
+            self.batchnorms.append(MaskedBatchNorm1d(in_dim, eval_only_momentum=False, momentum=bn_momentum))
     
     def forward(self, x):
         if self.p_prenet_input_dropout: # dropout from the input, definitely a dangerous idea, but I think it would be very interesting to try values like 0.05 and see the effect
             x = F.dropout(x, self.p_prenet_input_dropout, self.training)
+        
+        if self.batchnorms is not None:
+            x = self.batchnorms[-1](x)
         
         for i, linear in enumerate(self.layers):
             x = F.relu(linear(x))
@@ -178,140 +184,6 @@ class Prenet(nn.Module):
             if self.batchnorms is not None:
                 x = self.batchnorms[i](x)
         return x
-
-
-class GANPostnet(nn.Module):
-    """GANPostnet
-        - Five 1-d convolution with 512 channels and kernel size 5
-       Outputs a convincing looking fake/predicted spectrogram.
-    """
-    def __init__(self, hparams):
-        super(GANPostnet, self).__init__()
-        self.b_res = hparams.adv_postnet_residual_connections if hasattr(hparams, 'adv_postnet_residual_connections') else False
-        self.convs = nn.ModuleList()
-        self.noise_dim = hparams.adv_postnet_noise_dim
-        self.speaker_embedding_dim = hparams.speaker_embedding_dim
-        self.n_mel_channels = hparams.n_mel_channels
-        self.input_dim = (self.n_mel_channels*(hparams.LL_SpectLoss+1))+self.noise_dim+self.speaker_embedding_dim
-        
-        for i in range(hparams.adv_postnet_n_convolutions):
-            is_first_layer = bool(i == 0)
-            is_last_layer = bool(i+1 == hparams.adv_postnet_n_convolutions)
-            is_connected_layer = bool(i % self.b_res == 0)
-            in_dim = self.input_dim          if is_first_layer else out_dim
-            out_dim = hparams.n_mel_channels if is_last_layer  else hparams.adv_postnet_embedding_dim
-            conv = [ ConvNorm(in_dim, out_dim, hparams.adv_postnet_kernel_size,
-                            padding=int((hparams.adv_postnet_kernel_size - 1) / 2), )]
-            if not is_connected_layer:
-                conv.append(nn.LeakyReLU(negative_slope=0.1, inplace=True))
-            if not is_last_layer:
-                conv.append(nn.BatchNorm1d(out_dim))
-            
-            self.convs.append(nn.Sequential(*conv))
-    
-    def forward(self, x, speaker_embed):# [B, n_mel+logvar, dec_T]
-        B, C, dec_T = x.shape# [B, n_mel+logvar, dec_T] or [B, n_mel+logvar+speaker, dec_T]
-        x = [x,]
-        if C == (self.input_dim-self.speaker_embedding_dim-self.noise_dim):
-            assert speaker_embed is not None, 'speaker_embed missing from discriminator input'
-            if len(speaker_embed.shape) == 2:
-                speaker_embed = speaker_embed.unsqueeze(2)
-            if speaker_embed.shape[2] == 1:
-                speaker_embed = speaker_embed.repeat(1, 1, dec_T)# [B, embed] -> [B, embed, dec_T]
-            x.append(speaker_embed)# [B, n_mel, dec_T] -> [B, n_mel+speaker, dec_T]
-        elif C == (self.input_dim-self.noise_dim):
-            pass
-        else:
-            raise Exception (f"Excepted input to have {(self.input_dim-self.speaker_embedding_dim)} or {self.input_dim} channels, got {C}.")
-        
-        rand_noise = torch.randn(B, self.noise_dim, dec_T, device=x[0].device, dtype=x[0].dtype)# -> [B, noise, dec_T]
-        x.append(rand_noise)
-        
-        x = torch.cat(x, dim=1)# [:, n_mel+logvar] + [:, speaker] + [:, noise] -> [:, n_mel+logvar+speaker+noise]
-        x_res = x
-        
-        len_convs = len(self.convs)
-        for i, conv in enumerate(self.convs):
-            is_first_layer = bool(i == 0)
-            is_last_layer = bool(i+1 == len_convs)
-            is_connected_layer = bool(i % self.b_res == 0)
-            
-            x = conv(x)
-            if x.shape[1] != x_res.shape[1]:
-                x_res = x
-            elif is_connected_layer:
-                x = F.relu(x + x_res, inplace=not is_last_layer)
-        
-        return x
-
-
-class GANDiscriminator(nn.Module):
-    """GANDiscriminator
-        - Five 1-d convolution with 512 channels and kernel size 5
-       Outputs a predicted fakeness of the spectrogram.
-    """
-    def __init__(self, hparams):
-        super(GANDiscriminator, self).__init__()
-        self.b_res = hparams.dis_postnet_residual_connections if hasattr(hparams, 'dis_postnet_residual_connections') else False
-        self.convs = nn.ModuleList()
-        self.n_mel_channels = hparams.n_mel_channels
-        self.speaker_embedding_dim = hparams.speaker_embedding_dim
-        
-        # hparams.dis_postnet_n_convolutions                # n_layers
-        # hparams.dis_postnet_embedding_dim                 # hidden dim
-        # hparams.n_mel_channels                            # input dim
-        # 1                                                 # output dim
-        # hparams.dis_postnet_kernel_size                   # kernel_size
-        # int((hparams.dis_postnet_kernel_size - 1) / 2)    # padding
-        # nn.BatchNorm1d(hparams.dis_postnet_embedding_dim) # BatchNorm
-        
-        out_dim = hparams.n_mel_channels + hparams.speaker_embedding_dim # input dim
-        for i in range(hparams.dis_postnet_n_convolutions):
-            is_first_layer = bool(i == 0)
-            is_last_layer = bool(i+1 == hparams.dis_postnet_n_convolutions)
-            is_connected_layer = bool(i % self.b_res == 0)
-            in_dim = out_dim
-            out_dim = 1 if is_last_layer else hparams.dis_postnet_embedding_dim
-            conv = [ ConvNorm(in_dim, out_dim, hparams.dis_postnet_kernel_size,
-                            padding=int((hparams.dis_postnet_kernel_size - 1) / 2), )]
-            if not is_connected_layer:
-                conv.append(nn.LeakyReLU(negative_slope=0.1, inplace=True))
-            if not is_last_layer:
-                conv.append(nn.BatchNorm1d(out_dim))
-            
-            self.convs.append(nn.Sequential(*conv))
-    
-    def forward(self, x, speaker_embed=None):# [B, n_mel, dec_T]
-        B, C, dec_T = x.shape# [B, n_mel, dec_T] or [B, n_mel+speaker, dec_T]
-        if C == self.n_mel_channels:
-            assert speaker_embed is not None, 'speaker_embed missing from discriminator input'
-            if len(speaker_embed.shape) == 2:
-                speaker_embed = speaker_embed.unsqueeze(2)
-            if speaker_embed.shape[2] == 1:
-                speaker_embed = speaker_embed.repeat(1, 1, dec_T)# [B, embed] -> [B, embed, dec_T]
-            x = torch.cat((x, speaker_embed), dim=1)# [B, n_mel, dec_T] -> [B, n_mel+speaker, dec_T]
-        elif C == self.n_mel_channels+self.speaker_embedding_dim:
-            pass
-        else:
-            raise Exception (f"Excepted input to have {self.n_mel_channels} or {self.n_mel_channels+self.speaker_embedding_dim} channels, got {C}.")
-        x_res = x
-        
-        len_convs = len(self.convs)
-        for i, conv in enumerate(self.convs):
-            is_first_layer = bool(i == 0)
-            is_last_layer = bool(i+1 == len_convs)
-            is_connected_layer = bool(i % self.b_res == 0)
-            
-            x = conv(x)
-            if x.shape[1] != x_res.shape[1]:
-                x_res = x
-            elif is_connected_layer:
-                x = F.relu(x + x_res, inplace=not is_last_layer)
-        
-        pred_fakeness = x# [B, 1, dec_T]
-        pred_fakeness = pred_fakeness.mean(dim=2).squeeze(1)# [B, 1, dec_T-2] -> [B, 1] -> [B]
-        pred_fakeness.sigmoid_()
-        return pred_fakeness# [B]
 
 
 class Postnet(nn.Module):
@@ -323,22 +195,24 @@ class Postnet(nn.Module):
         self.b_res = hparams.postnet_residual_connections if hasattr(hparams, 'postnet_residual_connections') else False
         self.convolutions = nn.ModuleList()
         
+        prev_output_layer = True
         for i in range(hparams.postnet_n_convolutions):
             is_output_layer = (bool(self.b_res) and bool( i % self.b_res == 0 )) or (i+1 == hparams.postnet_n_convolutions)
-            layers = [ ConvNorm(hparams.n_mel_channels*(hparams.LL_SpectLoss+1) if i == 0 else hparams.postnet_embedding_dim,
+            layers = [ ConvNorm(hparams.n_mel_channels*(hparams.LL_SpectLoss+1) if prev_output_layer else hparams.postnet_embedding_dim,
                              hparams.n_mel_channels*(hparams.LL_SpectLoss+1) if is_output_layer else hparams.postnet_embedding_dim,
                              kernel_size=hparams.postnet_kernel_size, stride=1,
                              padding=int((hparams.postnet_kernel_size - 1) / 2),
                              dilation=1, w_init_gain='linear' if is_output_layer else 'tanh'), ]
             if not is_output_layer:
                 layers.append(nn.BatchNorm1d(hparams.postnet_embedding_dim))
+            prev_output_layer = is_output_layer
             self.convolutions.append(nn.Sequential(*layers))
     
     def forward(self, x):
         x_orig = x.clone()
         len_convs = len(self.convolutions)
         for i, conv in enumerate(self.convolutions):
-            if (self.b_res and (i % self.b_res == 0)) or (i+1 == len_convs):
+            if (bool(self.b_res) and bool( i % self.b_res == 0 )) or (i+1 == len_convs):
                 x_orig = x_orig + conv(x)
                 x = x_orig
             else:
@@ -443,11 +317,11 @@ class MemoryBottleneck(nn.Module):
     def __init__(self, hparams):
         super(MemoryBottleneck, self).__init__()
         self.mem_output_dim = hparams.memory_bottleneck_dim
-        self.mem_input_dim = hparams.encoder_LSTM_dim + hparams.speaker_embedding_dim + len(hparams.emotion_classes) + hparams.emotionnet_latent_dim + 1
+        self.mem_input_dim = hparams.encoder_LSTM_dim + hparams.speaker_embedding_dim + hparams.torchMoji_crushedDim + 1
         self.bottleneck = LinearNorm(self.mem_input_dim, self.mem_output_dim, bias=hparams.memory_bottleneck_bias, w_init_gain='tanh')
     
     def forward(self, memory):
-        memory = self.bottleneck(memory)# [B, enc_T, input_dim] -> [B, enc_T, output_dim]
+        memory = self.bottleneck(memory)# [B, txt_T, input_dim] -> [B, txt_T, output_dim]
         return memory
 
 
@@ -496,6 +370,7 @@ class Decoder(nn.Module):
         self.prenet_dim = hparams.prenet_dim
         self.prenet_layers = hparams.prenet_layers
         self.prenet_batchnorm = hparams.prenet_batchnorm if hasattr(hparams, 'prenet_batchnorm') else False
+        self.prenet_bn_momentum = hparams.prenet_bn_momentum
         self.p_prenet_dropout = hparams.p_prenet_dropout
         self.prenet_speaker_embed_dim = hparams.prenet_speaker_embed_dim if hasattr(hparams, 'prenet_speaker_embed_dim') else 0
         self.max_decoder_steps = hparams.max_decoder_steps
@@ -553,7 +428,8 @@ class Decoder(nn.Module):
         
         self.prenet = Prenet(
             hparams.n_mel_channels * hparams.n_frames_per_step * self.context_frames,
-            [hparams.prenet_dim]*hparams.prenet_layers, self.p_prenet_dropout, self.prenet_batchnorm)
+            [hparams.prenet_dim]*hparams.prenet_layers, self.p_prenet_dropout,
+            self.prenet_batchnorm, self.prenet_bn_momentum)
         
         AttRNN_Dimensions = hparams.prenet_dim + self.memory_dim
         if self.AttRNN_extra_decoder_input:
@@ -712,7 +588,7 @@ class Decoder(nn.Module):
         
         self.memory = memory
         if self.attention_type == 0:
-            self.processed_memory = self.attention_layer.memory_layer(memory) # Linear Layer, [B, enc_T, enc_dim] -> [B, enc_T, attention_dim]
+            self.processed_memory = self.attention_layer.memory_layer(memory) # Linear Layer, [B, txt_T, enc_dim] -> [B, txt_T, attention_dim]
             if self.windowed_attention_range:
                 attention_position = self.attention_position
                 if attention_position is not None and preserve is not None:
@@ -778,7 +654,7 @@ class Decoder(nn.Module):
         mel_outputs = mel_outputs.transpose(1, 2)
         
         if hidden_att_contexts_arr is not None and len(hidden_att_contexts_arr):
-            hidden_att_contexts = torch.stack(hidden_att_contexts_arr, dim=1).transpose(1, 2)# list([B, dim], [B, dim], ...) -> [B, dim, dec_T]
+            hidden_att_contexts = torch.stack(hidden_att_contexts_arr, dim=1).transpose(1, 2)# list([B, dim], [B, dim], ...) -> [B, dim, mel_T]
         else:
             hidden_att_contexts = None
         return mel_outputs, gate_outputs, alignments, hidden_att_contexts
@@ -838,7 +714,7 @@ class Decoder(nn.Module):
         if self.attention_weights_scaler is not None:
             scaled_attention_weights_cum *= self.attention_weights_scaler
         attention_weights_cat = torch.cat((attention_weights.unsqueeze(1), scaled_attention_weights_cum), dim=1)
-        # [B, 1, enc_T] cat [B, 1, enc_T] -> [B, 2, enc_T]
+        # [B, 1, txt_T] cat [B, 1, txt_T] -> [B, 2, txt_T]
         
         if self.attention_type == 0:
             _ = self.attention_layer(attention_hidden, memory, processed_memory, attention_weights_cat, mask, memory_lengths, None, self.attention_position)
@@ -914,14 +790,11 @@ class Decoder(nn.Module):
         if hasattr(self, 'memory_bottleneck'):
             memory = self.memory_bottleneck(memory)
         
-        if self.prenet_noise:
-            decoder_inputs = decoder_inputs + self.prenet_noise * torch.randn(decoder_inputs.shape, device=decoder_inputs.device, dtype=decoder_inputs.dtype)
-        
         #if self.prenet_blur_max > 0.0:
         #    rand_blur_strength = torch.rand(1).uniform_(self.prenet_blur_min, self.prenet_blur_max)
-        #    decoder_inputs = HeightGaussianBlur(decoder_inputs, blur_strength=rand_blur_strength)# [B, n_mel, dec_T]
+        #    decoder_inputs = HeightGaussianBlur(decoder_inputs, blur_strength=rand_blur_strength)# [B, n_mel, mel_T]
         
-        decoder_inputs = self.parse_decoder_inputs(decoder_inputs)# [B, n_mel, dec_T] -> [dec_T, B, n_mel]
+        decoder_inputs = self.parse_decoder_inputs(decoder_inputs)# [B, n_mel, mel_T] -> [mel_T, B, n_mel]
         
         if decoder_input is None:
             decoder_input = self.get_go_frame(memory).unsqueeze(0) # create blank starting frame
@@ -931,7 +804,10 @@ class Decoder(nn.Module):
             decoder_input = decoder_input.permute(2, 0, 1) # [B, n_mel, context_frames] -> [context_frames, B, n_mel]
         # memory -> (1, B, n_mel) <- which is all 0's
         
-        decoder_inputs = torch.cat((decoder_input, decoder_inputs), dim=0) # [context_frames+dec_T, B, n_mel] concat T_out
+        decoder_inputs = torch.cat((decoder_input, decoder_inputs), dim=0) # [context_frames+mel_T, B, n_mel] concat T_out
+        
+        if self.prenet_noise:
+            decoder_inputs = decoder_inputs + self.prenet_noise * torch.randn(decoder_inputs.shape, device=decoder_inputs.device, dtype=decoder_inputs.dtype)
         
         #if self.prenet_speaker_embed_dim: # __future__ feature, not added yet!
         #    embedded_speakers = self.speaker_embedding(speaker_ids)[:, None]
@@ -1068,39 +944,17 @@ class Tacotron2(nn.Module):
         if not hasattr(hparams, 'use_postnet') or hparams.use_postnet:
             self.postnet = Postnet(hparams)
         self.sylps_net = SylpsNet(hparams)
-        self.emotion_net = EmotionNet(hparams)
-        self.aux_emotion_net = AuxEmotionNet(hparams)
+        self.tm_linear = nn.Linear(hparams.torchMoji_attDim, hparams.torchMoji_crushedDim)
+        if hparams.torchMoji_BatchNorm:
+            self.tm_bn = MaskedBatchNorm1d(hparams.torchMoji_attDim, eval_only_momentum=False, momentum=0.05)
         
         if hparams.use_postnet_generator_and_discriminator if hasattr(hparams, "use_postnet_generator_and_discriminator") else False:
             self.postnet_grad_propagation_scalar = hparams.adv_postnet_grad_propagation
             self.adversarial_postnet = GANPostnet(hparams)
     
-    def parse_batch(self, batch):
-        text_padded, text_lengths, mel_padded, gate_padded, output_lengths, speaker_ids, \
-          torchmoji_hidden, preserve_decoder_states, init_mel, sylps, emotion_id, emotion_onehot = batch
-        text_padded = to_gpu(text_padded).long()
-        text_lengths = to_gpu(text_lengths).long()
-        output_lengths = to_gpu(output_lengths).long()
-        speaker_ids = to_gpu(speaker_ids.data).long()
-        mel_padded = to_gpu(mel_padded).float()
-        max_len = torch.max(text_lengths.data).item() # used by loss func
-        gate_padded = to_gpu(gate_padded).float() # used by loss func
-        if torchmoji_hidden is not None:
-            torchmoji_hidden = to_gpu(torchmoji_hidden).float()
-        if preserve_decoder_states is not None:
-            preserve_decoder_states = to_gpu(preserve_decoder_states).float()
-        if init_mel is not None:
-            init_mel = to_gpu(init_mel).float()
-        if sylps is not None:
-            sylps = to_gpu(sylps).float()
-        if emotion_id is not None:
-            emotion_id = to_gpu(emotion_id).long()
-        if emotion_onehot is not None:
-            emotion_onehot = to_gpu(emotion_onehot).float()
-        return (
-            (text_padded, text_lengths, mel_padded, max_len, output_lengths, speaker_ids, torchmoji_hidden, preserve_decoder_states, init_mel, sylps, emotion_id, emotion_onehot),
-            (mel_padded, gate_padded, output_lengths, text_lengths, emotion_id, emotion_onehot, sylps, preserve_decoder_states))
-            # returns ((x),(y)) as (x) for training input, (y) for ground truth/loss calc
+    def parse_batch(self, batch, device='cuda'):
+        batch = {k: v.to(device) if type(v) == torch.Tensor else v for k,v in batch.items()}
+        return batch
     
     def mask_outputs(self, outputs, output_lengths=None):
         if self.mask_padding and output_lengths is not None:
@@ -1115,106 +969,99 @@ class Tacotron2(nn.Module):
         
         return outputs
     
-    def forward(self, inputs, teacher_force_till=None, p_teacher_forcing=None, drop_frame_rate=None, p_emotionnet_embed=0.9, return_hidden_state=False):
-        text, text_lengths, gt_mels, max_len, output_lengths, speaker_ids, torchmoji_hidden, preserve_decoder_states, init_mel, gt_sylps, emotion_id, emotion_onehot = inputs
-        text_lengths, output_lengths = text_lengths.data, output_lengths.data
-        
-        if teacher_force_till == None: p_teacher_forcing  = self.p_teacher_forcing
-        if p_teacher_forcing == None:  teacher_force_till = self.teacher_force_till
-        if drop_frame_rate == None:    drop_frame_rate    = self.drop_frame_rate
-        
+    def forward(self, gt_mel, mel_lengths, text, text_lengths, speaker_id, gt_sylps,
+                torchmoji_hdn, pres_prev_state, cont_next_iter, init_mel,
+                teacher_force_till=None, p_teacher_forcing=None, drop_frame_rate=None, return_hidden_state=False):
         with torch.no_grad():
+            p_teacher_forcing  = self.p_teacher_forcing  if teacher_force_till is None else p_teacher_forcing
+            teacher_force_till = self.teacher_force_till if p_teacher_forcing  is None else teacher_force_till
+            drop_frame_rate    = self.drop_frame_rate    if drop_frame_rate    is None else drop_frame_rate
+            
             if drop_frame_rate > 0. and self.training:
-                # gt_mels shape (B, n_mel_channels, T_out),
-                gt_mels = dropout_frame(gt_mels, self.global_mean, output_lengths, drop_frame_rate)
+                gt_mel = dropout_frame(gt_mel, self.global_mean, mel_lengths, drop_frame_rate)# [B, n_mel, mel_T]
         
         memory = []
         
         # (Encoder) Text -> Encoder Outputs, pred_sylps
-        embedded_text = self.embedding(text).transpose(1, 2) # [B, embed, enc_T]
-        encoder_outputs, hidden_state, pred_sylps = self.encoder(embedded_text, text_lengths, speaker_ids=speaker_ids) # [B, enc_T, enc_dim]
+        embedded_text = self.embedding(text).transpose(1, 2) # [B, embed, txt_T]
+        encoder_outputs, hidden_state, pred_sylps = self.encoder(embedded_text, text_lengths, speaker_ids=speaker_id) # [B, txt_T, enc_dim]
         memory.append(encoder_outputs)
         
         # (Speaker) speaker_id -> speaker_embed
-        speaker_embed = self.speaker_embedding(speaker_ids)
+        speaker_embed = self.speaker_embedding(speaker_id)
         memory.append( speaker_embed[:, None].repeat(1, encoder_outputs.size(1), 1) )
         
         # (SylpsNet) Sylps -> sylzu, mu, logvar
         sylzu, syl_mu, syl_logvar = self.sylps_net(gt_sylps)
         memory.append( sylzu[:, None].repeat(1, encoder_outputs.size(1), 1) )
         
-        # (EmotionNet) Gt_mels, speaker, encoder_outputs -> zs, em_zu, em_mu, em_logvar
-        zs, em_zu, em_mu, em_logvar, em_params = self.emotion_net(gt_mels, speaker_embed, encoder_outputs,
-                                                                   text_lengths=text_lengths, emotion_id=emotion_id, emotion_onehot=emotion_onehot)
-        
-        # (AuxEmotionNet) torchMoji, encoder_outputs -> aux(zs, em_mu, em_logvar)
-        aux_zs, aux_em_mu, aux_em_logvar, aux_em_params = self.aux_emotion_net(torchmoji_hidden, speaker_embed, encoder_outputs, text_lengths=text_lengths)
-        
-        # (EmotionNet/AuxEmotionNet) add embed to Memory using random source
-        B, enc_T, _ = encoder_outputs.shape
-        aux_mask = ~(torch.rand(B) <= p_emotionnet_embed)
-        aug_em_zu = em_zu.clone()
-        aug_em_zu[aux_mask] = aux_em_mu[aux_mask]
-        aug_zs = zs.clone()
-        aug_zs[aux_mask] = aux_zs[aux_mask]
-        memory.extend(( aug_em_zu.repeat(1, encoder_outputs.size(1), 1),
-                           aug_zs.repeat(1, encoder_outputs.size(1), 1), ))
+        # (TorchMoji)
+        torchmoji_hdn = self.tm_bn(torchmoji_hdn).to(sylzu)# [B, hdn_dim]
+        torchmoji_hdn = self.tm_linear(torchmoji_hdn)#       [B, hdn_dim] -> [B, crushed_dim]
+        torchmoji_hdn = torchmoji_hdn[:, None].repeat(1, encoder_outputs.size(1), 1)# [B, C] -> [B, txt_T, C]
+        memory.append(torchmoji_hdn)
         
         # (Decoder/Attention) memory -> mel_outputs
-        memory = torch.cat(memory, dim=2)# concat along Embed dim # [B, enc_T, dim]
-        mel_outputs, gate_outputs, alignments, hidden_att_contexts, memory = self.decoder(memory, gt_mels, memory_lengths=text_lengths, preserve_decoder=preserve_decoder_states,
+        memory = torch.cat(memory, dim=2)# concat along Embed dim # [B, txt_T, dim]
+        pred_mel, pred_gate_logits, alignments, hidden_att_contexts, memory = self.decoder(memory, gt_mel, memory_lengths=text_lengths, preserve_decoder=pres_prev_state,
                                                    decoder_input=init_mel, teacher_force_till=teacher_force_till, p_teacher_forcing=p_teacher_forcing,
                                                    return_hidden_state=return_hidden_state)
         
         # (Postnet) mel_outputs -> mel_outputs_postnet (learn a modifier for the output)
-        mel_outputs_postnet = self.postnet(mel_outputs) if hasattr(self, 'postnet') else None
+        pred_mel_postnet = self.postnet(pred_mel) if hasattr(self, 'postnet') else None
         
-        # (Adv Postnet) learns to make spectrograms more realistic *looking* (instead of accurate)
-        mel_outputs_adv = None
-        if hasattr(self, "adversarial_postnet"):
-            modified_mel_outputs_postnet = scale_grads(mel_outputs_postnet, self.postnet_grad_propagation_scalar)
-            mel_outputs_adv = self.adversarial_postnet(modified_mel_outputs_postnet, speaker_embed)
-        
-        return self.mask_outputs(
-            [mel_outputs, mel_outputs_postnet, gate_outputs, alignments, pred_sylps,
-                [sylzu, syl_mu, syl_logvar], # SylpsNet
-                [zs, em_zu, em_mu, em_logvar, em_params], # EmotionNet
-                [aux_zs, aux_em_mu, aux_em_logvar, aux_em_params],# AuxEmotionNet
-                [mel_outputs_adv, speaker_embed],# GAN / AdvPostnet
-                [hidden_att_contexts, memory], # GTA (keep this tuple last in the returned outputs)
-            ],
-            output_lengths)
+        outputs = {
+                   "pred_mel": pred_mel,           # [B, n_mel, mel_T]
+           "pred_mel_postnet": pred_mel_postnet,   # [B, n_mel, mel_T]
+           "pred_gate_logits": pred_gate_logits,   # [B, mel_T]
+                 "pred_sylps": pred_sylps,         # [B]
+              "pred_sylps_mu": syl_mu,             # [B]
+          "pred_sylps_logvar": syl_logvar,         # [B]
+                 "alignments": alignments,         # [B, mel_T, txt_T]
+        "hidden_att_contexts": hidden_att_contexts,# [B, hdn_dim, mel_T]
+            "encoder_outputs": encoder_outputs,    # [B, txt_T, enc_dim]
+        }
+        return outputs
     
-    def inference(self, text_seq, speaker_ids, style_input=None, style_mode=None, text_lengths=None, return_hidden_state=False):
-        """
-        INPUTS:
-            text_seq: list of str
-            speaker: list of str / list of int
-        """
-        assert style_mode == 'torchmoji_hidden', "only style_mode == 'torchmoji_hidden' currently supported."
+    def update_device(self, **inputs):
+        target_device = next(self.parameters()).device
+        target_float_dtype = next(self.parameters()).dtype
+        outputs = {}
+        for key, input in inputs.items():
+            if type(input) == Tensor:# move all Tensor types to GPU
+                if input.dtype == torch.float32:
+                    outputs[key] = input.to(target_device, target_float_dtype)# convert float to half if required.
+                else:
+                    outputs[key] = input.to(target_device                    )# leave Long / Bool unchanged in datatype
+            else:
+                outputs[key] = input
+        return outputs
+    
+    def inference(self, text, text_lengths, speaker_id, torchmoji_hdn, gt_sylps=None):# [B, enc_T], [B], [B], [B], [B, tm_dim]
         
         memory = []
         
         # (Encoder) Text -> Encoder Outputs, pred_sylps
-        embedded_text = self.embedding(text_seq).transpose(1, 2) # [B, embed, enc_T]
-        encoder_outputs, hidden_state, pred_sylps = self.encoder(embedded_text, text_lengths, speaker_ids=speaker_ids) # [B, enc_T, enc_dim]
+        embedded_text = self.embedding(text_seq).transpose(1, 2) # [B, embed, txt_T]
+        encoder_outputs, hidden_state, pred_sylps = self.encoder(embedded_text, text_lengths, speaker_ids=speaker_id) # [B, txt_T, enc_dim]
         memory.append(encoder_outputs)
         
         # (Speaker) speaker_id -> speaker_embed
-        speaker_embed = self.speaker_embedding(speaker_ids)
+        speaker_embed = self.speaker_embedding(speaker_id)
         memory.append( speaker_embed[:, None].repeat(1, encoder_outputs.size(1), 1) )
         
         # (SylpsNet) Sylps -> sylzu, mu, logvar
-        sylzu = self.sylps_net.infer_auto(pred_sylps, rand_sampling=True)
+        sylzu = self.sylps_net.infer_auto(gt_sylps or pred_sylps, rand_sampling=True)
         memory.append( sylzu[:, None].repeat(1, encoder_outputs.size(1), 1) )
         
-        # (AuxEmotionNet) torchMoji, encoder_outputs -> aux(zs, em_mu, em_logvar)
-        em_zs, em_zu = self.aux_emotion_net.infer_auto(style_input, speaker_embed, encoder_outputs, text_lengths=text_lengths)
-        memory.extend(( em_zu.repeat(1, encoder_outputs.size(1), 1),
-                        em_zs.repeat(1, encoder_outputs.size(1), 1), ))
+        # (TorchMoji)
+        torchmoji_hdn = self.tm_bn(torchmoji_hdn).to(sylzu)# [B, hdn_dim]
+        torchmoji_hdn = self.tm_linear(torchmoji_hdn)#       [B, hdn_dim] -> [B, crushed_dim]
+        torchmoji_hdn = torchmoji_hdn[:, None].repeat(1, encoder_outputs.size(1), 1)# [B, C] -> [B, txt_T, C]
+        memory.append(torchmoji_hdn)
         
         # (Decoder/Attention) memory -> mel_outputs
-        memory = torch.cat(memory, dim=2)# concat along Embed dim # [B, enc_T, dim]
+        memory = torch.cat(memory, dim=2)# concat along Embed dim # [B, txt_T, dim]
         mel_outputs, gate_outputs, alignments, hidden_att_contexts = self.decoder.inference(memory, memory_lengths=text_lengths, return_hidden_state=return_hidden_state)
         
         # (Postnet) mel_outputs -> mel_outputs_postnet (learn a modifier for the output)

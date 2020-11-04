@@ -4,15 +4,8 @@ import torch.nn.functional as F
 import torch.distributed as dist
 import numpy as np
 import math
-from CookieTTS.utils.model.utils import get_mask_from_lengths
+from CookieTTS.utils.model.utils import get_mask_from_lengths, alignment_metric
 from typing import Optional
-
-
-def reduce_tensor(tensor, n_gpus):
-    rt = tensor.clone()
-    dist.all_reduce(rt, op=dist.ReduceOp.SUM)
-    rt /= n_gpus
-    return rt
 
 
 # https://github.com/gothiswaysir/Transformer_Multi_encoder/blob/952868b01d5e077657a036ced04933ce53dcbf4c/nets/pytorch_backend/e2e_tts_tacotron2.py#L28-L156
@@ -52,9 +45,9 @@ class GuidedAttentionLoss(torch.nn.Module):
             self.guided_attn_masks = self._make_guided_attention_masks(ilens, olens).to(att_ws.device)
         if self.masks is None:
             self.masks = self._make_masks(ilens, olens).to(att_ws.device)
-        B, dec_T, enc_T = self.guided_attn_masks.shape
-        losses = self.guided_attn_masks * att_ws[:, :dec_T, :enc_T]
-        loss = torch.sum(losses.masked_select(self.masks)) / torch.sum(olens) # get mean along B and dec_T
+        B, mel_T, enc_T = self.guided_attn_masks.shape
+        losses = self.guided_attn_masks * att_ws[:, :mel_T, :enc_T]
+        loss = torch.sum(losses.masked_select(self.masks)) / torch.sum(olens) # get mean along B and mel_T
         if self.reset_always:
             self._reset_masks()
         return loss
@@ -105,24 +98,11 @@ class Tacotron2Loss(nn.Module):
         # Gate Loss
         self.pos_weight = torch.tensor(hparams.gate_positive_weight)
         
-        # Spectrogram Loss
-        if hparams.LL_SpectLoss and any(bool(x) for x in [hparams.melout_MSE_scalar, hparams.melout_MAE_scalar, hparams.melout_SMAE_scalar, hparams.postnet_MSE_scalar, hparams.postnet_MAE_scalar, hparams.postnet_SMAE_scalar]):
-            print("Warning! MSE, MAE and SMAE spectrogram losses will not be used when LL_SpectLoss is True")
-        
-        self.use_LL_Loss = hparams.LL_SpectLoss
-        self.melout_LL_scalar  = hparams.melout_LL_scalar
-        self.postnet_LL_scalar = hparams.postnet_LL_scalar
-        self.melout_MSE_scalar  = hparams.melout_MSE_scalar
-        self.melout_MAE_scalar  = hparams.melout_MAE_scalar
-        self.melout_SMAE_scalar = hparams.melout_SMAE_scalar
-        self.postnet_MSE_scalar  = hparams.postnet_MSE_scalar
-        self.postnet_MAE_scalar  = hparams.postnet_MAE_scalar
-        self.postnet_SMAE_scalar = hparams.postnet_SMAE_scalar
-        self.adv_postnet_scalar = hparams.adv_postnet_scalar
-        self.adv_postnet_reconstruction_weight = hparams.adv_postnet_reconstruction_weight
-        self.dis_postnet_scalar = hparams.dis_postnet_scalar
-        self.dis_spect_scalar   = hparams.dis_spect_scalar
+        self.spec_MSE_weight    = hparams.spec_MSE_weight
+        self.postnet_MSE_weight = hparams.postnet_MSE_weight
         self.masked_select = hparams.masked_select
+        
+        self.gate_loss_weight = hparams.gate_loss_weight
         
         # KL Scheduler Params
         if False:
@@ -139,38 +119,18 @@ class Tacotron2Loss(nn.Module):
             self.upper = 0.5 # weight
         else:
             self.anneal_function = 'cycle'
-            self.lag = 50#      dead_steps
+            self.lag = 50#     dead_steps
             self.k = 7950#   warmup_steps
-            self.x0 = 10000#   cycle_steps
+            self.x0 = 10000#  cycle_steps
             self.upper = 1.0 # aux weight
             assert (self.lag+self.k) <= self.x0
         
-        # SylNet / EmotionNet / AuxEmotionNet Params
-        self.n_classes = len(hparams.emotion_classes)
+        self.sylps_kld_weight = hparams.sylps_kld_weight # SylNet KDL Weight
+        self.sylps_MSE_weight = hparams.sylps_MSE_weight
+        self.sylps_MAE_weight = hparams.sylps_MAE_weight
         
-        self.zsClassificationNCELoss = hparams.zsClassificationNCELoss # EmotionNet Classification Loss (Negative Cross Entropy)
-        self.zsClassificationMAELoss  = hparams.zsClassificationMAELoss  # EmotionNet Classification Loss (Mean Absolute Error)
-        self.zsClassificationMSELoss  = hparams.zsClassificationMSELoss  # EmotionNet Classification Loss (Mean Squared Error)
-                                        
-        self.auxClassificationNCELoss = hparams.auxClassificationNCELoss # AuxEmotionNet NCE Classification Loss
-        self.auxClassificationMAELoss = hparams.auxClassificationMAELoss # AuxEmotionNet MAE Classification Loss
-        self.auxClassificationMSELoss = hparams.auxClassificationMSELoss # AuxEmotionNet MSE Classification Loss
-        
-        self.em_kl_weight   = hparams.em_kl_weight # EmotionNet KDL weight
-        self.syl_KDL_weight = hparams.syl_KDL_weight # SylNet KDL Weight
-        
-        self.pred_sylpsMSE_weight = hparams.pred_sylpsMSE_weight # Encoder Pred Sylps MSE weight
-        self.pred_sylpsMAE_weight = hparams.pred_sylpsMAE_weight # Encoder Pred Sylps MAE weight
-        
-        self.predzu_MSE_weight = hparams.predzu_MSE_weight # AuxEmotionNet Pred Zu MSE weight
-        self.predzu_MAE_weight = hparams.predzu_MAE_weight # AuxEmotionNet Pred Zu MAE weight
-        
-        self.DiagonalGuidedAttention_scalar = hparams.DiagonalGuidedAttention_scalar
+        self.diag_att_weight  = hparams.diag_att_weight
         self.guided_att = GuidedAttentionLoss(sigma=hparams.DiagonalGuidedAttention_sigma)
-        
-        # debug/fun
-        self.AvgClassAcc = 0.0
-    
     
     def vae_kl_anneal_function(self, anneal_function, lag, step, k, x0, upper):
         if anneal_function == 'logistic': # https://www.desmos.com/calculator/neksnpgtmz
@@ -185,393 +145,103 @@ class Tacotron2Loss(nn.Module):
         elif anneal_function == 'constant':
             return upper or 0.001
     
+    def colate_losses(self, loss_dict, loss_scalars, loss=None):
+        for k, v in loss_dict.items():
+            loss_scale = getattr(self, f'{k}_weight', 1.0)
+            loss_scale = loss_scalars[f'{k}_weight'] if (f'{k}_weight' in loss_scalars and loss_scalars[f'{k}_weight'] is not None) else loss_scale
+            if loss is not None:
+                loss += v*loss_scale
+            else:
+                loss = v*loss_scale
+        loss_dict['loss'] = loss
+        return loss_dict
     
-    def log_standard_categorical(self, p):
-        """Calculates the cross entropy between a (one-hot) categorical vector
-        and a standard (uniform) categorical distribution.
-        Params:
-            p: one-hot categorical distribution [B, n_classes]
-        Returns:
-            cross_entropy: [B]
-        """
-        # Uniform prior over y
-        prior = F.softmax(torch.ones_like(p), dim=1) # [B, n_classes]
-        prior.requires_grad = False
+    def file_losses(self, loss_dict):
         
-        cross_entropy = -torch.sum(p * torch.log(prior + 1e-8), dim=1) # [B]
-        
-        return cross_entropy # [B]
+        return 
     
-    
-    # -L(x,y), elbo for labeled data
-    def _L(self, y, mu, logvar, beta = 1.0):
-        B, d = mu.shape
+    def forward(self, pred, gt, loss_scalars):
         
-        #KLD = ((beta*0.5)/B) * torch.sum(d + logvar - logvar.exp() - mu.pow(2))# "1 + logvar - logvar.exp()" <- keep variance close to 1.0
-        KLD_ = (d + (logvar-logvar.exp()).sum()/B - mu.pow(2).sum()/B) # [] KL Divergence
-        KLD = (beta/2)*KLD_
+        loss_dict = {}
+        file_losses = {}# dict of {"audiofile": {"spec_MSE": spec_MSE, "avg_prob": avg_prob, ...}, ...}
         
-        loglik_y = -self.log_standard_categorical(y).sum()/B # [] log p(y)
+        B, n_mel, mel_T = gt['gt_mel'].shape
+        for i in range(B):
+            if gt['audiopath'][i] not in file_losses:
+                file_losses[gt['audiopath'][i]] = {}
         
-        return -(loglik_y + KLD), -KLD_
-    
-    # -U(x), elbo for unlabeled data
-    def _U(self, log_prob, mu, logvar, beta=1.0):
-        B, d = mu.shape# [B, d]
-        
-        prob = torch.exp(log_prob) # [B, d] prediction from classifier # sums along d to 1.0, exp is equiv to softmax in this case.
-        
-        #Entropy of q(y|x)  =  H(q(y|x))
-        H = -(prob * log_prob).sum(1).mean() # [B, d] -> [B] -> []
-        
-        # -L(x,y)
-        KLD_ = (1 + (logvar-logvar.exp()) - mu.pow(2)).sum(1)# [B] KL Divergence with Normal Dist
-        KLD = (beta/2) * KLD_
-        
-        # [B, n_classes] -> [B] constant, value same for all y since we have a uniform prior
-        y = torch.zeros(1, self.n_classes, device=log_prob.device)
-        y[:,0] = 1.
-        loglik_y = -self.log_standard_categorical(y)
-        
-        _Lxy = loglik_y + KLD # [B] Categorical Loss + KL Divergence Loss
-        
-        # sum q(y|x) * -L(x,y) over y
-        q_Lxy = (prob * _Lxy[:, None]).sum()/B # ([B, d] * [B, 1]).sum(1).mean() -> []
-        
-        KLD_bmean = KLD_.sum()/B
-        return -(q_Lxy + H), -KLD_bmean # [] + [], []
-    
-    
-    def forward(self, model_output, targets, criterion_dict, iter, em_kl_weight=None, DiagonalGuidedAttention_scalar=None):
-        self.em_kl_weight = self.em_kl_weight if em_kl_weight is None else em_kl_weight
-        self.DiagonalGuidedAttention_scalar = self.DiagonalGuidedAttention_scalar if DiagonalGuidedAttention_scalar is None else DiagonalGuidedAttention_scalar
-        amp, n_gpus, model, model_d, hparams, optimizer, optimizer_d, grad_clip_thresh = criterion_dict.values()
-        is_overflow = False
-        grad_norm = 0.0
-        
-        mel_target, gate_target, output_lengths, text_lengths, emotion_id_target, emotion_onehot_target, sylps_target, preserve_decoder, *_ = targets
-        mel_target.requires_grad = False
-        gate_target.requires_grad = False
-        mel_out, mel_out_postnet, gate_out, alignments, pred_sylps, syl_package, em_package, aux_em_package, gan_package, *_ = model_output
-        gate_target = gate_target.view(-1, 1)
-        gate_out = gate_out.view(-1, 1)
-        
-        Bsz, n_mel, dec_T = mel_target.shape
-        
-        unknown_id = self.n_classes
-        supervised_mask = (emotion_id_target != unknown_id)# [B] BoolTensor
-        unsupervised_mask = ~supervised_mask               # [B] BoolTensor
-        
-        # remove paddings before loss calc
-        if self.masked_select:
-            mask = get_mask_from_lengths(output_lengths)
-            mask = mask.expand(mel_target.size(1), mask.size(0), mask.size(1))
-            mask = mask.permute(1, 0, 2)
+        if True:
+            pred_mel_postnet = pred['pred_mel_postnet']
+            pred_mel         = pred['pred_mel']
+            gt_mel           =   gt['gt_mel']
             
-            mel_target_not_masked = mel_target
-            mel_target = torch.masked_select(mel_target, mask)
-            if self.use_LL_Loss:
-                mel_out, mel_logvar = mel_out.chunk(2, dim=1)
-                if mel_out_postnet is not None:
-                    mel_out_postnet, mel_logvar_postnet = mel_out_postnet.chunk(2, dim=1)
-                mel_logvar = torch.masked_select(mel_logvar, mask)
-                mel_logvar_postnet = torch.masked_select(mel_logvar_postnet, mask)
+            B, n_mel, mel_T = gt_mel.shape
             
-            mel_out_not_masked = mel_out
-            mel_out = torch.masked_select(mel_out, mask)
-            if mel_out_postnet is not None:
-                mel_out_postnet_not_masked = mel_out_postnet
-                mel_out_postnet = torch.masked_select(mel_out_postnet, mask)
-        
-        postnet_MSE = postnet_MAE = postnet_SMAE = postnet_LL = torch.tensor(0.)
-        
-        # spectrogram / decoder loss
-        spec_MSE = nn.MSELoss()(mel_out, mel_target)
-        spec_MAE = nn.L1Loss()(mel_out, mel_target)
-        spec_SMAE = nn.SmoothL1Loss()(mel_out, mel_target)
-        if mel_out_postnet is not None:
-            postnet_MSE = nn.MSELoss()(mel_out_postnet, mel_target)
-            postnet_MAE = nn.L1Loss()(mel_out_postnet, mel_target)
-            postnet_SMAE = nn.SmoothL1Loss()(mel_out_postnet, mel_target)
-        if self.use_LL_Loss:
-            spec_LL = NormalLLLoss(mel_out, mel_logvar, mel_target)
-            loss = (spec_LL*self.melout_LL_scalar)
-            if mel_out_postnet is not None:
-                postnet_LL = NormalLLLoss(mel_out_postnet, mel_logvar_postnet, mel_target)
-            loss += (postnet_LL*self.postnet_LL_scalar)
-        else:
-            spec_LL = postnet_LL = torch.tensor(0.0, device=mel_out.device)
-            loss = (spec_MSE*self.melout_MSE_scalar)
-            loss += (spec_MAE*self.melout_MAE_scalar)
-            loss += (spec_SMAE*self.melout_SMAE_scalar)
-            loss += (postnet_MSE*self.postnet_MSE_scalar)
-            loss += (postnet_MAE*self.postnet_MAE_scalar)
-            loss += (postnet_SMAE*self.postnet_SMAE_scalar)
+            mask = get_mask_from_lengths(gt['mel_lengths'])
+            mask = mask.expand(gt_mel.size(1), *mask.shape).permute(1, 0, 2)
+            
+            # spectrogram / decoder loss
+            pred_mel = torch.masked_select(pred_mel, mask)
+            gt_mel   = torch.masked_select(gt_mel, mask)
+            spec_SE = nn.MSELoss(reduction='none')(pred_mel, gt_mel)
+            loss_dict['spec_MSE'] = spec_SE.mean()
+            
+            losses = spec_SE.split([x*n_mel for x in gt['mel_lengths'].cpu()])
+            for i in range(B):
+                audiopath = gt['audiopath'][i]
+                file_losses[audiopath]['postnet_MSE'] = losses[i].mean().item()
+            
+            pred_mel_postnet =  torch.masked_select(pred_mel_postnet, mask)
+            loss_dict['postnet_MSE'] = nn.MSELoss()(pred_mel_postnet, gt_mel)
         
         if True: # gate/stop loss
-            gate_loss = nn.BCEWithLogitsLoss(pos_weight=self.pos_weight)(gate_out, gate_target)
-            loss += gate_loss
+            gate_target =  gt['gt_gate_logits'].view(-1, 1)
+            gate_out = pred['pred_gate_logits'].view(-1, 1)
+            loss_dict['gate_loss'] = nn.BCEWithLogitsLoss(pos_weight=self.pos_weight)(gate_out, gate_target)
+            del gate_target, gate_out
         
         if True: # SylpsNet loss
-            sylzu, syl_mu, syl_logvar = syl_package
-            sylKLD = -0.5 * (1 + syl_logvar - syl_logvar.exp() - syl_mu.pow(2)).sum()/Bsz
-            loss += (sylKLD*self.syl_KDL_weight)
+            syl_mu     = pred['pred_sylps_mu']
+            syl_logvar = pred['pred_sylps_logvar']
+            loss_dict['sylps_kld'] = -0.5 * (1 + syl_logvar - syl_logvar.exp() - syl_mu.pow(2)).sum()/B
+            del syl_mu, syl_logvar
         
         if True: # Pred Sylps loss
-            pred_sylps = pred_sylps.squeeze(1)# [B, 1] -> [B]
-            sylpsMSE = nn.MSELoss()(pred_sylps, sylps_target)
-            sylpsMAE = nn.L1Loss()(pred_sylps, sylps_target)
-            loss += (sylpsMSE*self.pred_sylpsMSE_weight)
-            loss += (sylpsMAE*self.pred_sylpsMAE_weight)
-        
-        if True: # EmotionNet loss
-            zs, em_zu, em_mu, em_logvar, em_params = [x.squeeze(1) for x in em_package] # VAE-GST loss
-            SupervisedLoss = ClassicationMAELoss = ClassicationMSELoss = ClassicationNCELoss = SupervisedKDL = UnsupervisedLoss = UnsupervisedKDL = torch.tensor(0)
-            
-            kl_scale = self.vae_kl_anneal_function(self.anneal_function, self.lag, iter, self.k, self.x0, self.upper)# outputs 0<s<1
-            em_kl_weight = kl_scale*self.em_kl_weight
-            
-            if ( sum(supervised_mask) > 0): # if labeled data > 0:
-                mu_labeled = em_mu[supervised_mask]
-                logvar_labeled = em_logvar[supervised_mask]
-                log_prob_labeled = zs[supervised_mask]
-                y_onehot = emotion_onehot_target[supervised_mask]
-                
-                # -Elbo for labeled data (L(X,y))
-                SupervisedLoss, SupervisedKDL = self._L(y_onehot, mu_labeled, logvar_labeled, beta=em_kl_weight)
-                loss += SupervisedLoss
-                
-                # Add MSE/MAE Loss
-                prob_labeled = log_prob_labeled.exp()
-                ClassicationMAELoss = nn.L1Loss(reduction='sum')(prob_labeled, y_onehot)/Bsz
-                loss += (ClassicationMAELoss*self.zsClassificationMAELoss)
-                
-                ClassicationMSELoss = nn.MSELoss(reduction='sum')(prob_labeled, y_onehot)/Bsz
-                loss += (ClassicationMSELoss*self.zsClassificationMSELoss)
-                
-                # Add auxiliary classification loss q(y|x) # negative cross entropy
-                ClassicationNCELoss = -torch.sum(y_onehot * log_prob_labeled, dim=1).mean()
-                loss += (ClassicationNCELoss*self.zsClassificationNCELoss)
-            
-            if ( sum(unsupervised_mask) > 0): # if unlabeled data > 0:
-                mu_unlabeled = em_mu[unsupervised_mask]
-                logvar_unlabeled = em_logvar[unsupervised_mask]
-                log_prob_unlabeled = zs[unsupervised_mask]
-                
-                # -Elbo for unlabeled data (U(x))
-                UnsupervisedLoss, UnsupervisedKDL = self._U(log_prob_unlabeled, mu_unlabeled, logvar_unlabeled, beta=em_kl_weight)
-                loss += UnsupervisedLoss
-        
-        if True: # AuxEmotionNet loss
-            aux_zs, aux_em_mu, aux_em_logvar, aux_em_params = [x.squeeze(1) for x in aux_em_package]
-            PredDistMSE = PredDistMAE = AuxClassicationMAELoss = AuxClassicationMSELoss = AuxClassicationNCELoss = torch.tensor(0)
-            
-            # pred em_zu dist param Loss
-            PredDistMSE = nn.MSELoss()(aux_em_params, em_params)
-            PredDistMAE = nn.L1Loss()( aux_em_params, em_params)
-            loss += (PredDistMSE*self.predzu_MSE_weight + PredDistMAE*self.predzu_MAE_weight)
-            
-            # Aux Zs Classification Loss
-            if ( sum(supervised_mask) > 0): # if labeled data > 0:
-                log_prob_labeled = aux_zs[supervised_mask]
-                prob_labeled = log_prob_labeled.exp()
-                
-                AuxClassicationMAELoss = nn.L1Loss(reduction='sum')(prob_labeled, y_onehot)/Bsz
-                loss += (AuxClassicationMAELoss*self.auxClassificationMAELoss)
-                
-                AuxClassicationMSELoss = nn.MSELoss(reduction='sum')(prob_labeled, y_onehot)/Bsz
-                loss += (AuxClassicationMSELoss*self.auxClassificationMSELoss)
-                
-                AuxClassicationNCELoss = -torch.sum(y_onehot * log_prob_labeled, dim=1).mean()
-                loss += (AuxClassicationNCELoss*self.auxClassificationNCELoss)
+            pred_sylps = pred['pred_sylps'].squeeze(1)# [B, 1] -> [B]
+            sylps_target = gt['gt_sylps']
+            loss_dict['sylps_MAE'] = nn.L1Loss()(pred_sylps, sylps_target)
+            loss_dict['sylps_MSE'] = nn.MSELoss()(pred_sylps, sylps_target)
+            del pred_sylps, sylps_target
         
         if True:# Diagonal Attention Guiding
-            AttentionLoss = self.guided_att(alignments[preserve_decoder==0.0],
-                                          text_lengths[preserve_decoder==0.0],
-                                        output_lengths[preserve_decoder==0.0])
-            loss += (AttentionLoss*self.DiagonalGuidedAttention_scalar)
+            alignments     = pred['alignments']
+            text_lengths   = gt['text_lengths']
+            output_lengths = gt['mel_lengths']
+            pres_prev_state= gt['pres_prev_state']
+            loss_dict['diag_att'] = self.guided_att(alignments[pres_prev_state==0.0],
+                                                  text_lengths[pres_prev_state==0.0],
+                                                output_lengths[pres_prev_state==0.0])
+            del alignments, text_lengths, output_lengths
         
-        reduced_d_loss = reduced_avg_fakeness = avg_fakeness = 0.0
-        GAN_Spect_MAE = adv_postnet_loss = torch.tensor(0.)
-        if True and gan_package[0] is not None:
-            real_labels = torch.zeros(mel_target_not_masked.shape[0], device=loss.device, dtype=loss.dtype)# [B]
-            fake_labels = torch.ones( mel_target_not_masked.shape[0], device=loss.device, dtype=loss.dtype)# [B]
-            
-            mel_outputs_adv, speaker_embed, *_ = gan_package
-            if self.masked_select:
-                fill_mask = mel_target_not_masked == 0.0
-                mel_outputs_adv = mel_outputs_adv.clone()
-                mel_outputs_adv.masked_fill_(fill_mask, 0.0)
-                mel_outputs_adv_masked = torch.masked_select(mel_outputs_adv, mask)
-                mel_out_not_masked = mel_out_not_masked.clone()
-                mel_out_not_masked.masked_fill_(fill_mask, 0.0)
-                if mel_out_postnet is not None:
-                    mel_out_postnet_not_masked = mel_out_postnet_not_masked.clone()
-                    mel_out_postnet_not_masked.masked_fill_(fill_mask, 0.0)
-            
-            # spectrograms [B, n_mel, dec_T]
-            # mel_target_not_masked
-            # mel_out_not_masked
-            # mel_out_postnet_not_masked
-            # mel_outputs_adv
-            
-            speaker_embed = speaker_embed.unsqueeze(2).repeat(1, 1, dec_T)# [B, embed] -> [B, embed, dec_T]
-            fake_pred_fakeness = model_d(mel_outputs_adv, speaker_embed.detach())# should speaker_embed be attached computational graph? Not sure atm
-            avg_fakeness = fake_pred_fakeness.mean()# metric for Tensorboard
-            # Tacotron2 Optimizer / Loss
-            reduced_avg_fakeness = reduce_tensor(avg_fakeness.data, n_gpus).item() if hparams.distributed_run else avg_fakeness.item()
-            
-            adv_postnet_loss = nn.BCELoss()(fake_pred_fakeness, real_labels) # [B] -> [] calc loss to decrease fakeness of model
-            GAN_Spect_MAE = nn.L1Loss()(mel_outputs_adv_masked, mel_target)
-            if reduced_avg_fakeness > 0.4:
-                loss += (adv_postnet_loss*self.adv_postnet_scalar)
-                loss += (GAN_Spect_MAE*(self.adv_postnet_scalar*self.adv_postnet_reconstruction_weight))
+        #################################################################
+        ## Colate / Merge the Losses into a single tensor with scalars ##
+        #################################################################
+        loss_dict = self.colate_losses(loss_dict, loss_scalars)
         
-        # Tacotron2 Optimizer / Loss
-        if hparams.distributed_run:
-            reduced_loss = reduce_tensor(loss.data, n_gpus).item()
-            reduced_gate_loss = reduce_tensor(gate_loss.data, n_gpus).item()
-        else:
-            reduced_loss = loss.item()
-            reduced_gate_loss = gate_loss.item()
+        if True:# get Avg Max Attention and Diagonality Metrics
+            _ = alignment_metric(pred['alignments'], gt['text_lengths'], gt['mel_lengths'])
+            diagonalitys, avg_prob, char_max_dur, char_min_dur, char_avg_dur = _
+            
+            loss_dict['diagonality']       = diagonalitys.mean()
+            loss_dict['avg_max_attention'] = avg_prob.mean()
+            
+            for i in range(B):
+                audiopath = gt['audiopath'][i]
+                file_losses[audiopath]['att_diagonality'  ] = diagonalitys[i].cpu().item()
+                file_losses[audiopath]['avg_max_attention'] =     avg_prob[i].cpu().item()
+                file_losses[audiopath]['char_max_dur']      = char_max_dur[i].cpu().item()
+                file_losses[audiopath]['char_min_dur']      = char_min_dur[i].cpu().item()
+                file_losses[audiopath]['char_avg_dur']      = char_avg_dur[i].cpu().item()
         
-        if optimizer is not None:
-            if hparams.fp16_run:
-                with amp.scale_loss(loss, optimizer) as scaled_loss:
-                    scaled_loss.backward()
-            else:
-                loss.backward()
-            
-            if hparams.fp16_run:
-                grad_norm = torch.nn.utils.clip_grad_norm_(
-                    amp.master_params(optimizer), grad_clip_thresh)
-                is_overflow = math.isinf(grad_norm) or math.isnan(grad_norm)
-            else:
-                grad_norm = torch.nn.utils.clip_grad_norm_(
-                    model.parameters(), grad_clip_thresh)
-            
-            optimizer.step()
-        
-        # (optional) Discriminator Optimizer / Loss
-        if True and gan_package[0] is not None:
-            if optimizer_d is not None:
-                optimizer_d.zero_grad()
-            
-            # spectrograms [B, n_mel, dec_T]
-            # mel_target_not_masked
-            # mel_out_not_masked
-            # mel_out_postnet_not_masked
-            # mel_outputs_adv
-            
-            fake_pred_fakeness = model_d(mel_outputs_adv.detach(), speaker_embed.detach())
-            fake_d_loss = nn.BCELoss()(fake_pred_fakeness, fake_labels)# [B] -> [] loss to increase distriminated fakeness of fake samples
-            
-            real_pred_fakeness = model_d(mel_target_not_masked.detach(), speaker_embed.detach())
-            real_d_loss = nn.BCELoss()(real_pred_fakeness, real_labels)# [B] -> [] loss to decrease distriminated fakeness of real samples
-            
-            if self.dis_postnet_scalar and mel_out_postnet is not None:
-                fake_pred_fakeness = model_d(mel_out_postnet_not_masked.detach(), speaker_embed.detach())
-                fake_d_loss += self.dis_postnet_scalar * nn.BCELoss()(fake_pred_fakeness, fake_labels)# [B] -> [] loss to increase distriminated fakeness of fake samples
-            
-            if self.dis_spect_scalar:
-                fake_pred_fakeness = model_d(mel_out_not_masked.detach(), speaker_embed.detach())
-                fake_d_loss += self.dis_spect_scalar * nn.BCELoss()(fake_pred_fakeness, fake_labels)# [B] -> [] loss to increase distriminated fakeness of fake samples
-            
-            d_loss = (real_d_loss+fake_d_loss) * (self.adv_postnet_scalar*0.5)
-            reduced_d_loss = reduce_tensor(d_loss.data, n_gpus).item() if hparams.distributed_run else d_loss.item()
-            
-            if optimizer_d is not None and reduced_avg_fakeness < 0.85:
-                if hparams.fp16_run:
-                    with amp.scale_loss(d_loss, optimizer_d) as scaled_loss:
-                        scaled_loss.backward()
-                else:
-                    d_loss.backward()
-                
-                if hparams.fp16_run:
-                    grad_norm_d = torch.nn.utils.clip_grad_norm_(
-                        amp.master_params(optimizer_d), grad_clip_thresh)
-                    is_overflow = math.isinf(grad_norm_d) or math.isnan(grad_norm_d)
-                else:
-                    grad_norm_d = torch.nn.utils.clip_grad_norm_(
-                        model_d.parameters(), grad_clip_thresh)
-                
-                optimizer_d.step()
-        
-        with torch.no_grad(): # debug/fun
-            S_Bsz = supervised_mask.sum().item()
-            U_Bsz = unsupervised_mask.sum().item()
-            ClassicationAccStr = 'N/A'
-            Top1ClassificationAcc = 0.0
-            if S_Bsz > 0:
-                Top1ClassificationAcc = (torch.argmax(log_prob_labeled.exp(), dim=1) == torch.argmax(y_onehot, dim=1)).float().sum().item()/S_Bsz # top-1 accuracy
-                self.AvgClassAcc = self.AvgClassAcc*0.95 + Top1ClassificationAcc*0.05
-                ClassicationAccStr = round(Top1ClassificationAcc*100, 2)
-        
-        print(
-            "            Total loss = ", loss.item(), '\n',
-            "             Spect LLL = ", spec_LL.item(), '\n',
-            "     Postnet Spect LLL = ", postnet_LL.item(), '\n',
-            "             Spect MSE = ", spec_MSE.item(), '\n',
-            "             Spect MAE = ", spec_MAE.item(), '\n',
-            "            Spect SMAE = ", spec_SMAE.item(), '\n',
-            "     Postnet Spect MSE = ", postnet_MSE.item(), '\n',
-            "     Postnet Spect MAE = ", postnet_MAE.item(), '\n',
-            "    Postnet Spect SMAE = ", postnet_SMAE.item(),'\n',
-            "              Gate BCE = ", gate_loss.item(), '\n',
-            "                sylKLD = ", sylKLD.item(), '\n',
-            "              sylpsMSE = ", sylpsMSE.item(), '\n',
-            "              sylpsMAE = ", sylpsMAE.item(), '\n',
-            "        SupervisedLoss = ", SupervisedLoss.item(), '\n',
-            "         SupervisedKDL = ", SupervisedKDL.item(), '\n',
-            "      UnsupervisedLoss = ", UnsupervisedLoss.item(), '\n',
-            "       UnsupervisedKDL = ", UnsupervisedKDL.item(), '\n',
-            "   ClassicationMSELoss = ", ClassicationMSELoss.item(), '\n',
-            "   ClassicationMAELoss = ", ClassicationMAELoss.item(), '\n',
-            "   ClassicationNCELoss = ", ClassicationNCELoss.item(), '\n',
-            "AuxClassicationMSELoss = ", AuxClassicationMSELoss.item(), '\n',
-            "AuxClassicationMAELoss = ", AuxClassicationMAELoss.item(), '\n',
-            "AuxClassicationNCELoss = ", AuxClassicationNCELoss.item(), '\n',
-            "      Predicted Zu MSE = ", PredDistMSE.item(), '\n',
-            "      Predicted Zu MAE = ", PredDistMAE.item(), '\n',
-            "     DiagAttentionLoss = ", AttentionLoss.item(), '\n',
-            "       PredAvgFakeness = ", reduced_avg_fakeness, '\n',
-            "          GeneratorMAE = ", GAN_Spect_MAE.item(), '\n',
-            "         GeneratorLoss = ", adv_postnet_loss.item(), '\n',
-            "     DiscriminatorLoss = ", reduced_d_loss/self.adv_postnet_scalar, '\n',
-            "      ClassicationAcc  = ", ClassicationAccStr, '%\n',
-            "      AvgClassicatAcc  = ", round(self.AvgClassAcc*100, 2), '%\n',
-            "      Total Batch Size = ", Bsz, '\n',
-            "      Super Batch Size = ", S_Bsz, '\n',
-            "      UnSup Batch Size = ", U_Bsz, '\n',
-            sep='')
-        
-        loss_terms = [
-            [loss.item(), 1.0],
-            [spec_MSE.item(), self.melout_MSE_scalar],
-            [spec_MAE.item(), self.melout_MAE_scalar],
-            [spec_SMAE.item(), self.melout_SMAE_scalar],
-            [postnet_MSE.item(), self.postnet_MSE_scalar],
-            [postnet_MAE.item(), self.postnet_MAE_scalar],
-            [postnet_SMAE.item(), self.postnet_SMAE_scalar],
-            [gate_loss.item(), 1.0],
-            [sylKLD.item(), self.syl_KDL_weight],
-            [sylpsMSE.item(), self.pred_sylpsMSE_weight],
-            [sylpsMAE.item(), self.pred_sylpsMAE_weight],
-            [SupervisedLoss.item(), 1.0],
-            [SupervisedKDL.item(), em_kl_weight*0.5],
-            [UnsupervisedLoss.item(), 1.0],
-            [UnsupervisedKDL.item(), em_kl_weight*0.5],
-            [ClassicationMSELoss.item(), self.zsClassificationMSELoss],
-            [ClassicationMAELoss.item(), self.zsClassificationMAELoss],
-            [ClassicationNCELoss.item(), self.zsClassificationNCELoss],
-            [AuxClassicationMSELoss.item(), self.auxClassificationMSELoss],
-            [AuxClassicationMAELoss.item(), self.auxClassificationMAELoss],
-            [AuxClassicationNCELoss.item(), self.auxClassificationNCELoss],
-            [PredDistMSE.item(), self.predzu_MSE_weight],
-            [PredDistMAE.item(), self.predzu_MAE_weight],
-            [Top1ClassificationAcc, 1.0],
-            [reduced_avg_fakeness, 1.0],
-            [adv_postnet_loss.item(), self.adv_postnet_scalar],
-            [reduced_d_loss/self.adv_postnet_scalar, self.adv_postnet_scalar],
-            ]
-        return loss, gate_loss, loss_terms, reduced_loss, reduced_gate_loss, grad_norm, is_overflow
+        return loss_dict, file_losses
+

@@ -16,7 +16,7 @@ for i in range(num_gpus):
     argslist.append('--rank={}'.format(i))
     stdout = None if i == 0 else open(f"logs/{job_id}_GPU_{i}.log", "w")
     print(argslist)
-    p = subprocess.Popen([str(sys.executable)]+argslist, stdout=stdout)
+    p = subprocess.Popen([str(sys.executable)]+argslist)#, stdout=stdout)
     workers.append(p)
     argslist = argslist[:-1]
 

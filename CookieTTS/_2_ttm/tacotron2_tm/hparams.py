@@ -1,20 +1,23 @@
 from CookieTTS.utils.text.symbols import symbols
-
+import tensorflow as tf
 
 def create_hparams(hparams_string=None, verbose=False):
     """Create model hyperparameters. Parse nondefault from given string."""
 
     from CookieTTS.utils.utils_hparam import HParams
     hparams = HParams(
+        random_segments=False,# DONT MODIFY
+        
         ################################
         # Experiment Parameters        #
         ################################
         epochs=1000,
-        iters_per_checkpoint=250,
+        iters_per_checkpoint=1000,
         iters_per_validation=250,
         seed=1234,
         dynamic_loss_scaling=True,
-        fp16_run=True,
+        fp16_run=True,# requires 20 Series or Better (e.g: RTX 2080 Ti, RTX 2060, Tesla V100, Tesla A100)
+        fp16_run_optlvl='2',
         distributed_run=True,
         dist_backend="nccl",
         dist_url="tcp://127.0.0.1:54321",
@@ -23,13 +26,20 @@ def create_hparams(hparams_string=None, verbose=False):
         ignore_layers= ["layers_here"],
         frozen_modules=["layers_here"], # only the module names are required e.g: "encoder." will freeze all parameters INSIDE the encoder recursively
         print_layer_names_during_startup=True,
+        n_tensorboard_outputs=5,# number of items from validation so show in Tensorboard
+        n_tensorboard_outputs_highloss=5,# top X tacotron outputs with worst validation loss.
+        n_tensorboard_outputs_badavgatt=5,# top X tacotron outputs with weakest average attention.
         
-        ################################
-        # Data Parameters              #
-        ################################
+        batch_size=32,    # controls num of files processed in parallel per GPU
+        val_batch_size=32,# for more precise comparisons between models, constant batch_size is useful
+        
+        use_TBPTT=False,# continue truncated files into the next training iteration
+        max_segment_length=800, # max mel length till truncation.
+        ##################################
+        ## Data Parameters              ##
+        ##################################
         check_files=True, # check all files exist, aren't corrupted, have text, good length, and other stuff before training.
                           # This can take a little as it has to simulate an entire EPOCH of dataloading.
-        load_mel_from_disk=True, # Saves significant RAM and CPU.
         speakerlist='/media/cookie/Samsung 860 QVO/ClipperDatasetV2/filelists/speaker_ids.txt', # lets the checkpoints include speaker names.
         dict_path='../../dict/merged.dict.txt',
         p_arpabet=0.5, # probability to use ARPAbet / pronounciation dictionary.
@@ -42,30 +52,28 @@ def create_hparams(hparams_string=None, verbose=False):
                                    # Mellotron repo has this off by default, but ON makes the most logical sense to me.
         raw_speaker_ids=False,  # use the speaker IDs found in filelists for the internal IDs. Values greater than n_speakers will crash (as intended).
                                 # This will disable sorting the ids
-        training_files='/media/cookie/Samsung 860 QVO/ClipperDatasetV2/filelists/mel_train_taca2.txt',
-        validation_files='/media/cookie/Samsung 860 QVO/ClipperDatasetV2/filelists/mel_validation_taca2.txt',
+        training_files='/media/cookie/Samsung 860 QVO/ClipperDatasetV2/filelists/train_taca2.txt',
+        validation_files='/media/cookie/Samsung 860 QVO/ClipperDatasetV2/filelists/validation_taca2.txt',
         text_cleaners=['basic_cleaners'],
         
         silence_value=-11.52,
         silence_pad_start=0,# frames to pad the start of each clip
         silence_pad_end=0,  # frames to pad the end of each clip
                             # These frames will be added to the loss functions and Tacotron must predict and generate the padded silence.
+        ##################################
+        ## Audio Parameters             ##
+        ##################################
+        sampling_rate=44100,
+        filter_length=2048,
+        hop_length=512,
+        win_length=2048,
+        n_mel_channels=80,
+        mel_fmin=20.0,
+        mel_fmax=11025.0,
         
-        ################################
-        # Audio Parameters             #
-        ################################
-        max_wav_value=32768.0,
-        sampling_rate=48000,
-        filter_length=2400,
-        hop_length=600,
-        win_length=2400,
-        n_mel_channels=256,
-        mel_fmin=0.0,
-        mel_fmax=16000.0,
-        
-        ################################
-        # Model Parameters             #
-        ################################
+        ##################################
+        ## Model Parameters             ##
+        ##################################
         n_symbols=len(symbols),
         symbols_embedding_dim=512,
         
@@ -97,28 +105,11 @@ def create_hparams(hparams_string=None, verbose=False):
         
         # (EmotionNet) Semi-supervised VAE/Classifier
         emotion_classes = ['neutral','anxious','happy','annoyed','sad','confused','smug','angry','whispering','shouting','sarcastic','amused','surprised','singing','fear','serious'],
-        emotionnet_latent_dim=32,# unsupervised Latent Dim
-        emotionnet_encoder_outputs_dropout=0.75,# Encoder Outputs Dropout
-        emotionnet_RNN_dim=128, # GRU dim to summarise Encoder Outputs
-        emotionnet_classifier_layer_dropout=0.25, # Dropout ref, speaker and summarised Encoder outputs.
-                                                  # Which are used to predict zs and zu
-        
-        # (EmotionNet) Reference encoder
-        emotionnet_ref_enc_convs=[32, 32, 64, 64, 128, 128],
-        emotionnet_ref_enc_rnn_dim=64, # GRU dim to summarise RefSpec Conv Outputs
-        emotionnet_ref_enc_use_bias=False,
-        emotionnet_ref_enc_droprate=0.3, # Dropout for Reference Spectrogram Encoder Conv Layers
-        
-        # (AuxEmotionNet)
-        auxemotionnet_layer_dims=[256,],# width of each layer, LeakyReLU() is used between hiddens
-                                        # input is TorchMoji hidden, outputs to classifier layer and zu param predictor
-        auxemotionnet_encoder_outputs_dropout=0.75,# Encoder Outputs Dropout
-        auxemotionnet_RNN_dim=128, # GRU dim to summarise Encoder outputs
-        auxemotionnet_classifier_layer_dropout=0.25, # Dropout ref, speaker and summarised Encoder outputs.
-                                                     # Which are used to predict zs and zu params
         
         # (AuxEmotionNet) TorchMoji
         torchMoji_attDim=2304,# published model uses 2304
+        torchMoji_crushedDim=32,
+        torchMoji_BatchNorm=True,
         
         # (Speaker) Speaker embedding
         n_speakers=512, # maximum number of speakers the model can support.
@@ -140,26 +131,28 @@ def create_hparams(hparams_string=None, verbose=False):
         context_frames=1,   # TODO TODO TODO TODO TODO
         
         # (Decoder) Prenet
-        prenet_dim=512,         # 256 baseline
-        prenet_layers=2,        # 2 baseline
-        prenet_batchnorm=False,  # False baseline
-        p_prenet_dropout=0.5,   # 0.5 baseline
+        prenet_dim=256,        # 256 baseline
+        prenet_layers=2,       # 2 baseline
+        prenet_batchnorm=False,# False baseline
+        prenet_bn_momentum=0.5,# Inverse smoothing factor, 0.1 = high smoothing, 0.9 = Almost no smoothing
+        p_prenet_dropout  =0.5,# 0.5 baseline
+        
         prenet_speaker_embed_dim=0, # speaker_embedding before encoder
-        prenet_noise=0.0, # Apply Gaussian Noise (std defined here) to the Teacher Forced Prenet inputs.
-        prenet_blur_min=0.0,# Apply random vertical blur between prenet_blur_min
-        prenet_blur_max=0.0,#                                and prenet_blur_max
-                            # Set max to False or Zero to disable
+        prenet_noise   =0.05,# Add Gaussian Noise. std defined here. Applied to Prenet inputs.
+        prenet_blur_min=0.00,# Apply random vertical blur between prenet_blur_min
+        prenet_blur_max=0.00,#                                and prenet_blur_max
+                             # Set max to False or Zero to disable
         
         # (Decoder) AttentionRNN
         attention_rnn_dim=1280, # 1024 baseline
         AttRNN_extra_decoder_input=True,# False baseline # Feed DecoderRNN Hidden State into AttentionRNN
         AttRNN_hidden_dropout_type='dropout',# options ('dropout','zoneout')
-        p_AttRNN_hidden_dropout=0.1,# 0.1 baseline
+        p_AttRNN_hidden_dropout=0.05,# 0.1 baseline
         
         # (Decoder) DecoderRNN
-        decoder_rnn_dim=512, # 1024 baseline
+        decoder_rnn_dim=384, # 1024 baseline
         DecRNN_hidden_dropout_type='dropout',# options ('dropout','zoneout')
-        p_DecRNN_hidden_dropout=0.0,# 0.1 baseline
+        p_DecRNN_hidden_dropout=0.1,# 0.1 baseline
         decoder_residual_connection=False,# residual connections with the AttentionRNN hidden state and Attention/Memory Context
         # Optional Second Decoder
         second_decoder_rnn_dim=0,# 0 baseline # Extra DecoderRNN to learn more complex patterns # set to 0 to disable layer.
@@ -170,10 +163,10 @@ def create_hparams(hparams_string=None, verbose=False):
         # 0 -> Hybrid Location-Based Attention (Vanilla Tacotron2)
         # 1 -> GMMAttention (Long-form Synthesis)
         # 1 -> Dynamic Convolution Attention (Long-form Synthesis)
-        attention_dim=128, # 128 Layer baseline # Used for Key-Query Dim
+        attention_dim=192, # 128 Layer baseline # Used for Key-Query Dim
         
         # (Decoder) Attention Type 0 Parameters
-        windowed_attention_range = 64,# set to 0 to disable
+        windowed_attention_range = 32,# set to 0 to disable
                                      # will set the forward and back distance the model can attend to.
                                      # 2 will give the model 5 characters it can attend to at any one time.
                                      # This will also allow more stable generation with longer text inputs and save VRAM during inference.
@@ -181,8 +174,8 @@ def create_hparams(hparams_string=None, verbose=False):
         windowed_att_pos_learned=True,
         
         # (Decoder) Attention Type 0 (and 2) Parameters
-        attention_location_n_filters=32,   # 32 baseline
-        attention_location_kernel_size=31, # 31 baseline
+        attention_location_n_filters=32,  # 32 baseline
+        attention_location_kernel_size=31,# 31 baseline
         
         # (Decoder) Attention Type 1 Parameters
         num_att_mixtures=1,# 5 baseline
@@ -199,11 +192,11 @@ def create_hparams(hparams_string=None, verbose=False):
         dynamic_filter_len=21, # 21 baseline # currently only 21 is supported
         
         # (Postnet) Mel-post processing network parameters
-        use_postnet=False,
+        use_postnet=True,
         postnet_embedding_dim=512,
         postnet_kernel_size=5,
         postnet_n_convolutions=6,
-        postnet_residual_connections=2,# False baseline, int > 0 == n_layers in each residual block
+        postnet_residual_connections=3,# False baseline, int > 0 == n_layers in each residual block
         
         # (Adversarial Postnet Generator) - modifies the tacotron output to look convincingly fake instead of just accurate.
         use_postnet_generator_and_discriminator=False,
@@ -219,19 +212,14 @@ def create_hparams(hparams_string=None, verbose=False):
         dis_postnet_n_convolutions=8,
         dis_postnet_residual_connections=4,
         
-        ################################
-        # Optimization Hyperparameters #
-        ################################
+        ##################################
+        ## Optimization Hyperparameters ##
+        ##################################
         use_saved_learning_rate=False,
         learning_rate=0.1e-5,# overriden by 'run_every_epoch.py'
         weight_decay=1e-6,
         grad_clip_thresh=1.0,# overriden by 'run_every_epoch.py'
         
-        batch_size=40,     # controls num of files processed in parallel per GPU
-        val_batch_size=40, # for more precise comparisons between models, constant batch_size is useful
-        
-        use_TBPTT=False,# continue truncated files into the next training iteration
-        truncated_length=1000, # max mel length till truncation.
         mask_padding=True,#mask values by setting them to the same values in target and predicted
         masked_select=True,#mask values by removing them from the calculation
         
@@ -239,9 +227,9 @@ def create_hparams(hparams_string=None, verbose=False):
         global_mean_npy='global_mean.npy',
         drop_frame_rate=0.25,# overriden by 'run_every_epoch.py'
         
-        ################################
-        # Loss Weights/Scalars         #
-        ################################
+        ##################################
+        ## Loss Weights/Scalars         ##
+        ##################################
         LL_SpectLoss=False,# Use Log-likelihood loss on Decoder and Postnet outputs.
                            # This will cause Tacotron to produce a normal Spectrogram and a logvar Spectrogram.
                            # The logvar spectrogram will represent the confidence of the model on it's prediction,
@@ -251,41 +239,17 @@ def create_hparams(hparams_string=None, verbose=False):
         melout_LL_scalar  = 1.0,  # Log-likelihood Loss
         postnet_LL_scalar = 1.0,  # Log-likelihood Loss
         # else:
-        melout_MSE_scalar = 1.0,  #      MSE Spectrogram Loss Before Postnet
-        melout_MAE_scalar = 0.0,  #       L1 Spectrogram Loss Before Postnet
-        melout_SMAE_scalar = 0.0, # SmoothL1 Spectrogram Loss Before Postnet
-        postnet_MSE_scalar = 1.0, #      MSE Spectrogram Loss After Postnet
-        postnet_MAE_scalar = 0.0, #       L1 Spectrogram Loss After Postnet
-        postnet_SMAE_scalar = 0.0,# SmoothL1 Spectrogram Loss After Postnet
+        spec_MSE_weight = 1.0, #   MSE Spectrogram Loss Before Postnet
+        postnet_MSE_weight = 1.0,# MSE Spectrogram Loss After Postnet
         
-        # if use_postnet_generator_and_discriminator is True:
-        adv_postnet_scalar = 0.1,# Global Loss Scalar for the entire Adversarial System
-                                 #                  (Postnet, Reconstruction, Discriminator, Etc)
-        adv_postnet_reconstruction_weight = 10.0,# Reconstruction Loss to force the GAN to follow the input somewhat
-        adv_postnet_grad_propagation = 0.05, # Multiply GAN gradients before they connect to the main network.
-                                            # 0.0 is the same as detaching the GAN loss from the main network, so the GAN loss will only update the Adversarial Postnet.
-                                            # 1.0 is apply GAN Loss gradients to the entire tacotron2 network like *normal*
-        dis_postnet_scalar = 0.1,# Loss Scalar for discriminator on normal not-GAN postnet
-        dis_spect_scalar   = 0.1,# Loss Scalar for discriminator on normal recurrent spect outputs
+        gate_loss_weight = 1.0,# Gate Loss
         
-        zsClassificationNCELoss = 0.00, # EmotionNet Classification Loss (Negative Cross Entropy)
-        zsClassificationMAELoss = 0.00, # EmotionNet Classification Loss (Mean Absolute Error)
-        zsClassificationMSELoss = 0.00, # EmotionNet Classification Loss (Mean Squared Error)
+        sylps_kld_weight = 0.0020, # SylNet KDL Weight
         
-        auxClassificationNCELoss = 0.00, # AuxEmotionNet NCE Classification Loss
-        auxClassificationMAELoss = 0.00, # AuxEmotionNet MAE Classification Loss
-        auxClassificationMSELoss = 0.00, # AuxEmotionNet MSE Classification Loss
+        sylps_MSE_weight = 0.01,# Encoder Pred Sylps MSE weight
+        sylps_MAE_weight = 0.00,# Encoder Pred Sylps MAE weight
         
-        em_kl_weight   = 0.0010, # EmotionNet KDL weight # Can be overriden by 'run_every_epoch.py'
-        syl_KDL_weight = 0.0020, # SylNet KDL Weight
-        
-        pred_sylpsMSE_weight = 0.01,# Encoder Pred Sylps MSE weight
-        pred_sylpsMAE_weight = 0.00,# Encoder Pred Sylps MAE weight
-        
-        predzu_MSE_weight = 0.02, # AuxEmotionNet Pred Zu MSE weight
-        predzu_MAE_weight = 0.00, # AuxEmotionNet Pred Zu MAE weight
-        
-        DiagonalGuidedAttention_scalar=0.05, # Can be overriden by 'run_every_epoch.py
+        diag_att_weight=0.05, # Can be overriden by 'run_every_epoch.py
                                              # 'dumb' guided attention. Simply punishes the model for attention that is non-diagonal. Decreases training time and increases training stability with English speech. 
                                              # As an example of how this works, if you imagine there is a 10 letter input that lasts 1 second. The first 0.1s is pushed towards using the 1st letter, the next 0.1s will be pushed towards using the 2nd letter, and so on for each chunk of audio. Since each letter has a different natural duration (especially punctuation), this attention guiding is not particularly accurate, so it's not recommended to use a high loss scalar later into training.
         DiagonalGuidedAttention_sigma=0.5, # how to *curve?* the attention loss? Just leave this one alone.
