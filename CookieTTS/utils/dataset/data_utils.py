@@ -155,7 +155,7 @@ def generate_filelist_from_datasets(DATASET_FOLDER,
     speaker_durations = {}
     dataset_lookup = {}
     bad_paths = {}
-    for dataset in meta.keys():
+    for dataset in datasets:
         bad_paths[dataset] = []
         prev_wd = os.getcwd()
         os.chdir(os.path.join(DATASET_FOLDER, dataset))
@@ -188,9 +188,9 @@ def generate_filelist_from_datasets(DATASET_FOLDER,
     #    print('Skipping speaker Durations')
     
     for key, bad_list in bad_paths.items():
-        meta[dataset] = [clip for clip in meta[dataset] if not clip['path'] in bad_list]
+        meta[key] = [clip for clip in meta[key] if not clip['path'] in bad_list]
     
-    for dataset, clips in meta.items():
+    for dataset in datasets:
         speaker_set = set(list(speaker_durations.keys()))
         meta[dataset] = [x for x in meta[dataset] if x['speaker'] in speaker_set and speaker_durations[x['speaker']] > MIN_SPEAKER_DURATION_SECONDS]
     
