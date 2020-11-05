@@ -49,7 +49,7 @@ def create_hparams(hparams_string=None, verbose=False):
         ###################################
         ## Dataset / Filelist Parameters ##
         ###################################
-        data_source=1,# 0 to use nvidia/tacotron2 filelists, 1 to use automatic dataset processor
+        data_source=0,# 0 to use nvidia/tacotron2 filelists, 1 to use automatic dataset processor
         
         # if data_source is 0:
         speakerlist='/media/cookie/Samsung 860 QVO/ClipperDatasetV2/filelists/speaker_ids.txt',

@@ -124,20 +124,25 @@ def prepare_dataloaders(hparams, dataloader_args, args, speaker_ids):
     if hparams.data_source == 1:
         if args.rank == 0:
             fl_dict = get_filelist(hparams)
-            with open('fl_dict.pkl', 'wb') as pickle_file:
-                pickle.dump(fl_dict, pickle_file, pickle.HIGHEST_PROTOCOL)
-        torch.distributed.barrier()# wait till all graphics cards reach this point.
-        if args.rank > 0:
-            fl_dict = pickle.load(open('fl_dict.pkl', "rb"))
+        
+        if args.n_gpus > 1:
+            if args.rank == 0:
+                with open('fl_dict.pkl', 'wb') as pickle_file:
+                    pickle.dump(fl_dict, pickle_file, pickle.HIGHEST_PROTOCOL)
+            torch.distributed.barrier()# wait till all graphics cards reach this point.
+            if args.rank > 0:
+                fl_dict = pickle.load(open('fl_dict.pkl', "rb"))
         
         filelist    = fl_dict['filelist']
         speaker_ids = fl_dict['speaker_ids']
         random.Random(0).shuffle(filelist)
         training_filelist   = filelist[ int(len(filelist)*hparams.dataset_p_val):]
         validation_filelist = filelist[:int(len(filelist)*hparams.dataset_p_val) ]
-        torch.distributed.barrier()# wait till all graphics cards reach this point.
-        if args.rank == 0 and os.path.exists('fl_dict.pkl'):
-            os.remove('fl_dict.pkl')
+        
+        if args.n_gpus > 1:
+            torch.distributed.barrier()# wait till all graphics cards reach this point.
+            if args.rank == 0 and os.path.exists('fl_dict.pkl'):
+                os.remove('fl_dict.pkl')
     else:
         training_filelist   = get_filelist(hparams, val=False)
         validation_filelist = get_filelist(hparams, val=True)
