@@ -4,7 +4,7 @@ import soundfile as sf
 import librosa
 from scipy.io.wavfile import read
 
-def load_wav_to_torch(full_path, target_sr=None, min_sr=None, return_empty_on_exception=False):
+def load_wav_to_torch(full_path, target_sr=None, min_sr=None, remove_dc_offset=True, return_empty_on_exception=False):
     sampling_rate = None
     try:
         data, sampling_rate = sf.read(full_path, always_2d=True)# than soundfile.
@@ -36,6 +36,8 @@ def load_wav_to_torch(full_path, target_sr=None, min_sr=None, return_empty_on_ex
             return [], sampling_rate or target_sr or 48000
         data = torch.from_numpy(librosa.core.resample(data.numpy(), sampling_rate, target_sr))
         
+        if remove_dc_offset:
+            data = data - data.mean()
         abs_max = data.abs().max()
         if abs_max > 1.0:
             data /= abs_max

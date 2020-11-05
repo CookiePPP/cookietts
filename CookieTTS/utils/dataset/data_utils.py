@@ -396,6 +396,8 @@ class TTSDataset(torch.utils.data.Dataset):
         if self.target_lufs is not None:
             output['gt_audio'] = self.update_loudness(audio, sampling_rate, self.target_lufs,
                                                                   output['gt_perc_loudness'])
+            if output['gt_audio'].abs().max() > 1.0:
+                output['gt_audio'] = output['gt_audio'] / output['gt_audio'].abs().max()
             output['gt_perc_loudness'] = torch.tensor(self.target_lufs)
         
         if any([arg in ('gt_mel','dtw_pred_mel') for arg in args]):
@@ -411,7 +413,7 @@ class TTSDataset(torch.utils.data.Dataset):
                     mel = None
             
             if mel is None:
-                mel = self.get_mel_from_audio(audio, sampling_rate)
+                mel = self.get_mel_from_audio(output['gt_audio'], sampling_rate)
                 if self.cache_mel:
                     torch.save(mel, mel_path)
             
@@ -483,7 +485,7 @@ class TTSDataset(torch.utils.data.Dataset):
             output['torchmoji_hdn'] = torchmoji# [Embed]
         
         if any([arg in ('gt_frame_f0','gt_frame_voiced','gt_char_f0','gt_char_voiced') for arg in args]):
-            f0, voiced_mask = self.get_pitch(audio, self.sampling_rate, self.hop_length)
+            f0, voiced_mask = self.get_pitch(output['gt_audio'], self.sampling_rate, self.hop_length)
             output['gt_frame_f0']     = f0
             output['gt_frame_voiced'] = voiced_mask
         
