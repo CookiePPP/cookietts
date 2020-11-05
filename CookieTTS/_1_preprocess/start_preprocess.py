@@ -599,30 +599,6 @@ if True:
     print('Done!'); step_complete+=1
     
     
-    # (if using torchMoji) Generate and save torchMoji hidden states for every clip
-    if True:
-        print(f'{step_complete:>3}/{step_total:<3} Running TorchMoji on Dataset')
-        from scripts.text_embeddings import write_hidden_states
-        path_quote_pairs = [[y['path'],y['quote']] for z in meta.values() for y in z]
-        print(f'Found {len(path_quote_pairs)} path-quote pairs.')
-        write_hidden_states(path_quote_pairs)
-        del path_quote_pairs
-        print('TorchMoji Done!'); step_complete+=1
-    
-    
-    # (if using SV2TTS) Generate and save speaker embeddings for every clip.
-    # Note - not working on this till I have too many speakers to deal with
-    
-    
-    # (wip) Remove transcripts which are hard to learn.
-    # e.g: "*gasp* What?!"
-    # The "*gasp*" breaks the conventions the model will have learnt up to that point. Easiest solution is to exclude clips with "*" symbol.
-    if True:
-        for dataset in meta.keys():
-            dataset_filtered = [clip for clip in meta[dataset] if not '*' in clip["quote"]]
-            meta[dataset] = dataset_filtered
-    
-    
     # Collect "audio_path|grapheme_transcript|phoneme_transcript|speaker_id|emotions|sample_rate|emotion_id|noise_level" octuplets for every clip.
     # Write the data into SEPERATED txt's for every dataset.
     # e.g: if using Clipper and VCTK datasets, there should 4 files;

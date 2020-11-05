@@ -16,7 +16,8 @@ def load_wav_to_torch(full_path, target_sr=None, min_sr=None, return_empty_on_ex
         else:
             raise ex
     
-    assert min_sr < sampling_rate, f'Expected sampling_rate greater than or equal to {min_sr:.0f}, got {sampling_rate:.0f}.\nPath = "{full_path}"'
+    if min_sr is not None:
+        assert min_sr < sampling_rate, f'Expected sampling_rate greater than or equal to {min_sr:.0f}, got {sampling_rate:.0f}.\nPath = "{full_path}"'
     
     if len(data.shape) > 1:
         data = data[:, 0]

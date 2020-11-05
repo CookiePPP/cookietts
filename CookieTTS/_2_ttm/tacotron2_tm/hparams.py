@@ -71,6 +71,19 @@ def create_hparams(hparams_string=None, verbose=False):
         mel_fmin=20.0,
         mel_fmax=11025.0,
         
+        stft_clamp_val=1e-5,# 1e-5 = original
+        target_lufs=-27.0, # Loudness each file is rescaled to, use None for unmodified file loudness.
+        
+        trim_enable = True,# set to False to disable trimming completely
+        trim_cache_audio = False,# save trimmed audio to disk to load later. Saves CPU usage, uses more disk space.
+                                 # modifications to params below do not apply to already cached files while True.
+        trim_margin_left  = [0.0125]*5,
+        trim_margin_right = [0.0125]*5,
+        trim_top_db       = [42  ,46  ,46  ,46  ,46  ],
+        trim_window_length= [8192,4096,2048,1024,512 ],
+        trim_hop_length   = [1024,512 ,256 ,128 ,128 ],
+        trim_ref          = ['amax']*5,
+        trim_emphasis_str = [0.0 ,0.0 ,0.0 ,0.0 ,0.0 ],
         ##################################
         ## Model Parameters             ##
         ##################################
@@ -138,7 +151,7 @@ def create_hparams(hparams_string=None, verbose=False):
         p_prenet_dropout  =0.5,# 0.5 baseline
         
         prenet_speaker_embed_dim=0, # speaker_embedding before encoder
-        prenet_noise   =0.05,# Add Gaussian Noise. std defined here. Applied to Prenet inputs.
+        prenet_noise   =0.05,# Add Gaussian Noise to Prenet inputs. std defined here.
         prenet_blur_min=0.00,# Apply random vertical blur between prenet_blur_min
         prenet_blur_max=0.00,#                                and prenet_blur_max
                              # Set max to False or Zero to disable

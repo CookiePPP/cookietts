@@ -11,7 +11,8 @@ current_iteration = iteration
 ######################################################################################
 ## Tacotron2 ##
 ###############
-param_interval = 5
+param_interval = 5# how often this file is ran
+dump_filelosses_interval = 500# how often to update file_losses.cvs
 show_live_params = False
 LossExplosionThreshold = 1e3 # maximum loss value (which will trigger a restart from latest checkpoint)
 
@@ -20,12 +21,12 @@ decrease_lr_on_restart = True # Decrease the Learning Rate on a LossExplosionThr
 
 # Learning Rate / Optimization
 decay_start = 99999999
-A_ = 5.0e-4
+A_ = 2.0e-4
 B_ = 40000
 C_ = 0e-5
 min_learning_rate = 1e-6
 
-grad_clip_thresh = 5.0
+grad_clip_thresh = 2.0
 
 warmup_start_lr = 0.1e-4
 warmup_start = checkpoint_iter + 0
@@ -38,7 +39,7 @@ validation_interval = 50 if iteration < 101 else (125 if iteration < 2000 else (
 spec_MSE_weight    = 1.0000
 postnet_MSE_weight = 1.0000
 gate_loss_weight   = 1.0000
-sylps_kld_weight   = 0.0005# try to hold sylps_lkd between 0.5 and 2.0
+sylps_kld_weight   = 0.0008# try to hold sylps_lkd between 0.5 and 2.0
 sylps_MSE_weight   = 0.0100
 sylps_MAE_weight   = 0.0010
 diag_att_weight    = 0.0050# you only want to use this very shortly as it masks attention problems later into training.

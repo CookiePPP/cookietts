@@ -10,7 +10,7 @@ class Tacotron2Logger(SummaryWriter):
         self.n_items = hparams.n_tensorboard_outputs
         self.plotted_targets = False
         self.best_loss_dict = None
-        
+    
     def log_training(self, reduced_loss_dict, expavg_loss_dict, best_loss_dict, grad_norm, learning_rate, duration,
                      iteration):
         for loss_name, reduced_loss in reduced_loss_dict.items():

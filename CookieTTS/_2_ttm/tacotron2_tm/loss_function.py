@@ -1,3 +1,5 @@
+import time
+
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -167,8 +169,9 @@ class Tacotron2Loss(nn.Module):
         
         B, n_mel, mel_T = gt['gt_mel'].shape
         for i in range(B):
+            current_time = time.time()
             if gt['audiopath'][i] not in file_losses:
-                file_losses[gt['audiopath'][i]] = {}
+                file_losses[gt['audiopath'][i]] = {'speaker_id_ext': gt['speaker_id_ext'][i], 'time': current_time}
         
         if True:
             pred_mel_postnet = pred['pred_mel_postnet']

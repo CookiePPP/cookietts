@@ -10,6 +10,7 @@ import torch.nn.functional as F
 # audio processing
 import librosa
 import pyworld as pw
+import pyloudnorm as pyln
 import CookieTTS.utils.audio.stft as STFT
 from CookieTTS.utils.dataset.utils import load_wav_to_torch, load_filepaths_and_text
 
@@ -99,6 +100,7 @@ class config:
         self.start_token   = tryattr(hparams, ("start_token",), '')
         self.stop_token    = tryattr(hparams, ("stop_token" ,), '')
 
+
 class TTSDataset(torch.utils.data.Dataset):
     """
         1) loads audio,text pairs
@@ -151,9 +153,23 @@ class TTSDataset(torch.utils.data.Dataset):
             self.check_dataset()
         
         ###############################
+        ## Audio Trimming / Loudness ##
+        ###############################
+        self.trim_margin_left   = getattr(hparams, 'trim_margin_left'  , 0.0125                    )
+        self.trim_margin_right  = getattr(hparams, 'trim_margin_right' , 0.0125                    )
+        self.trim_top_db        = getattr(hparams, 'trim_top_db'       , [46  ,46  ,46  ,46  ,46  ])
+        self.trim_window_length = getattr(hparams, 'trim_window_length', [8192,4096,2048,1024,512 ])
+        self.trim_hop_length    = getattr(hparams, 'trim_hop_length'   , [1024,512 ,256 ,128 ,128 ])
+        self.trim_ref           = getattr(hparams, 'trim_ref'          , [np.amax]*5               )
+        self.trim_emphasis_str  = getattr(hparams, 'trim_emphasis_str' , [0.0 ,0.0 ,0.0 ,0.0 ,0.0 ])
+        self.trim_cache_audio   = getattr(hparams, 'trim_cache_audio'  , False)
+        self.trim_enable        = getattr(hparams, 'trim_enable'      , True)
+        
+        self.target_lufs = getattr(hparams, 'target_lufs' , None)
+        ###############################
         ## Mel-Spectrogram Generator ##
         ###############################
-        self.cache_mel = getattr(hparams, "cache_mel", True)
+        self.cache_mel = getattr(hparams, "cache_mel", False)
         self.sampling_rate = hparams.sampling_rate
         self.filter_length = hparams.filter_length
         self.hop_length    = hparams.hop_length
@@ -161,7 +177,7 @@ class TTSDataset(torch.utils.data.Dataset):
         self.stft = STFT.TacotronSTFT(
             hparams.filter_length, hparams.hop_length, hparams.win_length,
             hparams.n_mel_channels, hparams.sampling_rate, hparams.mel_fmin,
-            hparams.mel_fmax)
+            hparams.mel_fmax, clamp_val=hparams.stft_clamp_val)
         
         # Silence Padding
         self.silence_value     = hparams.silence_value
@@ -288,6 +304,35 @@ class TTSDataset(torch.utils.data.Dataset):
         audio, sampling_rate = load_wav_to_torch(filepath, min_sr=self.mel_fmax*2, target_sr=self.sampling_rate)
         return audio, sampling_rate
     
+    def trim_audio(self, audio, sr, file_path=''):
+        audio = audio.numpy()
+        
+        trim_margin_left   = self.trim_margin_left
+        trim_margin_right  = self.trim_margin_right
+        trim_top_db        = self.trim_top_db
+        trim_window_length = self.trim_window_length
+        trim_hop_length    = self.trim_hop_length
+        trim_ref           = self.trim_ref
+        trim_emphasis_str  = self.trim_emphasis_str
+        
+        # apply audio trimming
+        for i, (margin_left_, margin_right_, top_db_, window_length_, hop_length_, ref_, preemphasis_strength_) in enumerate(zip(trim_margin_left, trim_margin_right, trim_top_db, trim_window_length, trim_hop_length, trim_ref, trim_emphasis_str)):
+            if type(ref_) == str:
+                ref_ = getattr(np, ref_, np.amax)
+            
+            if preemphasis_strength_:
+                sound_filt = librosa.effects.preemphasis(audio, coef=preemphasis_strength_)
+                _, index = librosa.effects.trim(sound_filt, top_db=top_db_, frame_length=window_length_, hop_length=hop_length_, ref=ref_) # gonna be a little messed up for different sampling rates
+            else:
+                _, index = librosa.effects.trim(audio, top_db=top_db_, frame_length=window_length_, hop_length=hop_length_, ref=ref_) # gonna be a little messed up for different sampling rates
+            try:
+                audio = audio[int(max(index[0]-margin_left_, 0)):int(index[1]+margin_right_)]
+            except TypeError:
+                print(f'Slice Left:\n{max(index[0]-margin_left_, 0)}\nSlice Right:\n{index[1]+margin_right_}')
+            assert len(audio), f"Audio trimmed to 0 length by pass {i+1}\nconfig = {[margin_left_, margin_right_, top_db_, window_length_, hop_length_, ref_]}\nFile_Path = '{file_path}'"
+        
+        return torch.from_numpy(audio)
+    
     def get_mel_from_audio(self, audio, sampling_rate):
         if self.audio_offset: # used for extreme GTA'ing
             audio = audio[self.audio_offset:]
@@ -322,28 +367,36 @@ class TTSDataset(torch.utils.data.Dataset):
         y = torch.eye(num_classes)
         return y[labels]
     
-    def get_mel_text_pair(self, index):# get args using get_args() from CookieTTS.utils
+    def get_data_from_inputs(self, audiopath, text, speaker_id_ext, mel_offset=0):# get args using get_args() from CookieTTS.utils
         args = self.args
         output = {}
-
-        filelist_index, spectrogram_offset = self.dataloader_indexes[index]
-        prev_filelist_index, prev_spectrogram_offset = self.dataloader_indexes[max(0, index-self.total_batch_size)]
-        is_not_last_iter = index+self.total_batch_size < self.len
-        next_filelist_index, next_spectrogram_offset = self.dataloader_indexes[index+self.total_batch_size] if is_not_last_iter else (None, None)
         
-        output['pres_prev_state'] = torch.tensor(True if (filelist_index == prev_filelist_index) else False)# preserve model state if this iteration is continuing the file from the last iteration.
-        output['cont_next_iter'] = torch.tensor(True if (filelist_index == next_filelist_index) else False)# whether this file continued into the next iteration
-        
-        #audiopath, gtext, ptext, speaker_id_ext, *_ = self.filelist[filelist_index]
-        audiopath, text, speaker_id_ext, *_ = self.filelist[filelist_index]
         output['audiopath'] = audiopath
         
-        if True or any(arg in ['gt_audio','gt_mel','gt_frame_f0','gt_frame_energy','gt_frame_voiced','gt_char_f0','gt_char_energy','gt_char_voiced'] for arg in args):
-            audio, sampling_rate = self.get_audio(audiopath)
+        if True or any(arg in ['gt_audio','gt_mel','gt_frame_f0','gt_frame_energy','gt_frame_voiced','gt_char_f0','gt_char_energy','gt_char_voiced','gt_perc_loudness'] for arg in args):
+            
+            trimmed_audiopath = f'{os.path.splitext(audiopath)[0]}_trimaudio.pt'
+            if self.trim_enable and self.trim_cache_audio and os.path.exists(trimmed_audiopath):
+                audio, sampling_rate = torch.load(trimmed_audiopath), self.sampling_rate
+            else:
+                audio, sampling_rate = self.get_audio(audiopath)
+                if self.trim_enable:
+                    audio = self.trim_audio(audio, sampling_rate, file_path=audiopath)
+                    if self.trim_cache_audio:
+                        torch.save(audio, trimmed_audiopath)
+            
             if 'gt_audio' in args:
                 output['gt_audio'] = audio
             if 'sampling_rate' in args:
                 output['sampling_rate'] = torch.tensor(float(sampling_rate))
+        
+        if 'gt_perc_loudness' in args or (self.target_lufs is not None):
+            output['gt_perc_loudness'] = self.get_perc_loudness(audio, sampling_rate)
+        
+        if self.target_lufs is not None:
+            output['gt_audio'] = self.update_loudness(audio, sampling_rate, self.target_lufs,
+                                                                  output['gt_perc_loudness'])
+            output['gt_perc_loudness'] = torch.tensor(self.target_lufs)
         
         if any([arg in ('gt_mel','dtw_pred_mel') for arg in args]):
             
@@ -369,7 +422,7 @@ class TTSDataset(torch.utils.data.Dataset):
                 torch.ones(self.stft.n_mel_channels, self.silence_pad_end)*self.silence_value, # add silence to end of file
             ), dim=1)# arr -> [n_mel, mel_T]
             
-            init_mel = F.pad(mel, (self.context_frames, 0))[:, int(spectrogram_offset):int(spectrogram_offset)+self.context_frames]
+            init_mel = F.pad(mel, (self.context_frames, 0))[:, int(mel_offset):int(mel_offset)+self.context_frames]
             # initial input to the decoder. zeros if this is first segment of this file, else last frame of prev segment.
             
             output['gt_mel']   = mel
@@ -429,9 +482,6 @@ class TTSDataset(torch.utils.data.Dataset):
                 torch.save(torchmoji, tm_path)
             output['torchmoji_hdn'] = torchmoji# [Embed]
         
-        if 'gt_perc_loudness' in args:
-            output['gt_perc_loudness'] = self.get_perc_loudness(audio, sampling_rate)
-        
         if any([arg in ('gt_frame_f0','gt_frame_voiced','gt_char_f0','gt_char_voiced') for arg in args]):
             f0, voiced_mask = self.get_pitch(audio, self.sampling_rate, self.hop_length)
             output['gt_frame_f0']     = f0
@@ -456,26 +506,26 @@ class TTSDataset(torch.utils.data.Dataset):
         ########################
         if self.random_segments:
             max_start = mel.shape[-1] - self.max_segment_length
-            spectrogram_offset = random.randint(0, max_start) if max_start > 0 else 0
+            mel_offset = random.randint(0, max_start) if max_start > 0 else 0
         
         if 'gt_frame_f0' in output:
-            output['gt_frame_f0']     = output['gt_frame_f0'][int(spectrogram_offset):int(spectrogram_offset+self.max_segment_length)]
-            output['gt_frame_voiced'] = output['gt_frame_voiced'][int(spectrogram_offset):int(spectrogram_offset+self.max_segment_length)]
+            output['gt_frame_f0']     = output['gt_frame_f0'][int(mel_offset):int(mel_offset+self.max_segment_length)]
+            output['gt_frame_voiced'] = output['gt_frame_voiced'][int(mel_offset):int(mel_offset+self.max_segment_length)]
         
         if 'gt_frame_energy' in output:
-            output['gt_frame_energy'] = output['gt_frame_energy'][int(spectrogram_offset):int(spectrogram_offset+self.max_segment_length)]
+            output['gt_frame_energy'] = output['gt_frame_energy'][int(mel_offset):int(mel_offset+self.max_segment_length)]
         
         if 'alignment' in output:
-            output['alignment'] = output['alignment'][int(spectrogram_offset):int(spectrogram_offset+self.truncated_length), :]
+            output['alignment'] = output['alignment'][int(mel_offset):int(mel_offset+self.truncated_length), :]
         
         if 'gt_mel' in output:
-            output['gt_mel'] = output['gt_mel'][: , int(spectrogram_offset):int(spectrogram_offset+self.max_segment_length)]
+            output['gt_mel'] = output['gt_mel'][: , int(mel_offset):int(mel_offset+self.max_segment_length)]
         
         if 'pred_mel' in output:
-            output['pred_mel'] = output['pred_mel'][: , int(spectrogram_offset):int(spectrogram_offset+self.max_segment_length)]
+            output['pred_mel'] = output['pred_mel'][: , int(mel_offset):int(mel_offset+self.max_segment_length)]
         
         if 'dtw_pred_mel' in output:
-            output['dtw_pred_mel'] = output['dtw_pred_mel'][: , int(spectrogram_offset):int(spectrogram_offset+self.max_segment_length)]
+            output['dtw_pred_mel'] = output['dtw_pred_mel'][: , int(mel_offset):int(mel_offset+self.max_segment_length)]
         
         return output
     
@@ -501,6 +551,15 @@ class TTSDataset(torch.utils.data.Dataset):
         loudness = meter.integrated_loudness(audio.numpy()) # measure loudness (in dB)
         gt_perc_loudness = torch.tensor(loudness)
         return gt_perc_loudness# []
+    
+    def update_loudness(self, audio, sampling_rate, target_lufs, original_lufs=None):
+        if original_lufs is None:
+            meter = pyln.Meter(sampling_rate) # create BS.1770 meter
+            original_lufs = meter.integrated_loudness(audio.numpy()) # measure loudness (in dB)
+        
+        ddb = target_lufs-original_lufs
+        audio *= ((10**(ddb*0.1))**0.5)
+        return audio
     
     def get_charavg_from_frames(self, x, alignment):# [mel_T], [mel_T, txt_T]
         norm_alignment   =      alignment / alignment.sum(dim=0, keepdim=True).clamp(min=0.01)
@@ -575,7 +634,20 @@ class TTSDataset(torch.utils.data.Dataset):
     def __getitem__(self, index):
         if self.shuffle and index == self.rank: # [0,3,6,9],[1,4,7,10],[2,5,8,11] # shuffle_dataset if first item of this GPU of this epoch
            self.shuffle_dataset()
-        return self.get_mel_text_pair(index)
+        
+        audiopath, text, speaker_id_ext, *_ = self.filelist[index]
+        filelist_index, mel_offset = self.dataloader_indexes[index]
+        
+        output = self.get_data_from_inputs(audiopath, text, speaker_id_ext, mel_offset=mel_offset)
+        
+        prev_filelist_index, prev_spectrogram_offset = self.dataloader_indexes[max(0, index-self.total_batch_size)]
+        output['pres_prev_state'] = torch.tensor(True if (filelist_index == prev_filelist_index) else False)# preserve model state if this iteration is continuing the file from the last iteration.
+        
+        is_not_last_iter = index+self.total_batch_size < self.len
+        next_filelist_index, next_spectrogram_offset = self.dataloader_indexes[index+self.total_batch_size] if is_not_last_iter else (None, None)
+        output['cont_next_iter'] = torch.tensor(True if (filelist_index == next_filelist_index) else False)# whether this file continued into the next iteration
+        
+        return output
     
     def __len__(self):
         return self.len

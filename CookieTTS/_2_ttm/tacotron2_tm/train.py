@@ -236,22 +236,53 @@ def save_checkpoint(model, optimizer, learning_rate, iteration, hparams, best_va
     tqdm.write("Saving Complete")
 
 
-def write_dict_to_file(file_losses, fpath, deliminator='","', ends='"'):
-    with open(fpath, 'w') as f:
-        f.write(ends+deliminator.join(['path',]+[str(key) for key in next(iter(file_losses.values())).keys()])+ends)
-        for path, loss_dict in file_losses.items():
-            line = []
-            line.append(path)
-            for loss_name, loss_value in loss_dict.items():
-                line.append(str(loss_value))
-            f.write('\n'+ends+deliminator.join(line)+ends)
+def write_dict_to_file(file_losses, fpath, n_gpus, rank, deliminator='","', ends='"'):
+    if n_gpus > 1:
+        # synchronize data between graphics cards
+        import pickle
+        if rank != 0:# dump file_losses for each graphics card into files
+            print(f"Writing rank {rank} data to {fpath}_rank{rank}")
+            with open(fpath+f'_rank{rank}', 'wb') as pickle_file:
+                pickle.dump(file_losses, pickle_file, pickle.HIGHEST_PROTOCOL)
+        
+        torch.distributed.barrier()# wait till all graphics cards reach this point.
+        
+        if rank == 0:# merge file losses from other graphics cards into main process
+            list_of_dicts = []
+            for f_rank in range(1, n_gpus):
+                list_of_dicts.append(pickle.load(open(f'{fpath}_rank{f_rank}', "rb")))
+            
+            for new_file_losses in list_of_dicts:
+                for path, loss_dict in new_file_losses.items():
+                    if path in file_losses:
+                        if loss_dict['time'] > file_losses[path]['time']:
+                            file_losses[path] = loss_dict
+                    else:
+                        file_losses[path] = loss_dict
+        
+        torch.distributed.barrier()# wait till all graphics cards reach this point.
+        
+        if rank != 0:
+            os.remove(fpath+f'_rank{rank}')
+    
+    if rank == 0:# write file_losses data to .CSV file.
+        print(f"Writing CSV to {fpath}")
+        with open(fpath, 'w') as f:
+            f.write(ends+deliminator.join(['path',]+[str(key) for key in next(iter(file_losses.values())).keys()])+ends)
+            for path, loss_dict in file_losses.items():
+                line = []
+                line.append(path)
+                for loss_name, loss_value in loss_dict.items():
+                    line.append(str(loss_value))
+                f.write('\n'+ends+deliminator.join(line)+ends)
 
 def update_smoothed_dict(orig_dict, new_dict, smoothing_factor=0.6):
     for key, value in new_dict.items():
         if key in orig_dict:# if audio file already in dict, merge new with old using smoothing_factor
             loss_names, loss_values = orig_dict[key].keys(), orig_dict[key].values()
             for loss_name in loss_names:
-                orig_dict[key][loss_name] = orig_dict[key][loss_name]*(smoothing_factor) + new_dict[key][loss_name]*(1-smoothing_factor)
+                if all(type(loss) in [int, float] for loss in [orig_dict[key][loss_name], new_dict[key][loss_name]]):
+                    orig_dict[key][loss_name] = orig_dict[key][loss_name]*(smoothing_factor) + new_dict[key][loss_name]*(1-smoothing_factor)
         else:# if audio file not in dict, assign new key to dict
             orig_dict[key] = new_dict[key]
     return orig_dict
@@ -619,6 +650,10 @@ def train(args, rank, group_name, hparams):
                             checkpoint_path = os.path.join(args.output_directory, "checkpoint_{}".format(iteration))
                             save_checkpoint(model, optimizer, learning_rate, iteration, hparams, best_validation_loss, average_loss, best_val_loss_dict, best_loss_dict, speaker_lookup, checkpoint_path)
                     
+                    if not is_overflow and iteration%dump_filelosses_interval==0:
+                        print("Updating File_losses dict!")
+                        write_dict_to_file(file_losses, os.path.join(args.output_directory, 'file_losses.csv'), args.n_gpus, rank)
+                    
                     if not is_overflow and ((iteration % int(validation_interval) == 0) or (os.path.exists(save_file_check_path)) or (iteration < 1000 and (iteration % 250 == 0))):
                         if rank == 0 and os.path.exists(save_file_check_path):
                             os.remove(save_file_check_path)
@@ -638,7 +673,6 @@ def train(args, rank, group_name, hparams):
                     
                     iteration += 1
                     # end of iteration loop
-                write_dict_to_file(file_losses, os.path.join(args.output_directory, 'file_losses.csv'))
                 # end of epoch loop
             training = False # exit the While loop
         

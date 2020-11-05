@@ -3,13 +3,12 @@ import random
 import numpy as np
 from numpy import finfo
 
-from torch.autograd import Variable
+import torch
+from torch import nn
+from torch.nn import functional as F
 from torch import Tensor
 from typing import List, Tuple, Optional
 
-import torch
-import torch.nn as nn
-import torch.nn.functional as F
 from CookieTTS.utils.model.layers import ConvNorm, ConvNorm2D, LinearNorm
 from CookieTTS.utils.model.GPU import to_gpu
 from CookieTTS.utils.model.utils import get_mask_from_lengths, get_mask_3d

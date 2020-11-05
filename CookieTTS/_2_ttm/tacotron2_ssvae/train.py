@@ -107,7 +107,7 @@ def prepare_dataloaders(hparams, saved_lookup):
     else:
         train_sampler = None
         shuffle = False#True
-
+    
     train_loader = DataLoader(trainset, num_workers=num_workers_, shuffle=shuffle,
                               sampler=train_sampler,
                               batch_size=hparams.batch_size, pin_memory=False,
@@ -192,10 +192,13 @@ def load_checkpoint(checkpoint_path, model, model_d, optimizer, optimizer_d):
     model.load_state_dict(checkpoint_dict['state_dict']) # original
     
     if 'model_d' in checkpoint_dict.keys(): model_d.load_state_dict(checkpoint_dict['model_d'])
-    #if 'optimizer' in checkpoint_dict.keys(): optimizer.load_state_dict(checkpoint_dict['optimizer'])
+    if 'optimizer' in checkpoint_dict.keys():
+        optimizer.load_state_dict(checkpoint_dict['optimizer'])
+    if 'amp' in checkpoint_dict.keys() and amp is not None:
+        amp.load_state_dict(checkpoint_dict['amp'])
+    if 'learning_rate' in checkpoint_dict.keys():
+        learning_rate = checkpoint_dict['learning_rate']
     if 'optimizer_d' in checkpoint_dict.keys(): optimizer_d.load_state_dict(checkpoint_dict['optimizer_d'])
-    if 'amp' in checkpoint_dict.keys(): amp.load_state_dict(checkpoint_dict['amp'])
-    if 'learning_rate' in checkpoint_dict.keys(): learning_rate = checkpoint_dict['learning_rate']
     #if 'hparams' in checkpoint_dict.keys(): hparams = checkpoint_dict['hparams']
     if 'best_validation_loss' in checkpoint_dict.keys(): best_validation_loss = checkpoint_dict['best_validation_loss']
     if 'average_loss' in checkpoint_dict.keys(): average_loss = checkpoint_dict['average_loss']
@@ -204,6 +207,7 @@ def load_checkpoint(checkpoint_path, model, model_d, optimizer, optimizer_d):
     else:
         iteration = checkpoint_dict['iteration']
     saved_lookup = checkpoint_dict['speaker_id_lookup'] if 'speaker_id_lookup' in checkpoint_dict.keys() else None
+    
     print("Loaded checkpoint '{}' from iteration {}" .format(
         checkpoint_path, iteration))
     return model, model_d, optimizer, optimizer_d, learning_rate, iteration, best_validation_loss, saved_lookup
@@ -285,6 +289,7 @@ def validate(hparams, model, model_d, criterion, valset, iteration, batch_size, 
             with torch.random.fork_rng(devices=[0,]):
                 torch.random.manual_seed(0)# use same seed during validation so results are more consistent and comparable.
                 y_pred = model(x, teacher_force_till=val_teacher_force_till, p_teacher_forcing=val_p_teacher_forcing, p_emotionnet_embed=p_emotionnet_embed)
+            
             rate, prob = alignment_metric(x, y_pred)
             diagonality += rate
             avg_prob += prob
@@ -394,6 +399,12 @@ def train(output_directory, log_directory, checkpoint_path, warm_start, warm_sta
     else:
         optimizer_d = None
     optimizer = apexopt.FusedAdam(filter(lambda p: p.requires_grad, model.parameters()), lr=learning_rate, weight_decay=hparams.weight_decay)
+    
+    if True and rank == 0:
+        pytorch_total_params = sum(p.numel() for p in model.parameters())
+        print("{:,} total parameters in model".format(pytorch_total_params))
+        pytorch_total_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
+        print("{:,} trainable parameters.".format(pytorch_total_params))
     
     if hparams.fp16_run:
         model, optimizer = amp.initialize(model, optimizer, opt_level='O2')
@@ -516,6 +527,7 @@ def train(output_directory, log_directory, checkpoint_path, warm_start, warm_sta
             }
             loss, gate_loss, loss_terms, reduced_loss, reduced_gate_loss, grad_norm, is_overflow = criterion(
                  y_pred, y, criterion_dict, iteration, em_kl_weight=em_kl_weight, DiagonalGuidedAttention_scalar=DiagonalGuidedAttention_scalar)
+            
             
             if not is_overflow and rank == 0:
                 duration = time.time() - start_time

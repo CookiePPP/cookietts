@@ -1,4 +1,5 @@
 import os
+os.environ["LRU_CACHE_CAPACITY"] = "3"# reduces RAM usage massively with pytorch 1.4 or older
 import time
 import argparse
 import math
@@ -12,8 +13,7 @@ from torch.utils.data.distributed import DistributedSampler
 from torch.utils.data import DataLoader
 from torch.optim.lr_scheduler import ReduceLROnPlateau
 
-from model import load_model
-from model import UnTTS
+from model import UnTTS, load_model
 from data_utils import TextMelLoader, TextMelCollate
 from loss_function import Tacotron2Loss
 from logger import Tacotron2Logger
@@ -66,7 +66,7 @@ def init_distributed(hparams, n_gpus, rank, group_name):
 
     # Set cuda device so everything is done on the right GPU.
     torch.cuda.set_device(rank % torch.cuda.device_count())
-
+    
     # Initialize distributed communication
     dist.init_process_group(
         backend=hparams.dist_backend, init_method=hparams.dist_url,
@@ -85,7 +85,7 @@ def prepare_dataloaders(hparams, saved_lookup):
     collate_fn = TextMelCollate(hparams)
     
     if hparams.distributed_run:
-        train_sampler = DistributedSampler(trainset,shuffle=False)#True)
+        train_sampler = DistributedSampler(trainset, shuffle=False)#True)
         shuffle = False
     else:
         train_sampler = None
@@ -111,7 +111,7 @@ def prepare_directories_and_logger(hparams, output_directory, log_directory, ran
 
 def warm_start_force_model(checkpoint_path, model):
     assert os.path.isfile(checkpoint_path)
-    print("Warm starting model from checkpoint '{}'".format(checkpoint_path))
+    print(f"Warm starting model from checkpoint '{checkpoint_path}'")
     checkpoint_dict = torch.load(checkpoint_path, map_location='cpu')
     pretrained_dict = checkpoint_dict['state_dict']
     model_dict = model.state_dict()
@@ -125,6 +125,7 @@ def warm_start_force_model(checkpoint_path, model):
     if pretrained_missing: print(list(pretrained_missing.keys()),"doesn't have pretrained weights and has been reset")
     model_dict.update(filtered_dict)
     model.load_state_dict(model_dict)
+    
     iteration = 0
     saved_lookup = checkpoint_dict['speaker_id_lookup'] if 'speaker_id_lookup' in checkpoint_dict.keys() else None
     return model, iteration, saved_lookup
@@ -171,11 +172,11 @@ def load_checkpoint(checkpoint_path, model, optimizer, best_val_loss_dict, best_
         best_loss_dict = checkpoint_dict['best_loss_dict']
     if 'average_loss' in checkpoint_dict.keys():
         average_loss = checkpoint_dict['average_loss']
-    if (start_from_checkpoints_from_zero):
-        iteration = 0
-    else:
-        iteration = checkpoint_dict['iteration']
+	
+	
+	iteration = 0 if start_from_checkpoints_from_zero else checkpoint_dict['iteration']
     saved_lookup = checkpoint_dict['speaker_id_lookup'] if 'speaker_id_lookup' in checkpoint_dict.keys() else None
+    
     print("Loaded checkpoint '{}' from iteration {}" .format(
         checkpoint_path, iteration))
     return model, optimizer, learning_rate, iteration, best_validation_loss, saved_lookup, best_val_loss_dict, best_loss_dict
@@ -220,7 +221,10 @@ def validate(model, criterion, valset, loss_scalars, best_val_loss_dict, iterati
         loss_dict_total = None
         for i, batch in tqdm(enumerate(val_loader), desc="Validation", total=len(val_loader), smoothing=0): # i = index, batch = stuff in array[i]
             x, y = model.parse_batch(batch)
-            y_pred = model(x)
+            with torch.random.fork_rng(devices=[0,]):
+                torch.random.manual_seed(0)# use same seed during validation so results are more consistent and comparable.
+                y_pred = model(x)
+            
             loss_dict = criterion(y_pred, y, loss_scalars)
             if loss_dict_total is None:
                 loss_dict_total = {k: 0. for k, v in loss_dict.items()}
@@ -229,15 +233,15 @@ def validate(model, criterion, valset, loss_scalars, best_val_loss_dict, iterati
                 reduced_loss_dict = {k: reduce_tensor(v.data, n_gpus).item() if v is not None else 0. for k, v in loss_dict.items()}
             else:
                 reduced_loss_dict = {k: v.item() if v is not None else 0. for k, v in loss_dict.items()}
-            reduced_loss = reduced_loss_dict['loss']
             
             for k in loss_dict_total.keys():
                 loss_dict_total[k] = loss_dict_total[k] + reduced_loss_dict[k]
+            loss_terms_arr.append(loss_terms)
+            val_loss += reduced_val_loss
             # end forloop
         loss_dict_total = {k: v/(i+1) for k, v in loss_dict_total.items()}
         # end torch.no_grad()
     model.train()
-    
     
     if best_val_loss_dict is None:
         best_val_loss_dict = loss_dict_total
@@ -245,9 +249,11 @@ def validate(model, criterion, valset, loss_scalars, best_val_loss_dict, iterati
         best_val_loss_dict = {k: min(best_val_loss_dict[k], loss_dict_total[k]) for k in best_val_loss_dict.keys()}
     
     if rank == 0:
-        tqdm.write(f"Validation loss {iteration}: {reduced_loss:9f}")
+        tqdm.write(f"Validation loss {iteration}: {val_loss:9f}")
         logger.log_validation(loss_dict_total, best_val_loss_dict, model, y, y_pred, iteration)
-    return reduced_loss, best_val_loss_dict
+    
+    return best_val_loss_dict['loss'], best_val_loss_dict
+
 
 
 def train(output_directory, log_directory, checkpoint_path, warm_start, warm_start_force, n_gpus,
@@ -274,7 +280,9 @@ def train(output_directory, log_directory, checkpoint_path, warm_start, warm_sta
     torch.cuda.manual_seed(hparams.seed)
     
     # initialize blank model
+    print('Initializing UnTTS...')
     model = load_model(hparams)
+    print('Done')
     model.eval()
     learning_rate = hparams.learning_rate
     
@@ -311,7 +319,8 @@ def train(output_directory, log_directory, checkpoint_path, warm_start, warm_sta
         hparams, output_directory, log_directory, rank)
     
     # Load checkpoint if one exists
-    best_validation_loss = 0.8 # used to see when "best_model" should be saved, default = 0.4, load_checkpoint will update to last best value.
+    best_validation_loss = 1e3 # used to see when "best_model" should be saved
+
     n_restarts = 0
     checkpoint_iter = 0
     iteration = 0
@@ -348,6 +357,14 @@ def train(output_directory, log_directory, checkpoint_path, warm_start, warm_sta
     train_loader, valset, collate_fn, train_sampler, trainset = prepare_dataloaders(hparams, saved_lookup)
     epoch_offset = max(0, int(iteration / len(train_loader)))
     speaker_lookup = trainset.speaker_ids
+    
+    # load and/or generate global_mean
+    if hparams.drop_frame_rate > 0.:
+        if rank != 0: # if global_mean not yet calcuated, wait for main thread to do it
+            while not os.path.exists(hparams.global_mean_npy): time.sleep(1)
+        global_mean = calculate_global_mean(train_loader, hparams.global_mean_npy, hparams)
+        hparams.global_mean = global_mean
+        model.global_mean = global_mean
     
     # define scheduler
     use_scheduler = 0
@@ -389,9 +406,9 @@ def train(output_directory, log_directory, checkpoint_path, warm_start, warm_sta
                                     ldict = {'iteration': iteration, 'checkpoint_iter': checkpoint_iter, 'n_restarts': n_restarts}
                                     exec(internal_text, globals(), ldict)
                                 else:
-                                    print("No Custom code found, continuing without changes.")
+                                    print("[info] tried to execute 'run_every_epoch.py' but it is empty")
                         except Exception as ex:
-                            print(f"Custom code FAILED to run!\n{ex}")
+                            print(f"[warning] 'run_every_epoch.py' FAILED to execute!\nException:\n{ex}")
                         globals().update(ldict)
                         locals().update(ldict)
                         if show_live_params:
@@ -416,7 +433,7 @@ def train(output_directory, log_directory, checkpoint_path, warm_start, warm_sta
                             param_group['lr'] = learning_rate
                     # /run external code every epoch, allows the run to be adjusting without restarts/
                     model.zero_grad()
-                    x, y = model.parse_batch(batch)
+                    x, y = model.parse_batch(batch) # move batch to GPU (async)
                     y_pred = model(x)
                     
                     loss_scalars = {
@@ -549,7 +566,9 @@ if __name__ == '__main__':
     parser.add_argument('--warm_start_force', action='store_true',
                         help='load model weights only, ignore all missing/non-matching layers')
     parser.add_argument('--detect_anomaly', action='store_true',
-                        help='load model weights only, ignore all missing/non-matching layers')
+                        help='detects NaN/Infs in autograd backward pass and gives additional debug info.')
+    parser.add_argument('--gen_mels', action='store_true',
+                        help='Generate mel spectrograms. This will help reduce the memory required.')
     parser.add_argument('--n_gpus', type=int, default=1,
                         required=False, help='number of gpus')
     parser.add_argument('--rank', type=int, default=0,
@@ -571,19 +590,25 @@ if __name__ == '__main__':
     print("cuDNN Enabled:", hparams.cudnn_enabled)
     print("cuDNN Benchmark:", hparams.cudnn_benchmark)
 
-    if gen_new_mels:
-        print("Generating Mels"); create_mels(); print("Finished Generating Mels")
+    if args.gen_mels:
+        print("Generating Mels...")
+        create_mels(hparams)
+        print("Finished Generating Mels")
     
     if args.detect_anomaly: # checks backprop for NaN/Infs and outputs very useful stack-trace. Runs slower while enabled.
         torch.autograd.set_detect_anomaly(True)
         print("Autograd Anomaly Detection Enabled!\n(Code will run slower but backward pass will output useful info if crashing or NaN/inf values)")
     
     # these are needed for fp16 training, not inference
-    from apex import optimizers as apexopt
     if hparams.fp16_run:
         from apex import amp
     else:
+        global amp
         amp = None
+    try:
+        from apex import optimizers as apexopt
+    except:
+        pass
     
     train(args.output_directory, args.log_directory, args.checkpoint_path,
           args.warm_start, args.warm_start_force, args.n_gpus, args.rank, args.group_name, hparams)

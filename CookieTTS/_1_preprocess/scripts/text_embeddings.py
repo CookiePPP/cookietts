@@ -32,7 +32,7 @@ def write_hidden_states(path_quote_pairs, BATCH_SIZE=50, maxlen=120, name_extens
     
     st = SentenceTokenizer(vocabulary, maxlen)
     
-    print('Loading model from {}.'.format(PRETRAINED_PATH))
+    print(f'Loading model from {PRETRAINED_PATH}.')
     model = torchmoji_feature_encoding(PRETRAINED_PATH)
     
     print('Running predictions with TorchMoji.')
@@ -47,7 +47,7 @@ def write_hidden_states(path_quote_pairs, BATCH_SIZE=50, maxlen=120, name_extens
             filepath_without_ext = ".".join(paths[j].split(".")[:-1])
             path_path_len = min(len(filepath_without_ext), max_path_len)
             file_path_safe = filepath_without_ext[0:path_path_len]
-            new_path = file_path_safe + name_extension + ".npy"
+            new_path = os.path.splitext(paths[j])[0]+'_tm.pt'
             np.save(new_path, embedding[j])
             new_paths.append(new_path)
     assert len(new_paths) == len(path_quote_pairs), f'new_path and path_quote_pairs have different length.\nTorchMoji likely failed to tokenize one of the inputs.\nlen(new_paths) = {len(new_paths)}\nlen(path_quote_pairs) = {len(path_quote_pairs)}'

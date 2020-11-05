@@ -1,15 +1,9 @@
-# This repo does not work!
+# This repo kinda works!
 
 Check back in a week. Thanks.
 
 Missing stuff;
-
-- Pitch preprocessing
-- Energy preprocessing
-- Normalize transcripts before running Montreal Forced Aligner 
-- Tacotron2, Flow-TTS and WaveGlow support for `.json` filelists.
-- Flow-TTS (pretrained model and guided Attention)
-- WaveFlow (the entire thing)
+- Normalize transcripts before running Montreal Forced Aligner
 
 ---
 
