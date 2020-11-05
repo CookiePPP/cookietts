@@ -1,7 +1,8 @@
 import numpy as np
 import torch
-from scipy.io.wavfile import read
 import soundfile as sf
+import librosa
+from scipy.io.wavfile import read
 
 def load_wav_to_torch(full_path, target_sr=None, min_sr=None, return_empty_on_exception=False):
     sampling_rate = None
@@ -9,9 +10,11 @@ def load_wav_to_torch(full_path, target_sr=None, min_sr=None, return_empty_on_ex
         data, sampling_rate = sf.read(full_path, always_2d=True)# than soundfile.
     except Exception as ex:
         print(f"'{full_path}' failed to load.\nException:")
-        print(ex)
         if return_empty_on_exception:
+            print(ex)
             return [], sampling_rate or target_sr or 48000
+        else:
+            raise ex
     
     assert min_sr < sampling_rate, f'Expected sampling_rate greater than or equal to {min_sr:.0f}, got {sampling_rate:.0f}.\nPath = "{full_path}"'
     
@@ -31,6 +34,10 @@ def load_wav_to_torch(full_path, target_sr=None, min_sr=None, return_empty_on_ex
         if (torch.isinf(data) | torch.isnan(data)).any() and return_empty_on_exception:# resample will crash with inf/NaN inputs. return_empty_on_exception will return empty arr instead of except
             return [], sampling_rate or target_sr or 48000
         data = torch.from_numpy(librosa.core.resample(data.numpy(), sampling_rate, target_sr))
+        
+        abs_max = data.abs().max()
+        if abs_max > 1.0:
+            data /= abs_max
         sampling_rate = target_sr
     
     return data, sampling_rate

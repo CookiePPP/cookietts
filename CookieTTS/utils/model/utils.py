@@ -42,3 +42,53 @@ def dropout_frame(mels, global_mean, mel_lengths, drop_frame_rate):
     dropped_mels = (mels * (~drop_mask).unsqueeze(1) +
                     global_mean[None, :, None] * drop_mask.unsqueeze(1))
     return dropped_mels
+    
+def alignment_metric(alignments, input_lengths=None, output_lengths=None, average_across_batch=False):
+    alignments = alignments.transpose(1,2) # [B, dec, enc] -> [B, enc, dec]
+    # alignments [batch size, x, y]
+    # input_lengths [batch size] for len_x
+    # output_lengths [batch size] for len_y
+    if input_lengths == None:
+        input_lengths =  torch.ones(alignments.size(0), device=alignments.device)*(alignments.shape[1]-1) # [B] # 147
+    if output_lengths == None:
+        output_lengths = torch.ones(alignments.size(0), device=alignments.device)*(alignments.shape[2]-1) # [B] # 767
+    batch_size = alignments.size(0)
+    optimums = torch.sqrt(input_lengths.double().pow(2) + output_lengths.double().pow(2)).view(batch_size)
+    
+    # [B, enc, dec] -> [B, dec], [B, dec]
+    values, cur_idxs = torch.max(alignments, 1) # get max value in column and location of max value
+    
+    cur_idxs = cur_idxs.float()
+    prev_indx = torch.cat((cur_idxs[:,0][:,None], cur_idxs[:,:-1]), dim=1) # shift entire tensor by one.
+    dist = ((prev_indx - cur_idxs).pow(2) + 1).pow(0.5) # [B, dec]
+    dist.masked_fill_(~get_mask_from_lengths(output_lengths, max_len=dist.size(1)), 0.0) # set dist of padded to zero
+    dist = dist.sum(dim=(1)) # get total dist for each B
+    diagonalitys = (dist + 1.4142135)/optimums # dist / optimal dist
+    
+    alignments.masked_fill_(~get_mask_from_lengths(output_lengths, max_len=alignments.size(2))[:,None,:], 0.0)
+    attm_enc_total = torch.sum(alignments, dim=2)# [B, enc, dec] -> [B, enc]
+    
+    # calc max (with padding ignored)
+    attm_enc_total.masked_fill_(~get_mask_from_lengths(input_lengths, max_len=attm_enc_total.size(1)), 0.0)
+    encoder_max_focus = attm_enc_total.max(dim=1)[0] # [B, enc] -> [B]
+    
+    # calc mean (with padding ignored)
+    encoder_avg_focus = attm_enc_total.mean(dim=1)   # [B, enc] -> [B]
+    encoder_avg_focus *= (attm_enc_total.size(1)/input_lengths.float())
+    
+    # calc min (with padding ignored)
+    attm_enc_total.masked_fill_(~get_mask_from_lengths(input_lengths, max_len=attm_enc_total.size(1)), 1.0)
+    encoder_min_focus = attm_enc_total.min(dim=1)[0] # [B, enc] -> [B]
+    
+    # calc average max attention (with padding ignored)
+    values.masked_fill_(~get_mask_from_lengths(output_lengths, max_len=values.size(1)), 0.0) # because padding
+    avg_prob = values.mean(dim=1)
+    avg_prob *= (alignments.size(2)/output_lengths.float()) # because padding
+    
+    if average_across_batch:
+        diagonalitys = diagonalitys.mean()
+        encoder_max_focus = encoder_max_focus.mean()
+        encoder_min_focus = encoder_min_focus.mean()
+        encoder_avg_focus = encoder_avg_focus.mean()
+        avg_prob = avg_prob.mean()
+    return diagonalitys, avg_prob, encoder_max_focus, encoder_min_focus, encoder_avg_focus

@@ -27,6 +27,9 @@ def rename_argdict(argdict, replace_dict={}, invert=True):
     argdict = {replace_dict[k] if k in replace_dict else k: v for k,v in argdict.items()}
     return argdict
 
-def force(func, *args, **kwargs):
-    valid_kwargs = get_args(func)
+def force(func, valid_kwargs=None, *args, **kwargs):
+    if valid_kwargs is True:
+        return func(*args, **kwargs)
+    elif valid_kwargs is None:
+        valid_kwargs = get_args(func)
     return func(*args, **{k:v for k,v in kwargs.items() if k in valid_kwargs})

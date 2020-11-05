@@ -6,13 +6,26 @@ import numpy as np
 import torch
 import torch.utils.data
 import torch.nn.functional as F
-import librosa
-import syllables
 
+# audio processing
+import librosa
+import pyworld as pw
 import CookieTTS.utils.audio.stft as STFT
 from CookieTTS.utils.dataset.utils import load_wav_to_torch, load_filepaths_and_text
+
+# text processing
 from CookieTTS.utils.text import text_to_sequence
 from CookieTTS.utils.text.ARPA import ARPA
+
+# torchmoji text processing
+import json
+from CookieTTS.utils.torchmoji.sentence_tokenizer import SentenceTokenizer
+from CookieTTS.utils.torchmoji.model_def import torchmoji_feature_encoding
+from CookieTTS.utils.torchmoji.global_variables import PRETRAINED_PATH, VOCAB_PATH
+
+# misc
+import syllables
+
 
 @torch.jit.script
 def DTW(batch_pred, batch_target, scale_factor: int, range_: int):
@@ -53,14 +66,48 @@ def DTW(batch_pred, batch_target, scale_factor: int, range_: int):
         batch_pred_dtw[i:i+1] = pred_dtw
     return batch_pred_dtw
 
-class TextMelLoader(torch.utils.data.Dataset):
+def tryattr(obj, attr, default=None):
+    if type(attr) is str:
+        attr = (attr,)
+    val = None
+    for attr_ in attr:
+        val = val or getattr(obj, attr_, '')
+    if default is None:
+        assert val is not '', f'attr {attr} not found in obj'
+    elif val is '':
+        return default
+    return val
+
+class config:
+    def __init__(self, hparams, dict_path, speaker_ids):
+        hparams = AttrDict(hparams) if type(hparams) == dict else hparams
+        self.get_params(hparams, dict_path, speaker_ids)
+    
+    def get_params(hparams, dict_path, speaker_ids):
+        """Try a buncha names for params in config file. Easier than manually making each repo's config match."""
+        self.win_length = tryattr(hparams, ("window_length","window_len","win_len","win_size","window_size"))
+        self.hop_length = tryattr(hparams, ("hop_length","hop_len","hop_size"))
+        self.fft_length = tryattr(hparams, ("filter_length","fft_length","fft_len","filter_len","filter_size","fft_size"))
+        self.mel_fmin   = tryattr(hparams, ("mel_fmin","fmin","freq_min",))
+        self.mel_fmax   = tryattr(hparams, ("mel_fmax","fmax","freq_max",))
+        self.n_mel      = tryattr(hparams, ("n_mel","n_mel_channels","num_mels",))
+        self.sampling_rate = tryattr(hparams, ("sampling_rate","sample_rate","samplerate",))
+        
+        self.p_arpabet     = tryattr(hparams, ("p_arpabet","use_arpabet", "arpabet", "cmudict", "use_cmudict"), 1.0)
+        self.dict_path     = dict_path or tryattr(hparams, ("dict_path",))
+        self.text_cleaners = tryattr(hparams, ("text_cleaners",))
+        self.start_token   = tryattr(hparams, ("start_token",), '')
+        self.stop_token    = tryattr(hparams, ("stop_token" ,), '')
+
+class TTSDataset(torch.utils.data.Dataset):
     """
         1) loads audio,text pairs
         2) normalizes text and converts them to sequences of one-hot vectors
         3) computes mel-spectrograms from audio files.
     """
-    def __init__(self, filelist, hparams, check_files=True, TBPTT=True, shuffle=False, speaker_ids=None, audio_offset=0, verbose=False):
+    def __init__(self, filelist, hparams, args, check_files=True, TBPTT=True, shuffle=False, speaker_ids=None, audio_offset=0, verbose=False):
         self.filelist = load_filepaths_and_text(filelist)
+        self.args = args
         
         #####################
         ## Text / Phonemes ##
@@ -69,9 +116,21 @@ class TextMelLoader(torch.utils.data.Dataset):
         self.arpa = ARPA(hparams.dict_path)
         self.p_arpabet     = hparams.p_arpabet
         
-        self.emotion_classes    = getattr(hparams, "emotion_classes", list())
-        self.n_classes          = len(self.emotion_classes)
-        self.audio_offset       = audio_offset
+        self.emotion_classes = getattr(hparams, "emotion_classes", list())
+        self.n_classes       = len(self.emotion_classes)
+        self.audio_offset    = audio_offset
+        
+        #####################
+        ## TorchMoji Embed ##
+        #####################
+        print(f'Tokenizing using dictionary from {VOCAB_PATH}')
+        with open(VOCAB_PATH, 'r') as f:
+            vocabulary = json.load(f)
+        
+        self.torchmoji_tokenizer = SentenceTokenizer(vocabulary, fixed_length=120)
+        
+        print(f'Loading model from {PRETRAINED_PATH}.')
+        self.torchmoji_model = torchmoji_feature_encoding(PRETRAINED_PATH)
         
         #################
         ## Speaker IDs ##
@@ -89,11 +148,12 @@ class TextMelLoader(torch.utils.data.Dataset):
         self.start_token = hparams.start_token
         self.stop_token  = hparams.stop_token
         if check_files:
-            self.checkdataset(show_warnings=True, show_info=verbose)
+            self.check_dataset()
         
         ###############################
         ## Mel-Spectrogram Generator ##
         ###############################
+        self.cache_mel = getattr(hparams, "cache_mel", True)
         self.sampling_rate = hparams.sampling_rate
         self.filter_length = hparams.filter_length
         self.hop_length    = hparams.hop_length
@@ -107,7 +167,9 @@ class TextMelLoader(torch.utils.data.Dataset):
         self.silence_value     = hparams.silence_value
         self.silence_pad_start = hparams.silence_pad_start# frames to pad the start of each clip
         self.silence_pad_end   = hparams.silence_pad_end  # frames to pad the end of each clip
+        self.context_frames    = hparams.context_frames
         
+        self.random_segments = getattr(hparams, 'random_segments', False)
         ################################################
         ## (Optional) Apply weighting to MLP Datasets ##
         ################################################
@@ -184,7 +246,7 @@ class TextMelLoader(torch.utils.data.Dataset):
         
         self.len = len(self.dataloader_indexes)
     
-    def checkdataset(self, show_warnings=False, show_info=False, max_frames_per_char=80): # TODO, change for list comprehension which is a few magnitudes faster.
+    def check_dataset(self):
         print("Checking dataset files...")
         audiopaths_length = len(self.filelist)
         filtered_chars = ["☺","␤"]
@@ -199,74 +261,10 @@ class TextMelLoader(torch.utils.data.Dataset):
             for filtered_char in filtered_chars:
                 self.filelist[index][1] = self.filelist[index][1].replace(filtered_char,"")
             self.filelist[index][1] = start_token + self.filelist[index][1] + stop_token
-        i = 0
-        i_offset = 0
-        for i_ in range(len(self.filelist)):
-            i = i_ + i_offset # iterating on an array you're also updating will cause some indexes to be skipped.
-            if i == len(self.filelist): break
-            file = self.filelist[i]
-            if self.load_mel_from_disk and '.wav' in file[0]:
-                if show_warnings:
-                    print("|".join(file), "\n[warning] in filelist while expecting '.npy' . Being Ignored.")
-                self.filelist.remove(file)
-                i_offset-=1
-                continue
-            elif not self.load_mel_from_disk and '.npy' in file[0]:
-                if show_warnings:
-                    print("|".join(file), "\n[warning] in filelist while expecting '.wav' . Being Ignored.")
-                self.filelist.remove(file)
-                i_offset-=1
-                continue
-            if not os.path.exists(file[0]):
-                if show_warnings:
-                    print("|".join(file), "\n[warning] does not exist and has been ignored")
-                self.filelist.remove(file)
-                i_offset-=1
-                continue
-            if not len(file[1]):
-                if show_warnings:
-                    print("|".join(file), "\n[warning] has no text and has been ignored.")
-                self.filelist.remove(file)
-                i_offset-=1
-                continue
-            if len(file[1]) < 3:
-                if show_warnings and show_info:
-                    print("|".join(file), "\n[info] has no/very little text.")
-            if not ((file[1].strip())[-1] in r"!?,.;:♫␤"):
-                if show_warnings and show_info:
-                    print("|".join(file), "\n[info] has no ending punctuation.")
-            if self.load_mel_from_disk:
-                melspec = torch.from_numpy(np.load(file[0], allow_pickle=True))
-                mel_length = melspec.shape[1]
-                if mel_length == 0:
-                    if show_warnings:
-                        print("|".join(file), "\n[warning] has 0 duration and has been ignored")
-                    self.filelist.remove(file)
-                    i_offset-=1
-                    continue
-                if False and mel_length > self.max_segment_length:# Disabled, need to be added to config
-                    if show_warnings:
-                        print("|".join(file), f"\n[warning] is over {self.max_segment_length} frames long and has been ignored.")
-                    self.filelist.remove(file)
-                    i_offset-=1
-                    continue
-                if (mel_length / len(file[1])) > max_frames_per_char:
-                    print("|".join(file), f"\n[warning] has more than {max_frames_per_char} frames per char. ({(mel_length / len(file[1])):.4})")
-                    self.filelist.remove(file)
-                    i_offset-=1
-                    continue
-            if any(i in file[1] for i in banned_strings):
-                if show_warnings and show_info:
-                    print("|".join(file), "\n[info] is in banned strings and has been ignored.")
-                self.filelist.remove(file)
-                i_offset-=1
-                continue
-            if any(i in file[0] for i in banned_paths):
-                if show_warnings and show_info:
-                    print("|".join(file), "\n[info] is in banned paths and has been ignored.")
-                self.filelist.remove(file)
-                i_offset-=1
-                continue
+        
+        print(f"{len([x for x in self.filelist if not os.path.exists(x[0])])} Files missing")
+        self.filelist = [x for x in self.filelist if os.path.exists(x[0])]
+        
         print("Done")
         print(audiopaths_length, "items in metadata file")
         print(len(self.filelist), "validated and being used.")
@@ -287,7 +285,7 @@ class TextMelLoader(torch.utils.data.Dataset):
         return d
     
     def get_audio(self, filepath):
-        audio, sampling_rate = load_wav_to_torch(filepath, min_sr=self.mel_fmax*2)
+        audio, sampling_rate = load_wav_to_torch(filepath, min_sr=self.mel_fmax*2, target_sr=self.sampling_rate)
         return audio, sampling_rate
     
     def get_mel_from_audio(self, audio, sampling_rate):
@@ -298,8 +296,8 @@ class TextMelLoader(torch.utils.data.Dataset):
         melspec = self.stft.mel_spectrogram(audio.unsqueeze(0)).squeeze(0)
         return melspec
     
-    def get_mel_from_npfile(self, filepath):
-        melspec = torch.from_numpy(np.load(filepath)).float()
+    def get_mel_from_ptfile(self, filepath):
+        melspec = torch.load(filepath).float()
         assert melspec.size(0) == self.stft.n_mel_channels, (f'Mel dimension mismatch: given {melspec.size(0)}, expected {self.stft.n_mel_channels}')
         return melspec
     
@@ -324,7 +322,10 @@ class TextMelLoader(torch.utils.data.Dataset):
         y = torch.eye(num_classes)
         return y[labels]
     
-    def get_mel_text_pair(self, index, args):# get args using get_args() from CookieTTS.utils
+    def get_mel_text_pair(self, index):# get args using get_args() from CookieTTS.utils
+        args = self.args
+        output = {}
+
         filelist_index, spectrogram_offset = self.dataloader_indexes[index]
         prev_filelist_index, prev_spectrogram_offset = self.dataloader_indexes[max(0, index-self.total_batch_size)]
         is_not_last_iter = index+self.total_batch_size < self.len
@@ -333,8 +334,8 @@ class TextMelLoader(torch.utils.data.Dataset):
         output['pres_prev_state'] = torch.tensor(True if (filelist_index == prev_filelist_index) else False)# preserve model state if this iteration is continuing the file from the last iteration.
         output['cont_next_iter'] = torch.tensor(True if (filelist_index == next_filelist_index) else False)# whether this file continued into the next iteration
         
-        #audiopath, gtext, ptext, speaker_id, *_ = self.filelist[filelist_index]
-        audiopath, text, speaker_id, *_ = self.filelist[filelist_index]
+        #audiopath, gtext, ptext, speaker_id_ext, *_ = self.filelist[filelist_index]
+        audiopath, text, speaker_id_ext, *_ = self.filelist[filelist_index]
         output['audiopath'] = audiopath
         
         if True or any(arg in ['gt_audio','gt_mel','gt_frame_f0','gt_frame_energy','gt_frame_voiced','gt_char_f0','gt_char_energy','gt_char_voiced'] for arg in args):
@@ -345,15 +346,28 @@ class TextMelLoader(torch.utils.data.Dataset):
                 output['sampling_rate'] = torch.tensor(float(sampling_rate))
         
         if any([arg in ('gt_mel','dtw_pred_mel') for arg in args]):
+            
             # get mel
-            mel = self.get_mel_from_audio(audio, sampling_rate)
+            mel_path = os.path.splitext(audiopath)[0]+'.gt_mel.pt'
+            mel = None
+            if self.cache_mel and os.path.exists(mel_path):
+                try:
+                    mel = torch.load(mel_path)
+                    mel = None if mel.shape[0] != self.stft.n_mel_channels else mel
+                except:
+                    mel = None
+            
+            if mel is None:
+                mel = self.get_mel_from_audio(audio, sampling_rate)
+                if self.cache_mel:
+                    torch.save(mel, mel_path)
             
             # add silence
             mel = torch.cat((
                 torch.ones(self.stft.n_mel_channels, self.silence_pad_start)*self.silence_value, # add silence to start of file
                 mel,# get mel-spec as tensor from audiofile.
                 torch.ones(self.stft.n_mel_channels, self.silence_pad_end)*self.silence_value, # add silence to end of file
-                ), dim=1)# arr -> [n_mel, mel_T]
+            ), dim=1)# arr -> [n_mel, mel_T]
             
             init_mel = F.pad(mel, (self.context_frames, 0))[:, int(spectrogram_offset):int(spectrogram_offset)+self.context_frames]
             # initial input to the decoder. zeros if this is first segment of this file, else last frame of prev segment.
@@ -363,8 +377,9 @@ class TextMelLoader(torch.utils.data.Dataset):
             del mel, init_mel
         
         if any([arg in ('pred_mel','dtw_pred_mel') for arg in args]):
-            if os.path.exists( os.path.splitext(audiopath)[0]+'_pred.npy' ):
-                pred_mel = self.get_mel_from_npfile( os.path.splitext(audiopath)[0]+'_pred.npy' )
+            pred_mel_path = os.path.splitext(audiopath)[0]+'.pred_mel.pt'
+            if os.path.exists( pred_mel_path ):
+                pred_mel = self.get_mel_from_ptfile( pred_mel_path )
                 
                 # add silence
                 pred_mel = torch.cat((
@@ -405,9 +420,14 @@ class TextMelLoader(torch.utils.data.Dataset):
             gt_emotion_onehot = self.one_hot_embedding(gt_emotion_id, num_classes=self.n_classes+1).squeeze(0)[:-1]# [n_classes]
             output['gt_emotion_onehot'] = gt_emotion_onehot
         
-        if 'torchmoij_hdn' in args:
-            torchmoji = self.get_torchmoji_hidden( os.path.splitext(audiopath)[0]+'_tm.npy' )
-            output['torchmoij_hdn'] = torchmoji
+        if 'torchmoji_hdn' in args:
+            tm_path = os.path.splitext(audiopath)[0]+'_tm.pt'
+            if os.path.exists(tm_path):
+                torchmoji = self.get_torchmoji_hidden_from_file(tm_path)
+            else:
+                torchmoji = self.get_torchmoji_hidden_from_text(output['gtext_str'])
+                torch.save(torchmoji, tm_path)
+            output['torchmoji_hdn'] = torchmoji# [Embed]
         
         if 'gt_perc_loudness' in args:
             output['gt_perc_loudness'] = self.get_perc_loudness(audio, sampling_rate)
@@ -459,9 +479,14 @@ class TextMelLoader(torch.utils.data.Dataset):
         
         return output
     
-    def get_torchmoji_hidden(self, fpath):
-        hidden_state = np.load(fpath)
-        return torch.from_numpy(hidden_state).float()
+    def get_torchmoji_hidden_from_file(self, fpath):
+        return torch.load(fpath).float()
+    
+    def get_torchmoji_hidden_from_text(self, text):
+        with torch.no_grad():
+            tokenized, _, _ = self.torchmoji_tokenizer.tokenize_sentences([text,])
+            embed = self.torchmoji_model(tokenized)
+        return torch.from_numpy(embed).squeeze(0).float()# [Embed]
     
     def get_alignments(self, audiopath, arpa=False):
         if arpa:
@@ -556,12 +581,10 @@ class TextMelLoader(torch.utils.data.Dataset):
         return self.len
 
 
-class TextMelCollate():
-    """ Zero-pads model inputs and targets based on number of frames per setep
-    """
+class Collate():
     def __init__(self, hparams):
         self.n_frames_per_step = hparams.n_frames_per_step
-        self.n_classes = len(getattr(hparams, "emotion_classes", list())
+        self.n_classes = len(getattr(hparams, "emotion_classes", list()))
         self.context_frames = getattr(hparams, "context_frames", 1)
         self.sort_text_len_decending = True
     
@@ -595,15 +618,15 @@ class TextMelCollate():
             [B]
         """
         B = len(tensor_arr)
-        max_len = max(x.shape[-1] for x in tensor_arr) if max_len is None else max_len
+        max_len = max(x.shape[-1] if len(x.shape) else 1 for x in tensor_arr) if max_len is None else max_len
         dtype = tensor_arr[0].dtype if dtype is None else dtype
         device = tensor_arr[0].device if device is None else device
         if index_lookup is None:
-            index_lookup = {i:i for i in range(B)}
+            index_lookup = list(range(B))
         else:
-            assert len(index_lookup.keys()) == B, f'lookup has {len(index_lookup.keys())} keys, expected {B}.'
+            assert len(index_lookup) == B, f'lookup has {len(index_lookup.keys())} keys, expected {B}.'
         
-        if all(len(tensor_arr[i].view(-1)) == 1 for i in range(B)):
+        if all(not any(dim > 1 for dim in tensor_arr[i].shape) for i in range(B)):
             output = torch.zeros(B, device=device, dtype=dtype)
             for i, _ in enumerate(tensor_arr):
                 output[i] = tensor_arr[index_lookup[i]].to(device, dtype)
@@ -613,11 +636,11 @@ class TextMelCollate():
                 output *= pad_val
             for i, _ in enumerate(tensor_arr):
                 item = tensor_arr[index_lookup[i]].to(device, dtype)
-                output[i, :item.shape[1]] = item
+                output[i, :item.shape[0]] = item
         elif len(tensor_arr[0].shape) == 2:
-            C = max(tensor_arr[i].shape[1] for i in range(B))
+            C = max(tensor_arr[i].shape[0] for i in range(B))
             if check_const_channels:
-                assert all(C == item.shape[1] for item in tensor_arr), f'an item in input has channel_dim != channel_dim of the first item.\n{"\n".join(["Shape "+str(i)+" = "+str(item.shape) for i, item in enumerate(tensor_arr)])}'
+                assert all(C == item.shape[0] for item in tensor_arr), f'an item in input has channel_dim != channel_dim of the first item.\n{"nl".join(["Shape "+str(i)+" = "+str(item.shape) for i, item in enumerate(tensor_arr)])}'
             output = torch.ones(B, C, max_len, device=device, dtype=dtype)
             if pad_val:
                 output *= pad_val
@@ -637,11 +660,11 @@ class TextMelCollate():
         else:
             assert all(key in item for item in batch), f'item in batch is missing key "{key}"'
         
-        if all(type(item[key]) == torch.Tensor for key in batch.keys()):
+        if all(type(item[key]) == torch.Tensor for item in batch):
             return self.collate_left([item[key] for item in batch], dtype=dtype, index_lookup=index_lookup, pad_val=pad_val, check_const_channels=check_const_channels)
-        elif not any(type(item[key]) == torch.Tensor for key in batch.keys()):
+        elif not any(type(item[key]) == torch.Tensor for item in batch):
             assert dtype is None, f'dtype specified as "{dtype}" but input has no Tensors.'
-            arr = (item[key] for item in batch)
+            arr = [item[key] for item in batch]
             return [arr[index_lookup[i]] for i, _ in enumerate(arr)]
         else:
             raise Exception(f"Mixed types found in batch items, key is '{key}'")
@@ -656,13 +679,22 @@ class TextMelCollate():
         RETURNS
             out: {"text": text_batch, "gt_mel": gt_mel_batch}
         """
+        out = {}
         B = len(batch)# Batch Size
         
         if self.sort_text_len_decending and all("text" in item for item in batch):# if text, reorder entire batch to go from longest text -> shortest text.
-            input_lengths, ids_sorted = torch.sort(
+            text_lengths, ids_sorted = torch.sort(
                 torch.LongTensor([len(item['text']) for item in batch]), dim=0, descending=True)
+            out['text_lengths'] = text_lengths
         else:
-            ids_sorted = {x:x for x in range(B)}# elif no text, batch can be whatever order it's loaded in
+            ids_sorted = list(range(B))# elif no text, batch can be whatever order it's loaded in
+        
+        if all("gt_mel" in item for item in batch):
+            out['mel_lengths'] = torch.tensor([batch[ids_sorted[i]]['gt_mel'].shape[-1] for i in range(B)])
+        elif all("pred_mel" in item for item in batch):
+            out['mel_lengths'] = torch.tensor([batch[ids_sorted[i]]['pred_mel'].shape[-1] for i in range(B)])
+        elif all("gt_frame_f0" in item for item in batch):
+            out['mel_lengths'] = torch.tensor([batch[ids_sorted[i]]['gt_frame_f0'].shape[-1] for i in range(B)])
         
         out['text']              = self.collatek(batch, 'text',              ids_sorted, dtype=torch.long )# [B, txt_T]
         out['gtext_str']         = self.collatek(batch, 'gtext_str',         ids_sorted, dtype=None       )# [str, ...]
@@ -670,10 +702,10 @@ class TextMelCollate():
         out['text_str']          = self.collatek(batch, 'text_str',          ids_sorted, dtype=None       )# [str, ...]
         out['audiopath']         = self.collatek(batch, 'audiopath',         ids_sorted, dtype=None       )# [str, ...]
         
-        out['alignment']         = self.collatea(batch, 'alignment',         ids_sorted, dtype=torch.float)# [B, mel_T, txt_T]
+        out['alignments']        = self.collatea(batch, 'alignments',        ids_sorted, dtype=torch.float)# [B, mel_T, txt_T]
         
         out['gt_sylps']          = self.collatek(batch, 'gt_sylps',          ids_sorted, dtype=torch.float)# [B]
-        out['torchmoij_hdn']     = self.collatek(batch, 'torchmoij_hdn',     ids_sorted, dtype=torch.float)# [B, C]
+        out['torchmoji_hdn']     = self.collatek(batch, 'torchmoji_hdn',     ids_sorted, dtype=torch.float)# [B, C]
         
         out['speaker_id']        = self.collatek(batch, 'speaker_id',        ids_sorted, dtype=torch.long )# [B]
         out['speaker_id_ext']    = self.collatek(batch, 'speaker_id_ext',    ids_sorted, dtype=None       )# [int, ...]
@@ -703,11 +735,12 @@ class TextMelCollate():
         out['gt_audio']          = self.collatek(batch, 'gt_audio',          ids_sorted, dtype=torch.float)# [B, wav_T]
         out['sampling_rate']     = self.collatek(batch, 'sampling_rate',     ids_sorted, dtype=torch.float)# [B]
         
+       #out['gt_gate_logits']    = \
         if all('gt_mel' in item for item in batch):
             mel_T = max(item['gt_mel'].shape[-1] for item in batch)
             out['gt_gate_logits'] = torch.zeros(B, mel_T, dtype=torch.float)
             for i in range(B):
-                out['gt_gate_logits'][i, mel.size(1)-(~batch[ids_sorted[i]]['cont_next_iter']).long():] = 1
+                out['gt_gate_logits'][i, out['mel_lengths'][i]-(~batch[ids_sorted[i]]['cont_next_iter']).long():] = 1
                 # set positive gate if this file isn't going to be continued next iter.
                 # (i.e: if this is the last segment of the file.)
         

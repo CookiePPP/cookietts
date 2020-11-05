@@ -1,2 +1,2 @@
-__all__ = ["TextMelLoader",]
-from data_utils import TextMelLoader
+__all__ = ["TTSDataset", "Collate"]
+from .data_utils import TTSDataset, Collate
