@@ -198,8 +198,8 @@ class Postnet(nn.Module):
         prev_output_layer = True
         for i in range(hparams.postnet_n_convolutions):
             is_output_layer = (bool(self.b_res) and bool( i % self.b_res == 0 )) or (i+1 == hparams.postnet_n_convolutions)
-            layers = [ ConvNorm(hparams.n_mel_channels*(hparams.LL_SpectLoss+1) if prev_output_layer else hparams.postnet_embedding_dim,
-                             hparams.n_mel_channels*(hparams.LL_SpectLoss+1) if is_output_layer else hparams.postnet_embedding_dim,
+            layers = [ ConvNorm(hparams.n_mel_channels if prev_output_layer else hparams.postnet_embedding_dim,
+                             hparams.n_mel_channels if is_output_layer else hparams.postnet_embedding_dim,
                              kernel_size=hparams.postnet_kernel_size, stride=1,
                              padding=int((hparams.postnet_kernel_size - 1) / 2),
                              dilation=1, w_init_gain='linear' if is_output_layer else 'tanh'), ]
@@ -374,7 +374,6 @@ class Decoder(nn.Module):
         self.p_prenet_dropout = hparams.p_prenet_dropout
         self.prenet_speaker_embed_dim = hparams.prenet_speaker_embed_dim if hasattr(hparams, 'prenet_speaker_embed_dim') else 0
         self.max_decoder_steps = hparams.max_decoder_steps
-        self.pred_logvar = hparams.LL_SpectLoss# Bool
         self.gate_threshold = hparams.gate_threshold# Float
         self.AttRNN_extra_decoder_input = hparams.AttRNN_extra_decoder_input
         self.AttRNN_hidden_dropout_type = hparams.AttRNN_hidden_dropout_type
@@ -477,7 +476,7 @@ class Decoder(nn.Module):
         
         self.linear_projection = LinearNorm(
             decoder_rnn_output_dim + self.memory_dim,
-            hparams.n_mel_channels * hparams.n_frames_per_step * (self.pred_logvar+1))
+            hparams.n_mel_channels * hparams.n_frames_per_step)
         
         self.gate_layer = LinearNorm(
             decoder_rnn_output_dim + self.memory_dim, 1,
@@ -649,7 +648,7 @@ class Decoder(nn.Module):
         # (T_out, B, n_mel_channels) -> (B, T_out, n_mel_channels)
         mel_outputs = torch.stack(mel_outputs).transpose(0, 1).contiguous()
         # decouple frames per step
-        mel_outputs = mel_outputs.view( mel_outputs.size(0), -1, self.n_mel_channels*(int(self.pred_logvar)+1) )
+        mel_outputs = mel_outputs.view( mel_outputs.size(0), -1, self.n_mel_channels )
         # (B, T_out, n_mel_channels) -> (B, n_mel_channels, T_out)
         mel_outputs = mel_outputs.transpose(1, 2)
         
@@ -917,7 +916,6 @@ class Tacotron2(nn.Module):
         self.mask_padding = hparams.mask_padding
         self.fp16_run = hparams.fp16_run
         self.n_mel_channels = hparams.n_mel_channels
-        self.pred_logvar = hparams.LL_SpectLoss
         self.n_frames_per_step = hparams.n_frames_per_step
         self.p_teacher_forcing = hparams.p_teacher_forcing
         self.teacher_force_till = hparams.teacher_force_till
@@ -959,7 +957,7 @@ class Tacotron2(nn.Module):
     def mask_outputs(self, outputs, output_lengths=None):
         if self.mask_padding and output_lengths is not None:
             mask = ~get_mask_from_lengths(output_lengths)
-            mask = mask.expand(self.n_mel_channels*(self.pred_logvar+1), mask.size(0), mask.size(1))
+            mask = mask.expand(self.n_mel_channels, mask.size(0), mask.size(1))
             mask = mask.permute(1, 0, 2)
             # [B, n_mel, steps]
             outputs[0].data.masked_fill_(mask, 0.0)

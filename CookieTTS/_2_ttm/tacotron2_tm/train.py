@@ -3,6 +3,8 @@ os.environ["LRU_CACHE_CAPACITY"] = "3"# reduces RAM usage massively with pytorch
 import time
 import argparse
 import math
+import random
+import pickle
 import numpy as np
 from numpy import finfo
 
@@ -14,7 +16,7 @@ from torch.utils.data import DataLoader
 from torch.optim.lr_scheduler import ReduceLROnPlateau
 
 from model import Tacotron2, load_model
-from CookieTTS.utils.dataset.data_utils import TTSDataset, Collate
+from CookieTTS.utils.dataset.data_utils import TTSDataset, Collate, generate_filelist_from_datasets
 from CookieTTS.utils import get_args, force
 
 from loss_function import Tacotron2Loss
@@ -103,12 +105,47 @@ def init_distributed(hparams, n_gpus, rank, group_name):
     print("Done initializing distributed")
 
 
-def prepare_dataloaders(hparams, args, saved_lookup):
+def get_filelist(hparams, val=False):
+    if hparams.data_source == 1:# if filelist is a folder, check all datasets inside the folder for audio files and transcripts.
+        # convert dataset folder into a filelist
+        filelist = generate_filelist_from_datasets(hparams.dataset_folder,
+                                AUDIO_FILTER =hparams.dataset_audio_filters,
+                                AUDIO_REJECTS=hparams.dataset_audio_rejects,
+                                MIN_DURATION =hparams.dataset_min_duration)
+    elif hparams.data_source == 0:# else filelist is a ".txt" file, load the easy way
+        if val:
+            filelist = load_filepaths_and_text(hparams.validation_files)
+        else:
+            filelist = load_filepaths_and_text(hparams.training_files)
+    return filelist
+
+def prepare_dataloaders(hparams, dataloader_args, args, speaker_ids):
     # Get data, data loaders and collate function ready
-    speaker_ids = saved_lookup if hparams.use_saved_speakers else None
-    trainset = TTSDataset(hparams.training_files, hparams, args, check_files=hparams.check_files, shuffle=False,
+    if hparams.data_source == 1:
+        if args.rank == 0:
+            fl_dict = get_filelist(hparams)
+            with open('fl_dict.pkl', 'wb') as pickle_file:
+                pickle.dump(fl_dict, pickle_file, pickle.HIGHEST_PROTOCOL)
+        torch.distributed.barrier()# wait till all graphics cards reach this point.
+        if args.rank > 0:
+            fl_dict = pickle.load(open('fl_dict.pkl', "rb"))
+        
+        filelist    = fl_dict['filelist']
+        speaker_ids = fl_dict['speaker_ids']
+        random.Random(0).shuffle(filelist)
+        training_filelist   = filelist[ int(len(filelist)*hparams.dataset_p_val):]
+        validation_filelist = filelist[:int(len(filelist)*hparams.dataset_p_val) ]
+        torch.distributed.barrier()# wait till all graphics cards reach this point.
+        if args.rank == 0 and os.path.exists('fl_dict.pkl'):
+            os.remove('fl_dict.pkl')
+    else:
+        training_filelist   = get_filelist(hparams, val=False)
+        validation_filelist = get_filelist(hparams, val=True)
+        speaker_ids = speaker_ids if hparams.use_saved_speakers else None
+    
+    trainset = TTSDataset(training_filelist, hparams, dataloader_args, check_files=hparams.check_files, shuffle=False,
                            speaker_ids=speaker_ids)
-    valset = TTSDataset(hparams.validation_files, hparams, args, check_files=hparams.check_files, shuffle=False,
+    valset = TTSDataset(validation_filelist, hparams, dataloader_args, check_files=hparams.check_files, shuffle=False,
                            speaker_ids=trainset.speaker_ids)
     collate_fn = Collate(hparams)
     
@@ -488,7 +525,7 @@ def train(args, rank, group_name, hparams):
     dataloader_args = [*get_args(criterion.forward), *model_args]
     if rank == 0:
         dataloader_args.extend(get_args(logger.log_training))
-    train_loader, valset, collate_fn, train_sampler, trainset = prepare_dataloaders(hparams, dataloader_args, saved_lookup)
+    train_loader, valset, collate_fn, train_sampler, trainset = prepare_dataloaders(hparams, dataloader_args, args, saved_lookup)
     epoch_offset = max(0, int(iteration / len(train_loader)))
     speaker_lookup = trainset.speaker_ids
     

@@ -1,4 +1,6 @@
 import random
+import time
+import pickle
 import os
 os.environ["LRU_CACHE_CAPACITY"] = "3"
 import re
@@ -6,6 +8,10 @@ import numpy as np
 import torch
 import torch.utils.data
 import torch.nn.functional as F
+
+# meta processing
+from CookieTTS.utils.dataset.metadata import get_dataset_meta
+from tqdm import tqdm
 
 # audio processing
 import librosa
@@ -27,6 +33,223 @@ from CookieTTS.utils.torchmoji.global_variables import PRETRAINED_PATH, VOCAB_PA
 # misc
 import syllables
 
+
+def generate_filelist_from_datasets(DATASET_FOLDER,
+        DATASET_CONF_FOLDER=None,
+        AUDIO_FILTER=['*.wav'],
+        AUDIO_REJECTS=['*_Noisy_*','*_Very Noisy_*'],
+        MIN_DURATION=0.73,
+        MIN_SPEAKER_DURATION_SECONDS=20, rank=0):
+    if DATASET_CONF_FOLDER is None:
+        DATASET_CONF_FOLDER = os.path.join(DATASET_FOLDER, 'meta')
+    # define meta dict (this is where all the data is collected)
+    meta = {}
+    
+    # list of datasets that will be processed over the next while.
+    datasets = sorted([x for x in os.listdir(DATASET_FOLDER) if os.path.isdir(os.path.join(DATASET_FOLDER, x)) and 'meta' not in x])
+    
+    # check default configs exist (and prompt user for datasets without premade configs)
+    defaults_fpath = os.path.join(DATASET_CONF_FOLDER, 'defaults.pkl')
+    os.makedirs(os.path.split(defaults_fpath)[0], exist_ok=True)
+    if os.path.exists(defaults_fpath):
+        try:
+            defaults = pickle.load(open(defaults_fpath, "rb"))
+        except:
+            defaults = {}
+    else:
+        if rank > 0:
+            while not os.path.exists(defaults_fpath):
+                time.sleep(1.0)
+            time.sleep(1.0)
+            defaults = pickle.load(open(defaults_fpath, "rb"))
+        else:
+            defaults = {}
+    
+    print(f'Checking Defaults for Datasets...')
+    speaker_default = None
+    for dataset in datasets:
+        if dataset not in defaults:
+            defaults[dataset] = {}
+        
+        if 'speaker' not in defaults[dataset]:
+            print(f'default speaker for "{dataset}" dataset is missing.\nPlease enter the name of the default speaker\nExamples: "Nancy", "Littlepip", "Steven"')
+            print(f'Press Enter with no input to use "{dataset}"')
+            usr_inp = input('> ')
+            if len(usr_inp.strip()) == 0:
+                usr_inp = dataset
+            defaults[dataset]['speaker'] = usr_inp
+            print("")
+    
+    if any(any(x not in ds_defaults for x in ['emotion','noise_level','source','source_type']) for ds_defaults in defaults.values()):# if any Default is missing from any dataset
+        emotion_default = noise_level_default = source_default = source_type_default = None
+        for dataset in datasets:
+            if 'emotion' not in defaults[dataset]:
+                print(f'default emotion for "{dataset}" dataset is missing.\nPlease enter the default emotion\nExamples: "Neutral", "Bored", "Audiobook"')
+                if emotion_default is not None:
+                    print(f'Press Enter with no input to use "{emotion_default}"')
+                usr_inp = input('> ')
+                assert len(usr_inp.strip()) > 0 or emotion_default, 'No input given!'
+                if len(usr_inp.strip()) > 0:
+                    emotion_default = usr_inp.strip()
+                defaults[dataset]['emotion'] = emotion_default if len(usr_inp.strip()) == 0 else usr_inp
+                print("")
+            
+            if 'noise_level' not in defaults[dataset]:
+                print(f'default noise level for "{dataset}" dataset is missing.\nPlease enter the default noise level\nExamples: "Clean", "Noisy", "Very Noisy"')
+                if noise_level_default is not None:
+                    print(f'Press Enter with no input to use "{noise_level_default}"')
+                usr_inp = input('> ')
+                assert len(usr_inp.strip()) > 0 or noise_level_default, 'No input given!'
+                if len(usr_inp.strip()) > 0:
+                    noise_level_default = usr_inp.strip()
+                defaults[dataset]['noise_level'] = noise_level_default if len(usr_inp.strip()) == 0 else usr_inp
+                print("")
+            
+            if 'source' not in defaults[dataset]:
+                print(f'default source for "{dataset}" dataset is missing.\nPlease enter the default source\nExamples: "My Little Pony", "Team Fortress 2", "University of Edinburgh"')
+                if source_default is not None:
+                    print(f'Press Enter with no input to use "{source_default}"')
+                usr_inp = input('> ')
+                assert len(usr_inp.strip()) > 0 or source_default, 'No input given!'
+                if len(usr_inp.strip()) > 0:
+                    source_default = usr_inp.strip()
+                defaults[dataset]['source'] = source_default if len(usr_inp.strip()) == 0 else usr_inp
+                print("")
+            
+            if 'source_type' not in defaults[dataset]:
+                print(f'default source type for "{dataset}" dataset is missing.\nPlease enter the default source type\nExamples: "TV Show", "Audiobook", "Audiodrama", "Newspaper Extracts"')
+                if source_type_default is not None:
+                    print(f'Press Enter with no input to use "{source_type_default}"')
+                usr_inp = input('> ')
+                assert len(usr_inp.strip()) > 0 or source_type_default, 'No input given!'
+                if len(usr_inp.strip()) > 0:
+                    source_type_default = usr_inp.strip()
+                defaults[dataset]['source_type'] = source_type_default if len(usr_inp.strip()) == 0 else usr_inp
+                print("")
+        del emotion_default, noise_level_default, source_default, source_type_default, usr_inp
+    
+    with open(defaults_fpath, 'wb') as pickle_file:
+        pickle.dump(defaults, pickle_file, pickle.HIGHEST_PROTOCOL)
+    print('Done!')
+    
+    # add paths, transcripts, speaker names, emotions, noise levels to meta object
+    print(f'Adding paths, transcripts, speaker names, emotions, noise levels from Datasets to meta...')
+    for dataset in datasets:
+        default_speaker     = defaults[dataset]['speaker']
+        default_emotion     = defaults[dataset]['emotion']
+        default_noise_level = defaults[dataset]['noise_level']
+        default_source      = defaults[dataset]['source']
+        default_source_type = defaults[dataset]['source_type']
+        dataset_dir = os.path.join(DATASET_FOLDER, dataset)
+        meta_local = get_dataset_meta(dataset_dir, audio_ext=AUDIO_FILTER, audio_rejects=AUDIO_REJECTS, default_speaker=default_speaker, default_emotion=default_emotion, default_noise_level=default_noise_level, default_source=default_source, default_source_type=default_source_type)
+        meta[dataset] = meta_local
+        del dataset_dir, default_speaker, default_emotion, default_noise_level, default_source, default_source_type
+    print('Done!')
+    
+    # Assign speaker ids to speaker names
+    # Write 'speaker_dataset|speaker_name|speaker_id|speaker_audio_duration' lookup table to txt file
+    print(f'Loading speaker information + durations and assigning IDs...')
+    #print('Ctrl + C to skip, this will remove Duration information from the speaker list')
+    #try:
+    import soundfile as sf
+    speaker_durations = {}
+    dataset_lookup = {}
+    bad_paths = {}
+    for dataset in meta.keys():
+        bad_paths[dataset] = []
+        prev_wd = os.getcwd()
+        os.chdir(os.path.join(DATASET_FOLDER, dataset))
+        for i, clip in enumerate(meta[dataset]):
+            speaker = clip['speaker']
+            
+            # get duration of file
+            try:
+                audio, sampling_rate = load_wav_to_torch(clip['path'])
+                clip_duration = len(audio)/sampling_rate
+                if clip_duration < MIN_DURATION:
+                    bad_paths[dataset].append(clip['path'])
+                    continue
+            except Exception as ex:
+                print('PATH:', clip['path'],"\nfailed to read.")
+                bad_paths[dataset].append(clip['path'])
+                continue
+                #if input("Delete item? (y/n)\n> ").lower() in ['yes','y','1']:
+                #    os.unlink(clip['path'])
+                #    del meta[dataset][i]
+                #    continue
+                #else:
+                #    raise Exception(ex)
+            if speaker not in speaker_durations.keys():
+                speaker_durations[speaker] = 0
+                dataset_lookup[speaker] = dataset
+            speaker_durations[speaker]+=clip_duration
+        os.chdir(prev_wd)
+    #except KeyboardInterrupt:
+    #    print('Skipping speaker Durations')
+    
+    for key, bad_list in bad_paths.items():
+        meta[dataset] = [clip for clip in meta[dataset] if not clip['path'] in bad_list]
+    
+    for dataset, clips in meta.items():
+        speaker_set = set(list(speaker_durations.keys()))
+        meta[dataset] = [x for x in meta[dataset] if x['speaker'] in speaker_set and speaker_durations[x['speaker']] > MIN_SPEAKER_DURATION_SECONDS]
+    
+    # Write speaker info to txt file
+    fpath = os.path.join(DATASET_CONF_FOLDER, 'speaker_info.txt')
+    with open(fpath, "w") as f:
+        lines = []
+        lines.append(f';{"speaker_id":<9}|{"speaker_name":<32}|{"dataset":<24}|{"source":<24}|{"source_type":<20}|duration_hrs\n;')
+        for speaker_id, (speaker_name, duration) in tqdm(enumerate(speaker_durations.items())):
+            dataset = dataset_lookup[speaker_name]
+            if duration < MIN_SPEAKER_DURATION_SECONDS:
+                continue
+            try:
+                clip = next(y for x in list(meta.values()) for y in x if y['speaker'] == speaker_name) # get the first clip with that speaker...
+            except StopIteration as ex:
+                print(speaker_name, duration, speaker_id)
+                raise ex
+            source = clip['source'] or "Unknown" # and pick up the source...
+            source_type = clip['source_type'] or "Unknown" # and source type that speaker uses.
+            assert source, 'Recieved no dataset source'
+            assert source_type, 'Recieved no dataset source type'
+            assert speaker_name, 'Recieved no speaker name.'
+            assert duration, f'Recieved speaker "{speaker_name}" with 0 duration.'
+            lines.append(f'{speaker_id:<10}|{speaker_name:<32}|{dataset:<24}|{source:<24}|{source_type:<20}|{duration/3600:>8.4f}')
+        f.write('\n'.join(lines))
+    print('Done!')
+    
+    # Unpack meta into filelist
+    # filelist = [["path","quote","speaker_id"], ["path","quote","speaker_id"], ...]
+    filelist = []
+    for dataset, clips in meta.items():
+        speaker_lookup = {speaker: index for index, speaker in enumerate(list(speaker_durations.keys()))}
+        for i, clip in enumerate(clips):
+            audiopath  = clip["path"]
+            quote      = clip["quote"]
+            speaker_id = speaker_lookup[clip['speaker']]
+            filelist.append([audiopath, quote, speaker_id])
+    
+    # speakerlist = [["name","id","dataset","source","source_type","duration"], ...]
+    speakerlist = []
+    for speaker_id, (speaker_name, duration) in enumerate(speaker_durations.items()):
+        dataset = dataset_lookup[speaker_name]
+        if duration < MIN_SPEAKER_DURATION_SECONDS:
+            continue
+        try:
+            clip = next(y for x in list(meta.values()) for y in x if y['speaker'] == speaker_name) # get the first clip with that speaker...
+        except StopIteration as ex:
+            print(speaker_name, duration, speaker_id)
+            raise ex
+        source = clip['source'] or "Unknown" # and pick up the source...
+        source_type = clip['source_type'] or "Unknown" # and source type that speaker uses.
+        speakerlist.append((speaker_name, speaker_id, dataset, source, source_type, duration/3600.))
+    
+    outputs = {
+        "filelist": filelist,
+     "speakerlist": speakerlist,
+     "speaker_ids": {i:i for i in range(len(dataset_lookup.keys()))},
+    }
+    return outputs
 
 @torch.jit.script
 def DTW(batch_pred, batch_target, scale_factor: int, range_: int):
@@ -108,7 +331,7 @@ class TTSDataset(torch.utils.data.Dataset):
         3) computes mel-spectrograms from audio files.
     """
     def __init__(self, filelist, hparams, args, check_files=True, TBPTT=True, shuffle=False, speaker_ids=None, audio_offset=0, verbose=False):
-        self.filelist = load_filepaths_and_text(filelist)
+        self.filelist = filelist
         self.args = args
         
         #####################
@@ -380,6 +603,7 @@ class TTSDataset(torch.utils.data.Dataset):
                 audio, sampling_rate = torch.load(trimmed_audiopath), self.sampling_rate
             else:
                 audio, sampling_rate = self.get_audio(audiopath)
+                audio_duration = len(audio)/sampling_rate
                 if self.trim_enable:
                     audio = self.trim_audio(audio, sampling_rate, file_path=audiopath)
                     if self.trim_cache_audio:
@@ -391,7 +615,7 @@ class TTSDataset(torch.utils.data.Dataset):
                 output['sampling_rate'] = torch.tensor(float(sampling_rate))
         
         if 'gt_perc_loudness' in args or (self.target_lufs is not None):
-            output['gt_perc_loudness'] = self.get_perc_loudness(audio, sampling_rate)
+            output['gt_perc_loudness'] = self.get_perc_loudness(audio, sampling_rate, audiopath, audio_duration)
         
         if self.target_lufs is not None:
             output['gt_audio'] = self.update_loudness(audio, sampling_rate, self.target_lufs,
@@ -548,9 +772,13 @@ class TTSDataset(torch.utils.data.Dataset):
         alignment = np.load(alignpath)
         return torch.from_numpy(alignment).float()
     
-    def get_perc_loudness(self, audio, sampling_rate):
+    def get_perc_loudness(self, audio, sampling_rate, audiopath, audio_duration):
         meter = pyln.Meter(sampling_rate) # create BS.1770 meter
-        loudness = meter.integrated_loudness(audio.numpy()) # measure loudness (in dB)
+        try:
+            loudness = meter.integrated_loudness(audio.numpy()) # measure loudness (in dB)
+        except Exception as ex:
+            print(audio_duration, audiopath)
+            raise ex
         gt_perc_loudness = torch.tensor(loudness)
         return gt_perc_loudness# []
     

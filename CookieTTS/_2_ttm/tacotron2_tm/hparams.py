@@ -15,75 +15,111 @@ def create_hparams(hparams_string=None, verbose=False):
         iters_per_checkpoint=1000,
         iters_per_validation=250,
         seed=1234,
+        
         dynamic_loss_scaling=True,
         fp16_run=True,# requires 20 Series or Better (e.g: RTX 2080 Ti, RTX 2060, Tesla V100, Tesla A100)
         fp16_run_optlvl='2',
+        
         distributed_run=True,
         dist_backend="nccl",
         dist_url="tcp://127.0.0.1:54321",
-        cudnn_enabled=True,
+        
+        cudnn_enabled  = True,
         cudnn_benchmark=False,
-        ignore_layers= ["layers_here"],
-        frozen_modules=["layers_here"], # only the module names are required e.g: "encoder." will freeze all parameters INSIDE the encoder recursively
+        
+        ignore_layers= ["layers_here"],# for `warm_start`-ing
+        frozen_modules=["layers_here"],# only the module names are required e.g: "encoder." will freeze all parameters INSIDE the encoder recursively
+        
+        #########################
+        ## Logging / Verbosity ##
+        #########################
         print_layer_names_during_startup=True,
         n_tensorboard_outputs=5,# number of items from validation so show in Tensorboard
         n_tensorboard_outputs_highloss=5,# top X tacotron outputs with worst validation loss.
         n_tensorboard_outputs_badavgatt=5,# top X tacotron outputs with weakest average attention.
         
+        #################################
+        ## Batch Size / Segment Length ##
+        #################################
         batch_size=32,    # controls num of files processed in parallel per GPU
         val_batch_size=32,# for more precise comparisons between models, constant batch_size is useful
+        use_TBPTT=False,  # continue processing longer files into the next training iteration
+        max_segment_length=800,# max mel length till a segment is sliced.
         
-        use_TBPTT=False,# continue truncated files into the next training iteration
-        max_segment_length=800, # max mel length till truncation.
+        ###################################
+        ## Dataset / Filelist Parameters ##
+        ###################################
+        data_source=1,# 0 to use nvidia/tacotron2 filelists, 1 to use automatic dataset processor
+        
+        # if data_source is 0:
+        speakerlist='/media/cookie/Samsung 860 QVO/ClipperDatasetV2/filelists/speaker_ids.txt',
+        training_files='/media/cookie/Samsung 860 QVO/ClipperDatasetV2/filelists/train_taca2.txt',
+        validation_files='/media/cookie/Samsung 860 QVO/ClipperDatasetV2/filelists/validation_taca2.txt',
+        
+        # if data_source is 1:
+        dataset_folder='/media/cookie/Samsung 860 QVO/ClipperDatasetV2',
+        dataset_audio_filters=['*.wav',],
+        dataset_audio_rejects=['*_Noisy_*','*_Very Noisy_*'],
+        dataset_p_val = 0.03,# portion of dataset for Validation
+        dataset_min_duration=2.0,# minimum duration of audio files to be added
+        
         ##################################
-        ## Data Parameters              ##
+        ## Text / Speaker Parameters    ##
         ##################################
-        check_files=True, # check all files exist, aren't corrupted, have text, good length, and other stuff before training.
-                          # This can take a little as it has to simulate an entire EPOCH of dataloading.
-        speakerlist='/media/cookie/Samsung 860 QVO/ClipperDatasetV2/filelists/speaker_ids.txt', # lets the checkpoints include speaker names.
+        text_cleaners=['basic_cleaners'],
         dict_path='../../dict/merged.dict.txt',
-        p_arpabet=0.5, # probability to use ARPAbet / pronounciation dictionary.
-        use_saved_speakers=True,# use the speaker lookups saved inside the model instead of generating again
-        numeric_speaker_ids=False, # sort speaker_ids in filelist numerically, rather than alphabetically.
+        p_arpabet=0.5, # probability to use ARPAbet / pronounciation dictionary on the text
+        
+        use_saved_speakers =False, # use the speaker lookups saved inside the model instead of generating again
+        numeric_speaker_ids=True,  # sort speaker_ids in filelist numerically, rather than alphabetically.
                                    # e.g:
                                    #    [10, 9, 8, 7, 6, 5, 4, 3, 2, 1, 0] -> [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10]
                                    # instead of,
                                    #    [10, 9, 8, 7, 6, 5, 4, 3, 2, 1, 0] -> [0, 1, 10, 2, 3, 4, 5, 6, 7, 8, 9]
                                    # Mellotron repo has this off by default, but ON makes the most logical sense to me.
-        raw_speaker_ids=False,  # use the speaker IDs found in filelists for the internal IDs. Values greater than n_speakers will crash (as intended).
-                                # This will disable sorting the ids
-        training_files='/media/cookie/Samsung 860 QVO/ClipperDatasetV2/filelists/train_taca2.txt',
-        validation_files='/media/cookie/Samsung 860 QVO/ClipperDatasetV2/filelists/validation_taca2.txt',
-        text_cleaners=['basic_cleaners'],
         
-        silence_value=-11.52,
-        silence_pad_start=0,# frames to pad the start of each clip
-        silence_pad_end=0,  # frames to pad the end of each clip
-                            # These frames will be added to the loss functions and Tacotron must predict and generate the padded silence.
+        check_files=True, # check all files exist, aren't corrupted, have text, good length, and other stuff before training.
+                          # This can take a while as it has to load the entire dataset once.
         ##################################
         ## Audio Parameters             ##
         ##################################
         sampling_rate=44100,
+        target_lufs=-27.0, # Loudness each file is rescaled to, use None for original file loudness.
+        
+        trim_enable = False,# set to False to disable trimming completely
+        trim_cache_audio = False,# save trimmed audio to disk to load later. Saves CPU usage, uses more disk space.
+                                 # modifications to params below do not apply to already cached files while True.
+        trim_margin_left  = [0.0125]*5,
+        trim_margin_right = [0.0125]*5,
+        trim_top_db       = [50  ,46  ,46  ,46  ,46  ],
+        trim_window_length= [8192,4096,2048,1024,512 ],
+        trim_hop_length   = [1024,512 ,256 ,128 ,128 ],
+        trim_ref          = ['amax']*5,
+        trim_emphasis_str = [0.0 ,0.0 ,0.0 ,0.0 ,0.0 ],
+        
+        ##################################
+        ## Spectrogram Parameters       ##
+        ##################################
         filter_length=2048,
         hop_length=512,
         win_length=2048,
         n_mel_channels=80,
         mel_fmin=20.0,
         mel_fmax=11025.0,
-        
         stft_clamp_val=1e-5,# 1e-5 = original
-        target_lufs=-27.0, # Loudness each file is rescaled to, use None for unmodified file loudness.
         
-        trim_enable = True,# set to False to disable trimming completely
-        trim_cache_audio = False,# save trimmed audio to disk to load later. Saves CPU usage, uses more disk space.
-                                 # modifications to params below do not apply to already cached files while True.
-        trim_margin_left  = [0.0125]*5,
-        trim_margin_right = [0.0125]*5,
-        trim_top_db       = [42  ,46  ,46  ,46  ,46  ],
-        trim_window_length= [8192,4096,2048,1024,512 ],
-        trim_hop_length   = [1024,512 ,256 ,128 ,128 ],
-        trim_ref          = ['amax']*5,
-        trim_emphasis_str = [0.0 ,0.0 ,0.0 ,0.0 ,0.0 ],
+        silence_value=-11.52,
+        silence_pad_start=0,# frames to pad the start of each spectrogram
+        silence_pad_end=0,  # frames to pad the end   of each spectrogram
+                            # These frames will be added to the loss functions and Tacotron must predict and generate the padded silence.
+        
+        ######################################
+        ## Synthesis / Inference Parameters ##
+        ######################################
+        gate_threshold=0.5,# confidence required to end the audio file.
+        gate_delay    =10, # allows the model to continue generative audio slightly after the audio file ends.
+        max_decoder_steps=3000,# max duration of an audio file during a single generation.
+        
         ##################################
         ## Model Parameters             ##
         ##################################
@@ -92,12 +128,6 @@ def create_hparams(hparams_string=None, verbose=False):
         
         # Gate
         gate_positive_weight=10, # how much more valuable 1 positive frame is to 1 zero frame. 80 Frames per seconds, therefore values around 10 are fine.
-        
-        # Synthesis/Inference Related
-        gate_threshold=0.5,
-        gate_delay=10,
-        max_decoder_steps=3000,
-        low_vram_inference=False, # doesn't save alignment and gate information, frees up some vram, especially for large input sequences.
         
         # Teacher-forcing Config
         p_teacher_forcing=1.00,    # 1.00 baseline
@@ -150,7 +180,7 @@ def create_hparams(hparams_string=None, verbose=False):
         prenet_bn_momentum=0.5,# Inverse smoothing factor, 0.1 = high smoothing, 0.9 = Almost no smoothing
         p_prenet_dropout  =0.5,# 0.5 baseline
         
-        prenet_speaker_embed_dim=0, # speaker_embedding before encoder
+        prenet_speaker_embed_dim=0,# speaker_embedding before encoder
         prenet_noise   =0.05,# Add Gaussian Noise to Prenet inputs. std defined here.
         prenet_blur_min=0.00,# Apply random vertical blur between prenet_blur_min
         prenet_blur_max=0.00,#                                and prenet_blur_max
@@ -182,7 +212,7 @@ def create_hparams(hparams_string=None, verbose=False):
         windowed_attention_range = 32,# set to 0 to disable
                                      # will set the forward and back distance the model can attend to.
                                      # 2 will give the model 5 characters it can attend to at any one time.
-                                     # This will also allow more stable generation with longer text inputs and save VRAM during inference.
+                                     # This will also allow more stable generation with extremely long text inputs and save VRAM during inference.
         windowed_att_pos_offset=1.25,# Offset the current_pos by this amount.
         windowed_att_pos_learned=True,
         
@@ -211,20 +241,6 @@ def create_hparams(hparams_string=None, verbose=False):
         postnet_n_convolutions=6,
         postnet_residual_connections=3,# False baseline, int > 0 == n_layers in each residual block
         
-        # (Adversarial Postnet Generator) - modifies the tacotron output to look convincingly fake instead of just accurate.
-        use_postnet_generator_and_discriminator=False,
-        adv_postnet_noise_dim=128,
-        adv_postnet_embedding_dim=384,
-        adv_postnet_kernel_size=3,
-        adv_postnet_n_convolutions=6,
-        adv_postnet_residual_connections=3,
-        
-        # (Adversarial Postnet Discriminator) - Learns the difference between real and fake spectrograms, teaches the postnet generator how to make convincing looking outputs.
-        dis_postnet_embedding_dim=512,
-        dis_postnet_kernel_size=5,
-        dis_postnet_n_convolutions=8,
-        dis_postnet_residual_connections=4,
-        
         ##################################
         ## Optimization Hyperparameters ##
         ##################################
@@ -243,28 +259,17 @@ def create_hparams(hparams_string=None, verbose=False):
         ##################################
         ## Loss Weights/Scalars         ##
         ##################################
-        LL_SpectLoss=False,# Use Log-likelihood loss on Decoder and Postnet outputs.
-                           # This will cause Tacotron to produce a normal Spectrogram and a logvar Spectrogram.
-                           # The logvar spectrogram will represent the confidence of the model on it's prediction,
-                           # and can be used to calcuate the std (error) tacotron expects that element to have.
-        
-        # if LL_SpectLoss is True:
-        melout_LL_scalar  = 1.0,  # Log-likelihood Loss
-        postnet_LL_scalar = 1.0,  # Log-likelihood Loss
-        # else:
-        spec_MSE_weight = 1.0, #   MSE Spectrogram Loss Before Postnet
+        # All of these can be overriden from 'run_every_epoch.py'
+        spec_MSE_weight    = 1.0,# MSE Spectrogram Loss Before Postnet
         postnet_MSE_weight = 1.0,# MSE Spectrogram Loss After Postnet
-        
-        gate_loss_weight = 1.0,# Gate Loss
+        gate_loss_weight   = 1.0,# Gate Loss
         
         sylps_kld_weight = 0.0020, # SylNet KDL Weight
-        
         sylps_MSE_weight = 0.01,# Encoder Pred Sylps MSE weight
         sylps_MAE_weight = 0.00,# Encoder Pred Sylps MAE weight
         
-        diag_att_weight=0.05, # Can be overriden by 'run_every_epoch.py
-                                             # 'dumb' guided attention. Simply punishes the model for attention that is non-diagonal. Decreases training time and increases training stability with English speech. 
-                                             # As an example of how this works, if you imagine there is a 10 letter input that lasts 1 second. The first 0.1s is pushed towards using the 1st letter, the next 0.1s will be pushed towards using the 2nd letter, and so on for each chunk of audio. Since each letter has a different natural duration (especially punctuation), this attention guiding is not particularly accurate, so it's not recommended to use a high loss scalar later into training.
+        diag_att_weight=0.05,# 'dumb' guided attention. Simply punishes the model for attention that is non-diagonal. Decreases training time and increases training stability with English speech. 
+                             # As an example of how this works, if you imagine there is a 10 letter input that lasts 1 second. The first 0.1s is pushed towards using the 1st letter, the next 0.1s will be pushed towards using the 2nd letter, and so on for each chunk of audio. Since each letter has a different natural duration (especially punctuation), this attention guiding is not particularly accurate, so it's not recommended to use a high loss scalar later into training.
         DiagonalGuidedAttention_sigma=0.5, # how to *curve?* the attention loss? Just leave this one alone.
         
         rescale_for_volume=0.0, # Not implemented # Rescale spectrogram losses to prioritise louder sounds, and put less (or zero) priority on quieter sounds

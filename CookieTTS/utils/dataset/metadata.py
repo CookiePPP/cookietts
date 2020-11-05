@@ -11,9 +11,9 @@ def identify_transcript_storage(directory, audio_files, audio_ext, audio_basenam
     set_txt_files = set(txt_files)
     files_with_txts = 0
     for i, audio_file in enumerate(audio_files):
-        if audio_file.replace(audio_ext,'.txt') in set_txt_files:
+        if os.path.splitext(audio_file)[0]+'.txt' in set_txt_files:
             files_with_txts += 1
-    print(f'Found {files_with_txts} audio files with matching text files (of {len(audio_files)} total audio files).')
+    #print(f'Found {files_with_txts} audio files with matching text files (of {len(audio_files)} total audio files).')
     if files_with_txts >= len(audio_files)*0.9: # if atleast 90% of audio files have a matching txt
         return ["clipper",]
     del files_with_txts, set_txt_files
@@ -85,7 +85,10 @@ def clipper_get_transcript(audio_file):
     text_file = os.path.join(audio_file_directory, audio_file_basename+".txt")
     if not os.path.exists(text_file):
         raise FileNotFoundError(f'audio file at "{audio_file}" has no matching txt file.')
-    transcript = open(text_file, "r").read()
+    try:
+        transcript = open(text_file, "r", encoding="utf-8").read()
+    except UnicodeDecodeError:
+        transcript = open(text_file, "r", encoding="latin-1").read()
     return transcript.strip()
 
 
@@ -162,7 +165,7 @@ def remove_ending_periods(directory):
         os.rename(src, dst)
 
 
-def get_dataset_meta(directory, meta=None, default_speaker=None, default_emotion=None, default_noise_level=None, default_source=None, default_source_type='audiobook', audio_ext=".wav", naming_system=None):
+def get_dataset_meta(directory, meta=None, default_speaker=None, default_emotion=None, default_noise_level=None, default_source=None, default_source_type='audiobook', audio_ext=["*.wav",], audio_rejects=[], naming_system=None):
     """
     Looks for
      - audio paths
@@ -213,9 +216,18 @@ def get_dataset_meta(directory, meta=None, default_speaker=None, default_emotion
     remove_ending_periods(os.path.abspath(directory))
     
     # 1 - get audiopaths
-    audio_files = sorted([os.path.abspath(x) for x in glob(f"**/*{audio_ext}", recursive=True)])
+    audio_files = []
+    for ext in audio_ext:
+        audio_files.extend([os.path.abspath(x) for x in glob(f"**/{ext}", recursive=True)])
+    banned_files = []
+    for rjct in audio_rejects:
+        banned_files.extend([os.path.abspath(x) for x in glob(f"**/{rjct}", recursive=True)])
+    banned_files = set(banned_files)
+    
+    audio_files = sorted([x for x in list(set(audio_files)) if not x in banned_files])
     assert len(audio_files), f'no audio files found for "{directory}" dataset.'
     print(f'Found {len(audio_files)} audio files.')
+    
     audio_basename_lookup = {os.path.splitext(os.path.split(x)[1])[0]: os.path.abspath(x) for x in audio_files}
     txt_files = sorted([os.path.abspath(x) for x in [*glob("**/*.txt", recursive=True), *glob("**/*.csv", recursive=True)] if os.path.exists(x)])
     assert all([os.path.exists(x) for x in txt_files])
