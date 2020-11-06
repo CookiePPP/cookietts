@@ -890,6 +890,7 @@ class TTSDataset(torch.utils.data.Dataset):
                 except Exception as ex:
                     print(f"Failed to load '{audiopath}'")
                     print(ex)
+                    index = random.randint(0, self.len-1)
         else:
             output = get_item_from_fileline(index, *self.filelist[index][:3])
         
