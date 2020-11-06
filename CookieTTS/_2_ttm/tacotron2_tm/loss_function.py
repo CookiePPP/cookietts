@@ -68,7 +68,7 @@ class GuidedAttentionLoss(torch.nn.Module):
         """Make guided attention mask.
         """
         grid_x, grid_y = torch.meshgrid(torch.arange(olen, device=olen.device), torch.arange(ilen, device=ilen.device))
-        grid_x, grid_y = grid_x.float(), grid_y.float()
+        grid_x, grid_y = grid_x.float().to(olen.device), grid_y.float().to(ilen.device)
         return 1.0 - torch.exp(-(grid_y / ilen - grid_x / olen) ** 2 / (2 * (sigma ** 2)))
 
     @staticmethod
