@@ -575,7 +575,7 @@ def train(args, rank, group_name, hparams):
                     # run external code every epoch or 1000 iters, allows the run to be adjusted without restarts
                     if (i==0 or iteration % param_interval == 0):
                         try:
-                            with open("run_every_epoch.py") as f:
+                            with open("run_every_epoch.py", encoding='utf-8') as f:
                                 internal_text = str(f.read())
                                 if len(internal_text) > 0:
                                     #code = compile(internal_text, "run_every_epoch.py", 'exec')
