@@ -18,6 +18,17 @@ def identify_transcript_storage(directory, audio_files, audio_ext, audio_basenam
         return ["clipper",]
     del files_with_txts, set_txt_files
     
+    # look for txt or csv with name "*_master_dataset.txt"
+    n_valid_txts = 0
+    valid_txts = list()
+    for txt_file in txt_files:
+        if os.stat(txt_file).st_size > 4 and txt_file.endswith("_master_dataset.txt"):
+            valid_txts.append(txt_file)
+            n_valid_txts += 1
+    if n_valid_txts == 1:
+        return "tacotron", valid_txts
+    del n_valid_txts, valid_txts
+    
     # 2.1.2 test if txts use Tacotron (or LJSpeech) Style Format
     #look for txt or csv file with more than 3 lines and containing '|' chars.
     n_valid_txts = 0
