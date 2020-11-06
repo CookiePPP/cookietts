@@ -321,22 +321,22 @@ class LSTMCellWithZoneout(RNNCellBase):
         if training and zoneout > 0.0:
             old_h = hx.clone()
             old_c = cx.clone()
-        
+            
             if bias_ih is None or bias_hh is None:
                 gates = (torch.mm(input, weight_ih.t()) + torch.mm(hx, weight_hh.t()))
             else:
                 gates = (torch.mm(input, weight_ih.t()) + bias_ih +
                          torch.mm(hx, weight_hh.t()) + bias_hh)
             ingate, forgetgate, cellgate, outgate = gates.chunk(4, 1)
-
+            
             ingate = ingate.sigmoid_()
             forgetgate = forgetgate.sigmoid_()
             cellgate = cellgate.tanh_()
             outgate = outgate.sigmoid_()
-
+            
             cy = (forgetgate * cx).add_(ingate * cellgate)
             hy = outgate * torch.tanh(cy)
-
+            
             hy = torch.nn.functional.dropout(hy, p=dropout, training=training, inplace=True)
             
             c_mask = torch.empty_like(cy).bernoulli_(p=zoneout).byte()
@@ -350,15 +350,15 @@ class LSTMCellWithZoneout(RNNCellBase):
                 gates = (torch.mm(input, weight_ih.t()) + bias_ih +
                          torch.mm(hx, weight_hh.t()) + bias_hh)
             ingate, forgetgate, cellgate, outgate = gates.chunk(4, 1)
-
+            
             ingate = ingate.sigmoid_()
             forgetgate = forgetgate.sigmoid_()
             cellgate = cellgate.tanh_()
             outgate = outgate.sigmoid_()
-
+            
             cy = (forgetgate * cx).add_(ingate * cellgate)
             hy = outgate * torch.tanh(cy)
-
+            
             hy = torch.nn.functional.dropout(hy, p=dropout, training=training, inplace=True)
         
         return (hy, cy)

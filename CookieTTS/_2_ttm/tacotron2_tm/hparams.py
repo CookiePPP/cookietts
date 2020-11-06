@@ -46,6 +46,7 @@ def create_hparams(hparams_string=None, verbose=False):
         use_TBPTT=False,  # continue processing longer files into the next training iteration
         max_segment_length=800,# max mel length till a segment is sliced.
         
+        num_workers=4,# number of threads for dataloading per GPU
         ###################################
         ## Dataset / Filelist Parameters ##
         ###################################

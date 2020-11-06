@@ -36,7 +36,6 @@ import os.path
 from metric import alignment_metric
 
 save_file_check_path = "save"
-num_workers_ = 4 # DO NOT CHANGE WHEN USING TRUNCATION
 start_from_checkpoints_from_zero = 0
 
 class LossExplosion(Exception):
@@ -161,7 +160,7 @@ def prepare_dataloaders(hparams, dataloader_args, args, speaker_ids):
         train_sampler = None
         shuffle = False#True
     
-    train_loader = DataLoader(trainset, num_workers=num_workers_, shuffle=shuffle,
+    train_loader = DataLoader(trainset, num_workers=hparams.num_workers, shuffle=shuffle,
                               sampler=train_sampler,
                               batch_size=hparams.batch_size, pin_memory=False,
                               drop_last=True, collate_fn=collate_fn)
@@ -336,7 +335,7 @@ def validate(hparams, args, file_losses, model, criterion, valset, best_val_loss
     model.eval()
     with torch.no_grad():
         val_sampler = DistributedSampler(valset) if hparams.distributed_run else None
-        val_loader = DataLoader(valset, sampler=val_sampler, num_workers=num_workers_,
+        val_loader = DataLoader(valset, sampler=val_sampler, num_workers=hparams.num_workers,
                                 shuffle=False, batch_size=hparams.batch_size,
                                 pin_memory=False, drop_last=True, collate_fn=collate_fn)
         if teacher_force == 1:

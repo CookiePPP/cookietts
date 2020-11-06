@@ -155,7 +155,7 @@ def generate_filelist_from_datasets(DATASET_FOLDER,
     speaker_durations = {}
     dataset_lookup = {}
     bad_paths = {}
-    for dataset in datasets:
+    for dataset in tqdm(datasets):
         bad_paths[dataset] = []
         prev_wd = os.getcwd()
         os.chdir(os.path.join(DATASET_FOLDER, dataset))
