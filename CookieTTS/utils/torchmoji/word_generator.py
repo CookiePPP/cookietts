@@ -133,19 +133,19 @@ class WordGenerator():
         """
         if self.check_ascii(word):
             return True, word
-
+        
         # First we ensure that the Unicode is normalized so it's
         # always a single character.
         word = unicodedata.normalize("NFKC", word)
-
+        
         # Convert Unicode punctuation to ASCII equivalent. We want
         # e.g. "\u203c" (double exclamation mark) to be treated the same
         # as "!!" no matter if we allow other Unicode characters or not.
         word = self.convert_unicode_punctuation(word)
-
+        
         if self.ignore_emojis:
             _, word = separate_emojis_and_text(word)
-
+        
         # If conversion of punctuation and removal of emojis took care
         # of all the Unicode or if we allow Unicode then everything is fine
         if self.check_ascii(word) or self.allow_unicode_text:

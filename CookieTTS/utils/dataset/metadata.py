@@ -75,7 +75,7 @@ def filelist_get_transcript(audio_file, filelist, filelist_paths, filelist_names
                 print(f'"{audio_file}" not found in filelists')
                 raise FileNotFoundError(ex)
     transcript = filelist[path_index][1]
-    return transcript
+    return transcript.strip()
 
 
 def clipper_get_transcript(audio_file):
@@ -277,6 +277,9 @@ def get_dataset_meta(directory, meta=None, default_speaker=None, default_emotion
             print(ex, f'Skipping file: "{audio_file}"', sep='\n')
             files_skipped+=1; continue
         except KeyError as ex:
+            print(ex, f'Skipping file: "{audio_file}"', sep='\n')
+            files_skipped+=1; continue
+        if len(transcript) < 2:
             print(ex, f'Skipping file: "{audio_file}"', sep='\n')
             files_skipped+=1; continue
         
