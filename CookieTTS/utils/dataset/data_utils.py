@@ -164,7 +164,7 @@ def generate_filelist_from_datasets(DATASET_FOLDER,
             
             # get duration of file
             try:
-                audio, sampling_rate = load_wav_to_torch(clip['path'])
+                audio, sampling_rate = load_wav_to_torch(clip['path'], return_empty_on_exception=True)
                 clip_duration = len(audio)/sampling_rate
                 if clip_duration < MIN_DURATION:
                     bad_paths[dataset].append(clip['path'])
