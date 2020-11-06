@@ -19,6 +19,7 @@ def identify_transcript_storage(directory, audio_files, audio_ext, audio_basenam
     del files_with_txts, set_txt_files
     
     # look for txt or csv with name "*_master_dataset.txt"
+    # this comes up for Persona Nerd datasets. I don't know which ones specifically.
     n_valid_txts = 0
     valid_txts = list()
     for txt_file in txt_files:
@@ -291,7 +292,7 @@ def get_dataset_meta(directory, meta=None, default_speaker=None, default_emotion
             print(ex, f'Skipping file: "{audio_file}"', sep='\n')
             files_skipped+=1; continue
         if len(transcript) < 2:
-            print(ex, f'Skipping file: "{audio_file}"', sep='\n')
+            print(f'Skipping file: "{audio_file}"', sep='\n')
             files_skipped+=1; continue
         
         # 2.2.2 - get speaker name, emotion(s), noise level, source, source_type
