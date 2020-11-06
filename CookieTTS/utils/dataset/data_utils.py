@@ -335,6 +335,7 @@ class TTSDataset(torch.utils.data.Dataset):
     def __init__(self, filelist, hparams, args, check_files=True, TBPTT=True, shuffle=False, speaker_ids=None, audio_offset=0, verbose=False):
         self.filelist = filelist
         self.args = args
+        self.force_load = hparams.force_load
         
         #####################
         ## Text / Phonemes ##
@@ -863,11 +864,7 @@ class TTSDataset(torch.utils.data.Dataset):
         text_norm = torch.IntTensor(text_to_sequence(text, self.text_cleaners))
         return text_norm
     
-    def __getitem__(self, index):
-        if self.shuffle and index == self.rank: # [0,3,6,9],[1,4,7,10],[2,5,8,11] # shuffle_dataset if first item of this GPU of this epoch
-           self.shuffle_dataset()
-        
-        audiopath, text, speaker_id_ext, *_ = self.filelist[index]
+    def get_item_from_fileline(self, index, audiopath, text, speaker_id_ext):
         filelist_index, mel_offset = self.dataloader_indexes[index]
         
         output = self.get_data_from_inputs(audiopath, text, speaker_id_ext, mel_offset=mel_offset)
@@ -878,6 +875,22 @@ class TTSDataset(torch.utils.data.Dataset):
         is_not_last_iter = index+self.total_batch_size < self.len
         next_filelist_index, next_spectrogram_offset = self.dataloader_indexes[index+self.total_batch_size] if is_not_last_iter else (None, None)
         output['cont_next_iter'] = torch.tensor(True if (filelist_index == next_filelist_index) else False)# whether this file continued into the next iteration
+        return output
+    
+    def __getitem__(self, index):
+        if self.shuffle and index == self.rank: # [0,3,6,9],[1,4,7,10],[2,5,8,11] # shuffle_dataset if first item of this GPU of this epoch
+           self.shuffle_dataset()
+        
+        if self.force_load:
+            while output is None:
+            try:
+                audiopath, text, speaker_id_ext, *_ = self.filelist[index]
+                output = get_item_from_fileline(index, audiopath, text, speaker_id_ext)
+            except Exception as ex:
+                print(f"Failed to load '{audiopath}'")
+                print(ex)
+        else:
+            output = get_item_from_fileline(index, *self.filelist[index][:3])
         
         return output
     
