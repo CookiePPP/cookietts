@@ -227,6 +227,8 @@ def generate_filelist_from_datasets(DATASET_FOLDER,
             audiopath  = clip["path"]
             quote      = clip["quote"]
             speaker_id = speaker_lookup[clip['speaker']]
+            if len(clip["quote"]) < 4:
+                continue
             filelist.append([audiopath, quote, speaker_id])
     
     # speakerlist = [["name","id","dataset","source","source_type","duration"], ...]
