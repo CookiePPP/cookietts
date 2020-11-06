@@ -886,13 +886,13 @@ class TTSDataset(torch.utils.data.Dataset):
             while output is None:
                 try:
                     audiopath, text, speaker_id_ext, *_ = self.filelist[index]
-                    output = get_item_from_fileline(index, audiopath, text, speaker_id_ext)
+                    output = self.get_item_from_fileline(index, audiopath, text, speaker_id_ext)
                 except Exception as ex:
                     print(f"Failed to load '{audiopath}'")
                     print(ex)
-                    index = random.randint(0, self.len-1)
+                    index = random.randint(0, self.len-1)# change the audio file being loaded if this one fails to load.
         else:
-            output = get_item_from_fileline(index, *self.filelist[index][:3])
+            output = self.get_item_from_fileline(index, *self.filelist[index][:3])
         
         return output
     
