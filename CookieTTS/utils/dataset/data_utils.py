@@ -881,14 +881,15 @@ class TTSDataset(torch.utils.data.Dataset):
         if self.shuffle and index == self.rank: # [0,3,6,9],[1,4,7,10],[2,5,8,11] # shuffle_dataset if first item of this GPU of this epoch
            self.shuffle_dataset()
         
+        output = None
         if self.force_load:
             while output is None:
-            try:
-                audiopath, text, speaker_id_ext, *_ = self.filelist[index]
-                output = get_item_from_fileline(index, audiopath, text, speaker_id_ext)
-            except Exception as ex:
-                print(f"Failed to load '{audiopath}'")
-                print(ex)
+                try:
+                    audiopath, text, speaker_id_ext, *_ = self.filelist[index]
+                    output = get_item_from_fileline(index, audiopath, text, speaker_id_ext)
+                except Exception as ex:
+                    print(f"Failed to load '{audiopath}'")
+                    print(ex)
         else:
             output = get_item_from_fileline(index, *self.filelist[index][:3])
         
