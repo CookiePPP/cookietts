@@ -31,11 +31,13 @@ def load_wav_to_torch(full_path, target_sr=None, min_sr=None, remove_dc_offset=T
     
     data = torch.FloatTensor(data.astype(np.float32))/max_mag
     
+    if (torch.isinf(data) | torch.isnan(data)).any() and return_empty_on_exception:# resample will crash with inf/NaN inputs. return_empty_on_exception will return empty arr instead of except
+        return [], sampling_rate or target_sr or 48000
+    assert not (torch.isinf(data) | torch.isnan(data)).any(), f'Inf or NaN found in audio file\n"{full_path}"'
     if target_sr is not None and sampling_rate != target_sr:
+        data = torch.from_numpy(librosa.core.resample(data.numpy(), sampling_rate, target_sr))
         if (torch.isinf(data) | torch.isnan(data)).any() and return_empty_on_exception:# resample will crash with inf/NaN inputs. return_empty_on_exception will return empty arr instead of except
             return [], sampling_rate or target_sr or 48000
-        assert not (torch.isinf(data) | torch.isnan(data)).any(), f'Inf or NaN found in audio file\n"{full_path}"'
-        data = torch.from_numpy(librosa.core.resample(data.numpy(), sampling_rate, target_sr))
         assert not (torch.isinf(data) | torch.isnan(data)).any(), f'Inf or NaN found after resampling audio\n"{full_path}"'
         
         if remove_dc_offset:

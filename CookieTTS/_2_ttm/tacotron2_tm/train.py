@@ -153,12 +153,13 @@ def prepare_dataloaders(hparams, dataloader_args, args, speaker_ids):
                            speaker_ids=trainset.speaker_ids)
     collate_fn = Collate(hparams)
     
+    use_shuffle = False if hparams.use_TBPTT else True# can't shuffle with TBPTT
     if hparams.distributed_run:
-        train_sampler = DistributedSampler(trainset, shuffle=False)#True)
+        train_sampler = DistributedSampler(trainset, shuffle=use_shuffle)
         shuffle = False
     else:
         train_sampler = None
-        shuffle = False#True
+        shuffle = use_shuffle
     
     train_loader = DataLoader(trainset, num_workers=hparams.num_workers, shuffle=shuffle,
                               sampler=train_sampler,
