@@ -26,7 +26,7 @@ B_ = 40000
 C_ = 0e-5
 min_learning_rate = 1e-6
 
-grad_clip_thresh = 1.0 if iteration > 5000 else 0.0
+grad_clip_thresh = 1.0 if iteration > 5000 else 5.0
 
 warmup_start_lr = 0.1e-4
 warmup_start = checkpoint_iter + 0
@@ -42,7 +42,7 @@ gate_loss_weight   = 1.0000
 sylps_kld_weight   = 0.0025# try to hold sylps_lkd between 0.5 and 2.0
 sylps_MSE_weight   = 0.0100
 sylps_MAE_weight   = 0.0010
-diag_att_weight    = 0.0100# you only want to use this very shortly as it masks attention problems later into training.
+diag_att_weight    = 0.0500# you only want to use this very shortly as it masks attention problems later into training.
 if iteration > 5000:
     diag_att_weight *= 0.1
 

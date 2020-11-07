@@ -285,7 +285,6 @@ def write_dict_to_file(file_losses, fpath, n_gpus, rank, deliminator='","', ends
         import pickle
         
         # dump file_losses for each graphics card into files
-        print(f"Writing rank {rank} data to {fpath}_rank{rank}")
         with open(fpath+f'_rank{rank}', 'wb') as pickle_file:
             pickle.dump(file_losses, pickle_file, pickle.HIGHEST_PROTOCOL)
         

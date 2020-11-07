@@ -262,7 +262,7 @@ def get_dataset_meta(directory, meta=None, default_speaker=None, default_emotion
             text = open(txt, "r").read()
             text = [x.strip().split("|") for x in text.split("\n") if len(x.strip()) and not '{' in x] # `and not '{' in x` <- ignoring provided ARPAbet.
             filelist.extend(text)
-        filelist_paths = [x[0].replace("\\","/") for x in filelist]
+        filelist_paths = [x[0].replace(".wav",".npy").replace("\\","/") for x in filelist]
         filelist_names = [os.path.split(x)[-1] for x in filelist_paths]
         filelist_basenames = [os.path.splitext(x)[0] for x in filelist_names]
     

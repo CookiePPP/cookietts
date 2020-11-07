@@ -1,5 +1,4 @@
 from CookieTTS.utils.text.symbols import symbols
-import tensorflow as tf
 
 def create_hparams(hparams_string=None, verbose=False):
     """Create model hyperparameters. Parse nondefault from given string."""
@@ -180,9 +179,9 @@ def create_hparams(hparams_string=None, verbose=False):
         # The outputs from the encoder, speaker, emotionnet and sylpsnet need to be mixed.
         # By default the information is mixed by the DecoderRNN, but this is repeated every spectrogram frame so likely wastes a massive amount of compute performing the same operations repeatedly.
         # Thus, this memory bottleneck can be used to mix the above mentioned outputs into a more compressed representation before decoding, allowing the DecoderRNN to be made smaller and more effective.
-        use_memory_bottleneck = True,# False baseline
-        memory_bottleneck_dim = 512,# new memory size. 512 would be equivalent to the original Tacotron2.
-        memory_bottleneck_bias= False,
+        use_memory_bottleneck  = True,# False baseline
+        memory_bottleneck_dim  = 512,# new memory size. 512 would be equivalent to the original Tacotron2.
+        memory_bottleneck_bias = False,
         
         # (Decoder) Decoder parameters
         start_token = "",#"☺"
@@ -205,16 +204,16 @@ def create_hparams(hparams_string=None, verbose=False):
                              # Set max to False or Zero to disable
         
         # (Decoder) AttentionRNN
-        attention_rnn_dim         =1280,  # 1024 baseline
-        AttRNN_hidden_dropout_type='zoneout',# options ('dropout','zoneout')
-        p_AttRNN_hidden_dropout   =0.10,  # 0.1 baseline
-        AttRNN_extra_decoder_input=True,  # False baseline # Feed DecoderRNN Hidden State into AttentionRNN
+        attention_rnn_dim          = 1280,  # 1024 baseline
+        AttRNN_hidden_dropout_type = 'zoneout',# options ('dropout','zoneout')
+        p_AttRNN_hidden_dropout    = 0.10,  # 0.1 baseline
+        AttRNN_extra_decoder_input = True,  # False baseline # Feed DecoderRNN Hidden State into AttentionRNN
         
         # (Decoder) DecoderRNN
-        decoder_rnn_dim            =384,  # 1024 baseline
-        DecRNN_hidden_dropout_type ='dropout',# options ('dropout','zoneout')
-        p_DecRNN_hidden_dropout    =0.2,  # 0.1 baseline
-        decoder_residual_connection=False,# residual connections with the AttentionRNN hidden state and Attention/Memory Context
+        decoder_rnn_dim            = 384,  # 1024 baseline
+        DecRNN_hidden_dropout_type = 'dropout',# options ('dropout','zoneout')
+        p_DecRNN_hidden_dropout    = 0.2,  # 0.1 baseline
+        decoder_residual_connection= False,# residual connections with the AttentionRNN hidden state and Attention/Memory Context
         # Optional Second Decoder
         second_decoder_rnn_dim=0,# 0 baseline # Extra DecoderRNN to learn more complex patterns # set to 0 to disable layer.
         second_decoder_residual_connection=True,# residual connections between the DecoderRNNs
@@ -231,8 +230,8 @@ def create_hparams(hparams_string=None, verbose=False):
                                      # will set the forward and back distance the model can attend to.
                                      # 2 will give the model 5 characters it can attend to at any one time.
                                      # This will also allow more stable generation with extremely long text inputs and save VRAM during inference.
-        windowed_att_pos_offset=1.25,# Offset the current_pos by this amount.
-        windowed_att_pos_learned=True,
+        windowed_att_pos_offset  = 1.25,# Offset the current_pos by this amount.
+        windowed_att_pos_learned = True,
         attention_learned_temperature=False,# add temperature param to alignments for softmax.
         
         # (Decoder) Attention Type 0 (and 2) Parameters
@@ -268,7 +267,7 @@ def create_hparams(hparams_string=None, verbose=False):
         weight_decay=1e-6,
         grad_clip_thresh=1.0,# overriden by 'run_every_epoch.py'
         
-        mask_padding=True,#mask values by setting them to the same values in target and predicted
+        mask_padding =True,#mask values by setting them to the same values in target and predicted
         masked_select=True,#mask values by removing them from the calculation
         
         # (DFR) Drop Frame Rate

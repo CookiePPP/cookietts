@@ -45,11 +45,11 @@ class Tacotron2Logger(SummaryWriter):
             self.add_scalar("grad.norm", grad_norm, iteration)
         
         if iteration%100 == 0:
-            self.add_scalar(f"{prepend}.learning_rate", learning_rate, iteration)
-            self.add_scalar(f"{prepend}/p_teacher_forcing", p_teacher_forcing, iteration)
+            self.add_scalar(f"{prepend}.learning_rate",      learning_rate,      iteration)
+            self.add_scalar(f"{prepend}/p_teacher_forcing" , p_teacher_forcing,  iteration)
             self.add_scalar(f"{prepend}/teacher_force_till", teacher_force_till, iteration)
-            self.add_scalar(f"{prepend}/drop_frame_rate", p_teacher_forcing, iteration)
-            self.add_scalar(f"{prepend}.duration", duration, iteration)
+            self.add_scalar(f"{prepend}/drop_frame_rate",    drop_frame_rate,    iteration)
+            self.add_scalar(f"{prepend}.duration",           duration,           iteration)
     
     def log_validation(self, reduced_loss_dict, reduced_bestval_loss_dict, model, y, y_pred, iteration, val_teacher_force_till, val_p_teacher_forcing):
         prepend = 'validation'
