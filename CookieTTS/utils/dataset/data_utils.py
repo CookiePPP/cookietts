@@ -430,13 +430,21 @@ class TTSDataset(torch.utils.data.Dataset):
         #####################################################################
         # simulate the entire epoch so the decoder can be linked together between iters.
         self.shuffle    = shuffle
+        self.TBPTT      = TBPTT
         
+        self.use_TBPTT  = hparams.use_TBPTT
         self.batch_size = hparams.batch_size
         self.rank       = hparams.rank
-        self.total_batch_size = self.batch_size * hparams.n_gpus # number of audio files being processed together
+        self.total_batch_size   = hparams.batch_size * hparams.n_gpus # number of audio files being processed together
         self.max_segment_length = hparams.max_segment_length # frames
         
-        if hparams.use_TBPTT and TBPTT:
+        self.update_filelist(self.filelist)
+        
+    
+    def update_filelist(self, filelist):
+        self.filelist = filelist
+        
+        if self.use_TBPTT and self.TBPTT:
             print('Calculating audio lengths of all files...')
             self.audio_lengths = torch.tensor([self.get_mel(x[0]).shape[1]+self.silence_pad_start+self.silence_pad_end for x in self.filelist]) # get the length of every file (the long way)
             print('Done.')
@@ -878,9 +886,6 @@ class TTSDataset(torch.utils.data.Dataset):
         return output
     
     def __getitem__(self, index):
-        if self.shuffle and index == self.rank: # [0,3,6,9],[1,4,7,10],[2,5,8,11] # shuffle_dataset if first item of this GPU of this epoch
-           self.shuffle_dataset()
-        
         output = None
         if self.force_load:
             while output is None:
@@ -905,7 +910,7 @@ class Collate():
         self.n_frames_per_step = hparams.n_frames_per_step
         self.n_classes = len(getattr(hparams, "emotion_classes", list()))
         self.context_frames = getattr(hparams, "context_frames", 1)
-        self.sort_text_len_decending = True
+        self.sort_text_len_decending = hparams.sort_text_len_decending
     
     def collate_left(self, tensor_arr, max_len=None, dtype=None, device=None, index_lookup=None, pad_val=0.0, check_const_channels=True):
         """

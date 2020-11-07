@@ -27,16 +27,20 @@ def create_hparams(hparams_string=None, verbose=False):
         cudnn_enabled  = True,
         cudnn_benchmark=False,
         
-        ignore_layers= ["layers_here"],# for `warm_start`-ing
-        frozen_modules=["layers_here"],# only the module names are required e.g: "encoder." will freeze all parameters INSIDE the encoder recursively
+        ###############################
+        ## Freezing/Reseting Modules ##
+        ###############################
+        print_layer_names_during_startup=False,# will print every modules key to be used below.
+        ignore_layers   =["layers_here"],# for `warm_start`-ing
+        frozen_modules  =["layers_here"],# only the module names are required e.g: "encoder." will freeze all parameters INSIDE the encoder recursively
+        unfrozen_modules=["layers_here"],# modules that are unfrozen
         
         #########################
         ## Logging / Verbosity ##
         #########################
-        print_layer_names_during_startup=True,
         n_tensorboard_outputs=5,# number of items from validation so show in Tensorboard
-        n_tensorboard_outputs_highloss=5,# top X tacotron outputs with worst validation loss.
-        n_tensorboard_outputs_badavgatt=5,# top X tacotron outputs with weakest average attention.
+        n_tensorboard_outputs_highloss=5, # NOT IMPLEMENTED # top X tacotron outputs with worst validation loss.
+        n_tensorboard_outputs_badavgatt=5,# NOT IMPLEMENTED # top X tacotron outputs with weakest average attention.
         
         #################################
         ## Batch Size / Segment Length ##
@@ -45,6 +49,18 @@ def create_hparams(hparams_string=None, verbose=False):
         val_batch_size=32,# for more precise comparisons between models, constant batch_size is useful
         use_TBPTT=False,  # continue processing longer files into the next training iteration
         max_segment_length=800,# max mel length till a segment is sliced.
+        
+        sort_text_len_decending = True,# IMPLEMENTED, NEEDS TO BE TESTED
+                                       # Should allow more flexibility with TBPTT and remove quite a few problems.
+        
+        portion_for_worst_speaker=0.1,# NOT IMPLEMENTED
+                                      # this portion of the batch_size is dedicated to files from the worst frame-by-frame audio quality speaker.
+        
+        min_avg_max_att       = 0.30 ,# files under this alignment strength are filtered out of the dataset during training.
+        min_avg_max_att_start = 20000,# when to start filtering out weak alignments.
+                                      # (normally mis-labelled files or files that are too challenging to learn)
+                                      # Only applies to training dataset.
+                                      # Only updates at the end of each epoch.
         
         num_workers=4,# number of threads for dataloading per GPU
         ###################################
@@ -90,7 +106,7 @@ def create_hparams(hparams_string=None, verbose=False):
         
         trim_enable = False,# set to False to disable trimming completely
         trim_cache_audio = False,# save trimmed audio to disk to load later. Saves CPU usage, uses more disk space.
-                                 # modifications to params below do not apply to already cached files while True.
+                                 # modifications to params below do not apply to already cached files.
         trim_margin_left  = [0.0125]*5,
         trim_margin_right = [0.0125]*5,
         trim_top_db       = [50  ,46  ,46  ,46  ,46  ],
@@ -138,12 +154,12 @@ def create_hparams(hparams_string=None, verbose=False):
         val_teacher_force_till=20,
         
         # (Encoder) Encoder parameters
-        encoder_speaker_embed_dim=64, # speaker_embedding before encoder
-        encoder_concat_speaker_embed='before_conv', # concat before encoder convs, or just before the LSTM inside decode. Options 'before_conv','before_lstm'
-        encoder_kernel_size=5,
-        encoder_n_convolutions=3,
-        encoder_conv_hidden_dim=512,
-        encoder_LSTM_dim=768,
+        encoder_speaker_embed_dim   = 64, # speaker_embedding before encoder
+        encoder_concat_speaker_embed= 'before_conv', # concat before encoder convs, or just before the LSTM inside decode. Options 'before_conv','before_lstm'
+        encoder_kernel_size    = 5,
+        encoder_n_convolutions = 3,
+        encoder_conv_hidden_dim= 512,
+        encoder_LSTM_dim = 1024,
         
         # (SylpsNet) Predicts speaking speed
         sylpsnet_layer_dims = [32, 32],# width of each layer, LeakyReLU() is used between hiddens
@@ -152,25 +168,25 @@ def create_hparams(hparams_string=None, verbose=False):
         emotion_classes = ['neutral','anxious','happy','annoyed','sad','confused','smug','angry','whispering','shouting','sarcastic','amused','surprised','singing','fear','serious'],
         
         # (AuxEmotionNet) TorchMoji
-        torchMoji_attDim=2304,# published model uses 2304
-        torchMoji_crushedDim=32,
-        torchMoji_BatchNorm=True,
+        torchMoji_attDim     = 2304,# published model uses 2304
+        torchMoji_crushedDim = 32,
+        torchMoji_BatchNorm  = True,
         
         # (Speaker) Speaker embedding
-        n_speakers=512, # maximum number of speakers the model can support.
-        speaker_embedding_dim=256, # speaker embedding size # 128 baseline
+        n_speakers            = 512, # maximum number of speakers the model can support.
+        speaker_embedding_dim = 256, # speaker embedding size # 128 baseline
         
         # (Decoder/Encoder) Bottleneck parameters
         # The outputs from the encoder, speaker, emotionnet and sylpsnet need to be mixed.
         # By default the information is mixed by the DecoderRNN, but this is repeated every spectrogram frame so likely wastes a massive amount of compute performing the same operations repeatedly.
         # Thus, this memory bottleneck can be used to mix the above mentioned outputs into a more compressed representation before decoding, allowing the DecoderRNN to be made smaller and more effective.
-        use_memory_bottleneck=True,# False baseline
-        memory_bottleneck_dim=512,# new memory size. 512 would be equivalent to the original Tacotron2.
-        memory_bottleneck_bias=False,
+        use_memory_bottleneck = True,# False baseline
+        memory_bottleneck_dim = 512,# new memory size. 512 would be equivalent to the original Tacotron2.
+        memory_bottleneck_bias= False,
         
         # (Decoder) Decoder parameters
         start_token = "",#"☺"
-        stop_token = "",#"␤"
+        stop_token  = "",#"␤"
         hide_startstop_tokens=False, # trim first/last encoder output before feeding to attention.
         n_frames_per_step=1,# currently only 1 is supported
         context_frames=1,   # TODO TODO TODO TODO TODO
@@ -183,21 +199,21 @@ def create_hparams(hparams_string=None, verbose=False):
         p_prenet_dropout  =0.5,# 0.5 baseline
         
         prenet_speaker_embed_dim=0,# speaker_embedding before encoder
-        prenet_noise   =0.05,# Add Gaussian Noise to Prenet inputs. std defined here.
+        prenet_noise   =0.10,# Add Gaussian Noise to Prenet inputs. std defined here.
         prenet_blur_min=0.00,# Apply random vertical blur between prenet_blur_min
-        prenet_blur_max=0.00,#                                and prenet_blur_max
+        prenet_blur_max=1.00,#                                and prenet_blur_max
                              # Set max to False or Zero to disable
         
         # (Decoder) AttentionRNN
-        attention_rnn_dim=1280, # 1024 baseline
-        AttRNN_extra_decoder_input=True,# False baseline # Feed DecoderRNN Hidden State into AttentionRNN
-        AttRNN_hidden_dropout_type='dropout',# options ('dropout','zoneout')
-        p_AttRNN_hidden_dropout=0.05,# 0.1 baseline
+        attention_rnn_dim         =1280,  # 1024 baseline
+        AttRNN_hidden_dropout_type='zoneout',# options ('dropout','zoneout')
+        p_AttRNN_hidden_dropout   =0.10,  # 0.1 baseline
+        AttRNN_extra_decoder_input=True,  # False baseline # Feed DecoderRNN Hidden State into AttentionRNN
         
         # (Decoder) DecoderRNN
-        decoder_rnn_dim=384, # 1024 baseline
-        DecRNN_hidden_dropout_type='dropout',# options ('dropout','zoneout')
-        p_DecRNN_hidden_dropout=0.1,# 0.1 baseline
+        decoder_rnn_dim            =384,  # 1024 baseline
+        DecRNN_hidden_dropout_type ='dropout',# options ('dropout','zoneout')
+        p_DecRNN_hidden_dropout    =0.2,  # 0.1 baseline
         decoder_residual_connection=False,# residual connections with the AttentionRNN hidden state and Attention/Memory Context
         # Optional Second Decoder
         second_decoder_rnn_dim=0,# 0 baseline # Extra DecoderRNN to learn more complex patterns # set to 0 to disable layer.
@@ -211,12 +227,13 @@ def create_hparams(hparams_string=None, verbose=False):
         attention_dim=192, # 128 Layer baseline # Used for Key-Query Dim
         
         # (Decoder) Attention Type 0 Parameters
-        windowed_attention_range = 32,# set to 0 to disable
+        windowed_attention_range = 16,# set to 0 to disable
                                      # will set the forward and back distance the model can attend to.
                                      # 2 will give the model 5 characters it can attend to at any one time.
                                      # This will also allow more stable generation with extremely long text inputs and save VRAM during inference.
         windowed_att_pos_offset=1.25,# Offset the current_pos by this amount.
         windowed_att_pos_learned=True,
+        attention_learned_temperature=False,# add temperature param to alignments for softmax.
         
         # (Decoder) Attention Type 0 (and 2) Parameters
         attention_location_n_filters=32,  # 32 baseline

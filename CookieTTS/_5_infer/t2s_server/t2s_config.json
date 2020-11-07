@@ -27,7 +27,7 @@
     },
     "workers": {
         "devices": ["cpu", "cuda:0"],
-        "sox_output_ext": "flac",
+        "sox_output_ext": "wav",
         "working_directory": "server_infer",
         "output_directory": "server_infer_done",
         "output_maxsize_gb": 0.01,
@@ -35,135 +35,18 @@
         "TTM": {
             "speaker_ids_file": "H:/ClipperDatasetV2/filelists/speaker_ids.txt",
             "use_speaker_ids_file_override": true,
-            "default_model": "AEF6 | Tacotron2 SSVAE2.2 AEF6 (Logvar+GAN Loss 0.5K)",
+            "default_model": "MEL | Tacotron2 TM (Baseline 40K)",
             "models": {
-                "MEL | Tacotron2 SSVAE2 (Baseline 150K)": {
-                    "modelpath": "G:/TwiBot/CookiePPPTTS/CookieTTS/_2_ttm/tacotron2/NewCPs/checkpoint_150000_ssvae_0dfr"
-                },
-                "MEL | Tacotron2 SSVAE2 (Baseline 166K)": {
-                    "modelpath": "G:/TwiBot/CookiePPPTTS/CookieTTS/_2_ttm/tacotron2/NewCPs/checkpoint_166000_ssvae2_0dfr"
-                },
-                "MEL / HDN | Tacotron2 SSVAE2.1 (Logvar Loss 54K)": {
-                    "modelpath": "G:/TwiBot/CookiePPPTTS/CookieTTS/_2_ttm/tacotron2/NewCPs/checkpoint_54000"
-                },
-                "AEF4 | Tacotron2 SSVAE2.2 AEF4 (Logvar Loss 72K)": {
-                    "modelpath": "G:/TwiBot/CookiePPPTTS/CookieTTS/_2_ttm/tacotron2/NewCPs/checkpoint_72000"
-                },
-                "AEF5 | Tacotron2 SSVAE2.2 AEF5 (Logvar Loss 11K)": {
-                    "modelpath": "G:/TwiBot/CookiePPPTTS/CookieTTS/_2_ttm/tacotron2/NewCPs/checkpoint_10880_AEF5"
-                },
-                "AEF6 | Tacotron2 SSVAE2.2 AEF6 (Logvar Loss 24K)": {
-                    "modelpath": "G:/TwiBot/CookiePPPTTS/CookieTTS/_2_ttm/tacotron2/NewCPs/checkpoint_24000_AEF6_DFR_1"
-                },
-                "AEF6 | Tacotron2 SSVAE2.2 AEF6 (Logvar Loss 30K)": {
-                    "modelpath": "G:/TwiBot/CookiePPPTTS/CookieTTS/_2_ttm/tacotron2/NewCPs/checkpoint_30000_AEF6_DFR_1"
-                },
-                "AEF6 | Tacotron2 SSVAE2.2 AEF6 (Logvar Loss 36K)": {
-                    "modelpath": "G:/TwiBot/CookiePPPTTS/CookieTTS/_2_ttm/tacotron2/NewCPs/checkpoint_36000_AEF6_DFR_1"
-                },
-                "AEF6 | Tacotron2 SSVAE2.2 AEF6 (Logvar+GAN Loss 1K)": {
-                    "modelpath": "G:/TwiBot/CookiePPPTTS/CookieTTS/_2_ttm/tacotron2/NewCPs/checkpoint_1000"
-                },
-                "AEF6 | Tacotron2 SSVAE2.2 AEF6 (Logvar+GAN Loss 8K)": {
-                    "modelpath": "G:/TwiBot/CookiePPPTTS/CookieTTS/_2_ttm/tacotron2/NewCPs/checkpoint_8000"
-                },
-                "AEF6 | Tacotron2 SSVAE2.2 AEF6 (Logvar+GAN Loss 10K)": {
-                    "modelpath": "G:/TwiBot/CookiePPPTTS/CookieTTS/_2_ttm/tacotron2/NewCPs/checkpoint_10000"
-                },
-                "AEF6 | Tacotron2 SSVAE2.2 AEF6 (Logvar+GAN Loss 24K)": {
-                    "modelpath": "G:/TwiBot/CookiePPPTTS/CookieTTS/_2_ttm/tacotron2/NewCPs/checkpoint_24000"
-                },
-                "AEF6 | Tacotron2 SSVAE2.2 AEF6 (Logvar+GAN Loss 0.5K)": {
-                    "modelpath": "G:/TwiBot/CookiePPPTTS/CookieTTS/_2_ttm/tacotron2/NewCPs/checkpoint_500_AEF6_DFR_5GAN"
+                "MEL | Tacotron2 TM (Baseline 40K)": {
+                    "modelpath": "G:/TwiBot/CookiePPPTTS/CookieTTS/_2_ttm/tacotron2_tm/outdir/best_val_model"
                 }
             }
         },
         "MTW": {
-            "speaker_ids_file": "H:/ClipperDatasetV2/filelists/speaker_ids.txt",
-            "use_speaker_ids_file_override": true,
-            "default_model": "AEF6 | WaveFlow 4.1 WG (20 Group, 24 Flow, 8 Layer, 256 Channel)",
+            "default_model": "MEL | HiFi-GAN V1 44Khz",
             "models": {
-                "MEL | MiniWaveGlow V2 (GT, 16 Flow, n_group 120 282K)": {
-                    "modelpath": "H:/TTCheckpoints/waveglow/outdir_EfficientSmallGlobalSpeakerEmbeddings/Testing2/best_val_model",
-                    "configpath": "H:/TTCheckpoints/waveglow/outdir_EfficientSmallGlobalSpeakerEmbeddings/Testing2/config.json"
-                },
-                "MEL | WaveGlow V5 (Postnet, 12 Flow, n_group 24 73K)": {
-                    "modelpath": "H:/TTCheckpoints/waveglow/outdir_EfficientSmallGlobalSpeakerEmbeddings/Testing5/best_val_model",
-                    "configpath": "H:/TTCheckpoints/waveglow/outdir_EfficientSmallGlobalSpeakerEmbeddings/Testing5/config.json"
-                },
-                "MEL | LargeWaveGlow V1 (GT, 24 Flow, n_group 10 206K)": {
-                    "modelpath": "H:/TTCheckpoints/waveglow/outdir_EfficientLarge/best_model",
-                    "configpath": "H:/TTCheckpoints/waveglow/outdir_EfficientLarge/config.json"
-                },
-                "MEL | LargeWaveGlow V3.5 (GT, 48 Flow, n_group 24 190K)": {
-                    "modelpath": "H:/TTCheckpoints/waveglow/outdir_EfficientLarge3.5/best_val_model",
-                    "configpath": "H:/TTCheckpoints/waveglow/outdir_EfficientLarge3.5/config.json"
-                },
-                "MEL | LargeWaveGlow V3.5 (GT[+Postnet], 48 Flow, n_group 24 190K[+7K])": {
-                    "modelpath": "H:/TTCheckpoints/waveglow/outdir_EfficientLarge3.5/Postnet/best_val_model",
-                    "configpath": "H:/TTCheckpoints/waveglow/outdir_EfficientLarge3.5/Postnet/config.json"
-                },
-                "MEL | LargeWaveGlow V3.6 (GT[+Postnet], 48 Flow, n_group 24 190K[+30K])": {
-                    "modelpath": "H:/TTCheckpoints/waveglow/outdir_EfficientLarge3.5/Postnetax/best_val_model",
-                    "configpath": "H:/TTCheckpoints/waveglow/outdir_EfficientLarge3.5/Postnetax/config.json"
-                },
-                "MEL | LargeWaveGlow V4.0 (GT, 24 Flow, n_group 24 110K)": {
-                    "modelpath": "H:/TTCheckpoints/waveglow/outdir_EfficientLarge4/best_val_model",
-                    "configpath": "H:/TTCheckpoints/waveglow/outdir_EfficientLarge4/config.json"
-                },
-                "MEL | Small WaveFlow (20 Group, 6 Flow, 8 Layer, 128 Channel Separable)": {
-                    "modelpath": "H:/TTCheckpoints/waveflow/4thLargeKernels/AR_6_Flow/best_val_model",
-                    "configpath": "H:/TTCheckpoints/waveflow/4thLargeKernels/AR_6_Flow/config.json"
-                },
-                "AEF1 | WaveFlow 1.1 (50 Group, 6 Flow, 7 Layer, 512 Channel Separable)": {
-                    "modelpath": "H:/TTCheckpoints/waveflow/4thLargeKernels/AR_6_Flow_512C/best_val_model",
-                    "configpath": "H:/TTCheckpoints/waveflow/4thLargeKernels/AR_6_Flow_512C/config.json",
-                    "input_type": "AEF"
-                },
-                "AEF4 | WaveFlow 4.1 (20 Group, 8 Flow, 8 Layer, 256 Channel Separable)": {
-                    "modelpath": "H:/TTCheckpoints/waveflow/4thLargeKernels/AR_8_Flow_AEF4.1/best_model",
-                    "configpath": "H:/TTCheckpoints/waveflow/4thLargeKernels/AR_8_Flow_AEF4.1/config.json",
-                    "input_type": "AEF4"
-                },
-                "AEF4 | WaveFlow 4.1 WG (20 Group, 12 Flow, 8 Layer, 256 Channel)": {
-                    "modelpath": "H:/TTCheckpoints/waveflow/4thLargeKernels/WG_12_Flow_AEF4.1/best_val_model",
-                    "configpath": "H:/TTCheckpoints/waveflow/4thLargeKernels/WG_12_Flow_AEF4.1/config.json",
-                    "input_type": "AEF4"
-                },
-                "AEF4 | WaveFlow 4.1 WG (20 Group, 24 Flow, 8 Layer, 256 Channel)": {
-                    "modelpath": "H:/TTCheckpoints/waveflow/4thLargeKernels/WG_24_Flow_AEF4.1/best_model",
-                    "configpath": "H:/TTCheckpoints/waveflow/4thLargeKernels/WG_24_Flow_AEF4.1/config.json",
-                    "input_type": "AEF4"
-                },
-                "HDN | WaveFlow 256C (20 Group, 8 Flow, 8 Layer, 256 Channel Separable)": {
-                    "modelpath": "H:/TTCheckpoints/waveflow/4thLargeKernels/AR_8_Flow_256C_HDN/best_model",
-                    "configpath": "H:/TTCheckpoints/waveflow/4thLargeKernels/AR_8_Flow_256C_HDN/config.json",
-                    "input_type": "HDN"
-                },
-                "HDN | WaveFlow 128C (20 Group, 8 Flow, 8 Layer, 128 Channel Separable)": {
-                    "modelpath": "H:/TTCheckpoints/waveflow/4thLargeKernels/AR_8_Flow_HDN/best_val_model",
-                    "configpath": "H:/TTCheckpoints/waveflow/4thLargeKernels/AR_8_Flow_HDN/config.json",
-                    "input_type": "HDN"
-                },
-                "MEL | WaveFlow SSVAE2.2 (50 Group, 6 Flow, 7 Layer, 512 Channel Separable)": {
-                    "modelpath": "H:/TTCheckpoints/waveflow/4thLargeKernels/AR_6_Flow_512C_ssvae2_2/best_val_model",
-                    "configpath": "H:/TTCheckpoints/waveflow/4thLargeKernels/AR_6_Flow_512C_ssvae2_2/config.json",
-                    "input_type": "MEL"
-                },
-                "MEL | WaveFlow 8FlowGT3 (20 Group, 8 Flow, 8 Layer, 128 Channel Separable)": {
-                    "modelpath": "H:/TTCheckpoints/waveflow/4thLargeKernels/AR_8_Flow/best_model",
-                    "configpath": "H:/TTCheckpoints/waveflow/4thLargeKernels/AR_8_Flow/config_original.json",
-                    "input_type": "MEL"
-                },
-                "AEF5 | WaveFlow 4.1 WG (20 Group, 24 Flow, 8 Layer, 256 Channel)": {
-                    "modelpath": "H:/TTCheckpoints/waveflow/4thLargeKernels/WG_24_Flow_AEF5.1/best_model",
-                    "configpath": "H:/TTCheckpoints/waveflow/4thLargeKernels/WG_24_Flow_AEF5.1/config.json",
-                    "input_type": "AEF5"
-                },
-                "AEF6 | WaveFlow 4.1 WG (20 Group, 24 Flow, 8 Layer, 256 Channel)": {
-                    "modelpath": "H:/TTCheckpoints/waveflow/4thLargeKernels/WG_24_Flow_AEF6/best_model",
-                    "configpath": "H:/TTCheckpoints/waveflow/4thLargeKernels/WG_24_Flow_AEF6/config.json",
-                    "input_type": "AEF6"
+                "MEL | HiFi-GAN V1 44Khz": {
+                    "modelpath": "G:/TwiBot/VocoderComparisons/repos/hifi-gan/cp_hifigan_universal44Khz/g_00175000"
                 }
             }
         }

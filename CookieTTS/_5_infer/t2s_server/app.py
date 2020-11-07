@@ -56,8 +56,8 @@ def texttospeech():
             t2s.update_tt(ttm_current)
         
         # update Mel-to-Wav model if needed
-        if t2s.MTW_current != MTW_current:
-            t2s.update_wg(MTW_current)
+        #if t2s.MTW_current != MTW_current:
+        #    t2s.update_wg(MTW_current)
         
         # (Text) CRLF to LF
         text = text.replace('\r\n','\n')

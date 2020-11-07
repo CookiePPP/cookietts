@@ -153,7 +153,8 @@ def prepare_dataloaders(hparams, dataloader_args, args, speaker_ids):
                            speaker_ids=trainset.speaker_ids)
     collate_fn = Collate(hparams)
     
-    use_shuffle = False if hparams.use_TBPTT else True# can't shuffle with TBPTT
+    #use_shuffle = False if hparams.use_TBPTT else True# can't shuffle with TBPTT
+    use_shuffle = False# using custom Shuffle function inside dataloader.dataset which works with TBPTT
     if hparams.distributed_run:
         train_sampler = DistributedSampler(trainset, shuffle=use_shuffle)
         shuffle = False
@@ -282,30 +283,30 @@ def write_dict_to_file(file_losses, fpath, n_gpus, rank, deliminator='","', ends
     if n_gpus > 1:
         # synchronize data between graphics cards
         import pickle
-        if rank != 0:# dump file_losses for each graphics card into files
-            print(f"Writing rank {rank} data to {fpath}_rank{rank}")
-            with open(fpath+f'_rank{rank}', 'wb') as pickle_file:
-                pickle.dump(file_losses, pickle_file, pickle.HIGHEST_PROTOCOL)
+        
+        # dump file_losses for each graphics card into files
+        print(f"Writing rank {rank} data to {fpath}_rank{rank}")
+        with open(fpath+f'_rank{rank}', 'wb') as pickle_file:
+            pickle.dump(file_losses, pickle_file, pickle.HIGHEST_PROTOCOL)
         
         torch.distributed.barrier()# wait till all graphics cards reach this point.
         
-        if rank == 0:# merge file losses from other graphics cards into main process
-            list_of_dicts = []
-            for f_rank in range(1, n_gpus):
-                list_of_dicts.append(pickle.load(open(f'{fpath}_rank{f_rank}', "rb")))
-            
-            for new_file_losses in list_of_dicts:
-                for path, loss_dict in new_file_losses.items():
-                    if path in file_losses:
-                        if loss_dict['time'] > file_losses[path]['time']:
-                            file_losses[path] = loss_dict
-                    else:
+        # merge file losses from other graphics cards into this process
+        list_of_dicts = []
+        for f_rank in [x for x in list(range(n_gpus)) if x != rank]:
+            list_of_dicts.append(pickle.load(open(f'{fpath}_rank{f_rank}', "rb")))
+        
+        for new_file_losses in list_of_dicts:
+            for path, loss_dict in new_file_losses.items():
+                if path in file_losses:
+                    if loss_dict['time'] > file_losses[path]['time']:
                         file_losses[path] = loss_dict
+                else:
+                    file_losses[path] = loss_dict
         
         torch.distributed.barrier()# wait till all graphics cards reach this point.
         
-        if rank != 0:
-            os.remove(fpath+f'_rank{rank}')
+        os.remove(fpath+f'_rank{rank}')
     
     if rank == 0:# write file_losses data to .CSV file.
         print(f"Writing CSV to {fpath}")
@@ -317,6 +318,8 @@ def write_dict_to_file(file_losses, fpath, n_gpus, rank, deliminator='","', ends
                 for loss_name, loss_value in loss_dict.items():
                     line.append(str(loss_value))
                 f.write('\n'+ends+deliminator.join(line)+ends)
+    
+    return file_losses
 
 def update_smoothed_dict(orig_dict, new_dict, smoothing_factor=0.6):
     for key, value in new_dict.items():
@@ -463,6 +466,12 @@ def train(args, rank, group_name, hparams):
                 params.requires_grad = False
                 print(f"Layer: {layer} has been frozen")
     
+    if len(hparams.unfrozen_modules):
+        for layer, params in list(model.named_parameters()):
+            if any(layer.startswith(module) for module in hparams.frozen_modules):
+                params.requires_grad = True
+                print(f"Layer: {layer} has been unfrozen")
+    
     # define optimizer (any params without requires_grad are ignored)
     #optimizer = torch.optim.Adam(filter(lambda p: p.requires_grad, model.parameters()), lr=learning_rate, weight_decay=hparams.weight_decay)
     optimizer = apexopt.FusedAdam(filter(lambda p: p.requires_grad, model.parameters()), lr=learning_rate, weight_decay=hparams.weight_decay)
@@ -568,8 +577,8 @@ def train(args, rank, group_name, hparams):
             for epoch in tqdm(range(epoch_offset, hparams.epochs), initial=epoch_offset, total=hparams.epochs, desc="Epoch:", position=1, unit="epoch"):
                 tqdm.write("Epoch:{}".format(epoch))
                 
-                if hparams.distributed_run: # shuffles the train_loader when doing multi-gpu training
-                    train_sampler.set_epoch(epoch)
+                train_loader.dataset.shuffle_dataset()# Shuffle Dataset
+                
                 start_time = time.time()
                 # start iterating through the epoch
                 for i, batch in tqdm(enumerate(train_loader), desc="Iter:  ", smoothing=0, total=len(train_loader), position=0, unit="iter"):
@@ -694,7 +703,7 @@ def train(args, rank, group_name, hparams):
                     
                     if not is_overflow and iteration%dump_filelosses_interval==0:
                         print("Updating File_losses dict!")
-                        write_dict_to_file(file_losses, os.path.join(args.output_directory, 'file_losses.csv'), args.n_gpus, rank)
+                        file_losses = write_dict_to_file(file_losses, os.path.join(args.output_directory, 'file_losses.csv'), args.n_gpus, rank)
                     
                     if not is_overflow and ((iteration % int(validation_interval) == 0) or (os.path.exists(save_file_check_path)) or (iteration < 1000 and (iteration % 250 == 0))):
                         if rank == 0 and os.path.exists(save_file_check_path):
@@ -715,6 +724,21 @@ def train(args, rank, group_name, hparams):
                     
                     iteration += 1
                     # end of iteration loop
+                
+                # update filelist of training dataloader
+                if (iteration > hparams.min_avg_max_att_start) and (checkpoint_iter-iteration > 500):
+                    print("Updating File_losses dict!")
+                    file_losses = write_dict_to_file(file_losses, os.path.join(args.output_directory, 'file_losses.csv'), args.n_gpus, rank)
+                    print("Done!")
+                    
+                    print("Updating dataloader filtered paths!")
+                    bad_file_paths = [k for k in list(file_losses.keys()) if file_losses[k]['avg_max_attention'] < hparams.min_avg_max_att]
+                    bad_file_paths = set(bad_file_paths)
+                    filted_filelist = [x for x in train_loader.dataset.filelist if not (x[0] in bad_file_paths)]
+                    train_loader.dataset.update_filelist(filted_filelist)
+                    del filted_filelist, bad_file_paths
+                    print("Done!")
+                
                 # end of epoch loop
             training = False # exit the While loop
         

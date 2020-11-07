@@ -70,7 +70,8 @@ class Attention(nn.Module):
                  attention_location_n_filters, attention_location_kernel_size,
                  windowed_attention_range: int=0,
                  windowed_att_pos_learned: bool=True,
-                 windowed_att_pos_offset: float=0.):
+                 windowed_att_pos_offset: float=0.,
+                 attention_learned_temperature: bool=False):
         super(Attention, self).__init__()
         self.query_layer = LinearNorm(attention_rnn_dim, attention_dim,
                                       bias=False, w_init_gain='tanh')
@@ -85,6 +86,8 @@ class Attention(nn.Module):
             self.windowed_att_pos_offset = nn.Parameter( torch.zeros(1) )
         else:
             self.windowed_att_pos_offset = windowed_att_pos_offset
+        
+        self.softmax_temp = nn.Parameter(torch.tensor(1.0)) if attention_learned_temperature else None
         self.score_mask_value = -float("inf")
     
     def forward(self, attention_hidden_state, memory, processed_memory, attention_weights_cat,
@@ -141,6 +144,10 @@ class Attention(nn.Module):
                     
                     mask = mask | ~pos_mask# [B, txt_T] & [B, txt_T] -> [B, txt_T]
                 alignment.data.masked_fill_(mask, score_mask_value)#    [B, txt_T]
+            
+            softmax_temp = self.softmax_temp
+            if softmax_temp is not None:
+                alignment *= softmax_temp
             
             attention_weights = F.softmax(alignment, dim=1)# [B, txt_T] # softmax along encoder tokens dim
         attention_context = torch.bmm(attention_weights.unsqueeze(1), memory)# unsqueeze, bmm
@@ -446,7 +453,8 @@ class Decoder(nn.Module):
                 hparams.attention_location_kernel_size,
                 self.windowed_attention_range,
                 hparams.windowed_att_pos_learned,
-                self.windowed_att_pos_offset)
+                self.windowed_att_pos_offset,
+                hparams.attention_learned_temperature)
         else:
             print("attention_type invalid, valid values are... 0 and 1")
             raise
@@ -999,13 +1007,13 @@ class Tacotron2(nn.Module):
         torchmoji_hdn = torchmoji_hdn[:, None].repeat(1, encoder_outputs.size(1), 1)# [B, C] -> [B, txt_T, C]
         memory.append(torchmoji_hdn)
         
-        # (Decoder/Attention) memory -> mel_outputs
+        # (Decoder/Attention) memory -> pred_mel
         memory = torch.cat(memory, dim=2)# concat along Embed dim # [B, txt_T, dim]
         pred_mel, pred_gate_logits, alignments, hidden_att_contexts, memory = self.decoder(memory, gt_mel, memory_lengths=text_lengths, preserve_decoder=pres_prev_state,
                                                    decoder_input=init_mel, teacher_force_till=teacher_force_till, p_teacher_forcing=p_teacher_forcing,
                                                    return_hidden_state=return_hidden_state)
         
-        # (Postnet) mel_outputs -> mel_outputs_postnet (learn a modifier for the output)
+        # (Postnet) pred_mel -> pred_mel_postnet (learn a modifier for the output)
         pred_mel_postnet = self.postnet(pred_mel) if hasattr(self, 'postnet') else None
         
         outputs = {
@@ -1035,7 +1043,7 @@ class Tacotron2(nn.Module):
                 outputs[key] = input
         return outputs
     
-    def inference(self, text, text_lengths, speaker_id, torchmoji_hdn, gt_sylps=None):# [B, enc_T], [B], [B], [B], [B, tm_dim]
+    def inference(self, text_seq, text_lengths, speaker_id, torchmoji_hdn, gt_sylps=None, return_hidden_state=False):# [B, enc_T], [B], [B], [B], [B, tm_dim]
         
         memory = []
         
@@ -1058,17 +1066,17 @@ class Tacotron2(nn.Module):
         torchmoji_hdn = torchmoji_hdn[:, None].repeat(1, encoder_outputs.size(1), 1)# [B, C] -> [B, txt_T, C]
         memory.append(torchmoji_hdn)
         
-        # (Decoder/Attention) memory -> mel_outputs
+        # (Decoder/Attention) memory -> pred_mel
         memory = torch.cat(memory, dim=2)# concat along Embed dim # [B, txt_T, dim]
-        mel_outputs, gate_outputs, alignments, hidden_att_contexts = self.decoder.inference(memory, memory_lengths=text_lengths, return_hidden_state=return_hidden_state)
+        pred_mel, pred_gate, alignments, hidden_att_contexts = self.decoder.inference(memory, memory_lengths=text_lengths, return_hidden_state=return_hidden_state)
         
-        # (Postnet) mel_outputs -> mel_outputs_postnet (learn a modifier for the output)
-        mel_outputs_postnet = self.postnet(mel_outputs) if hasattr(self, 'postnet') else mel_outputs
+        # (Postnet) pred_mel -> pred_mel_postnet (learn a modifier for the output)
+        pred_mel_postnet = self.postnet(pred_mel) if hasattr(self, 'postnet') else mel_outputs
         
-        # (Adv Postnet) learns to make spectrograms more realistic *looking* (instead of accurate)
-        if False and hasattr(self, "adversarial_postnet"):
-            mel_outputs_postnet = scale_grads(mel_outputs_postnet, self.postnet_grad_propagation_scalar)
-            mel_outputs_postnet = self.adversarial_postnet(mel_outputs_postnet, speaker_embed)
-        
-        return self.mask_outputs(
-            [mel_outputs, mel_outputs_postnet, gate_outputs, alignments, hidden_att_contexts])
+        outputs = {
+           "pred_mel_postnet": pred_mel_postnet,# [B, n_mel, mel_T]
+                  "pred_gate": pred_gate,       # [B, mel_T]
+                 "alignments": alignments,      # [B, mel_T, txt_T]
+                 "pred_sylps": pred_sylps,      # [B]
+        }
+        return outputs
