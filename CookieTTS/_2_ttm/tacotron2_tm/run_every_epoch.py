@@ -38,7 +38,6 @@ else:
 B_ = 40000
 C_ = 0e-5
 min_learning_rate = 1e-6
-
 grad_clip_thresh = 1.0 if iteration > 5000 else 5.0
 
 warmup_start_lr = 0.1e-4

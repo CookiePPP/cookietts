@@ -21,8 +21,8 @@
             "target_score"   : 0.75,
             "cat_silence_s"  : 0.1,
             "multispeaker_mode": "random",
-            "textseg_len_target": 120
-            "dyna_max_duration_s": 0.125,
+            "textseg_len_target": 120,
+            "dyna_max_duration_s": 0.125
         }
     },
     "workers": {
@@ -35,7 +35,7 @@
         "TTM": {
             "speaker_ids_file": "H:/ClipperDatasetV2/filelists/speaker_ids.txt",
             "use_speaker_ids_file_override": true,
-            "default_model": "MEL | Tacotron2 TM P3 V0 (35K Iters)",
+            "default_model": "MEL | Tacotron2 TM P3 V0 (39K Iters)",
             "models": {
                 "MEL | Tacotron2 TM P0 V0 (Best Val Model)": {
                     "modelpath": "G:/TwiBot/CookiePPPTTS/CookieTTS/_2_ttm/tacotron2_tm/outdir/best_val_model"
@@ -60,6 +60,9 @@
                 },
                 "MEL | Tacotron2 TM P3 V0 (35K Iters)": {
                     "modelpath": "G:/TwiBot/CookiePPPTTS/CookieTTS/_2_ttm/tacotron2_tm/outdir_p3_0_scratch/checkpoint_35000"
+                },
+                "MEL | Tacotron2 TM P3 V0 (39K Iters)": {
+                    "modelpath": "G:/TwiBot/CookiePPPTTS/CookieTTS/_2_ttm/tacotron2_tm/outdir_p3_0_scratch/checkpoint_39000"
                 }
             }
         },

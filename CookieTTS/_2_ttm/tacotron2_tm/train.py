@@ -776,7 +776,7 @@ def train(args, rank, group_name, hparams):
                     # end of iteration loop
                 
                 # update filelist of training dataloader
-                if (iteration > hparams.min_avg_max_att_start) and (checkpoint_iter-iteration > 2*dataset_len):
+                if (iteration > hparams.min_avg_max_att_start) and (iteration-checkpoint_iter > (dataset_len+50)):
                     print("Updating File_losses dict!")
                     file_losses = write_dict_to_file(file_losses, os.path.join(args.output_directory, 'file_losses.csv'), args.n_gpus, rank)
                     print("Done!")
