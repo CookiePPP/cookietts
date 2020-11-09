@@ -8,35 +8,6 @@ from CookieTTS.utils.dataset.utils import load_wav_to_torch
 from CookieTTS.utils.audio.stft import TacotronSTFT
 from hparams import create_hparams
 
-def alignment_metric(x, y_pred):
-    # alignments [batch size, x, y]
-    # input_lengths [batch size] for len_x
-    # output_lengths [batch size] for len_y
-    
-    text_padded, input_lengths, mel_padded, max_len, output_lengths, speaker_ids, *_ = x
-    mel_out, mel_out_postnet, gate_outputs, alignments, *_ = y_pred
-    
-    batch_size = alignments.size(0)
-    optimums = torch.sqrt(input_lengths.double()**2 + output_lengths.double()**2)
-
-    diagonalitys = torch.zeros(batch_size)
-    val_sum = torch.zeros(1)
-    for i in range(batch_size):
-        dist = torch.zeros(1)
-        for j in range(output_lengths[i]):
-            value, cur_idx = torch.max(alignments[i][:][j], 0) # get max value in column and location of max value
-            val_sum += value
-            if j==0:
-                prev_idx = cur_idx
-                continue
-            else:
-                dist += (1 + (cur_idx - prev_idx).pow(2)).float().pow(0.5)
-                prev_idx = cur_idx
-        diagonalitys[i] = Variable(dist/optimums[i])
-    avg_prob = Variable(val_sum / torch.sum(output_lengths).float())
-    diagonality = torch.mean(diagonalitys)
-    return diagonality, avg_prob
-
 def evaluation_metrics(stft, source_mels, target_mels):
     batch_size = source_mels.size(0)
     MCDs = torch.zeros(batch_size)

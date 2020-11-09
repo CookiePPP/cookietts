@@ -332,7 +332,7 @@ class TTSDataset(torch.utils.data.Dataset):
         2) normalizes text and converts them to sequences of one-hot vectors
         3) computes mel-spectrograms from audio files.
     """
-    def __init__(self, filelist, hparams, args, check_files=True, TBPTT=True, shuffle=False, speaker_ids=None, audio_offset=0, verbose=False):
+    def __init__(self, filelist, hparams, args, check_files=True, TBPTT=True, shuffle=False, deterministic_arpabet=False, speaker_ids=None, audio_offset=0, verbose=False):
         self.filelist = filelist
         self.args = args
         self.force_load = hparams.force_load
@@ -425,6 +425,7 @@ class TTSDataset(torch.utils.data.Dataset):
         self.random_seed = hparams.seed
         random.shuffle(self.filelist)
         
+        self.deterministic_arpabet = deterministic_arpabet
         #####################################################################
         ## PREDICT LENGTH (TBPTT) - Truncated Backpropagation through time ##
         #####################################################################
@@ -695,7 +696,7 @@ class TTSDataset(torch.utils.data.Dataset):
             output['ptext_str'] = self.arpa.get(text)
             del text
             
-            use_phones = random.random() < self.p_arpabet
+            use_phones = random.Random(audiopath).random() < self.p_arpabet if self.deterministic_arpabet else random.random() < self.p_arpabet
             output['text_str'] = output['ptext_str'] if use_phones else output['gtext_str']
             if 'text' in args:
                 output['text'] = output['ptext_str'] if use_phones else output['gtext_str']# (randomly) convert to phonemes

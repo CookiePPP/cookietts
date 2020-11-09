@@ -316,13 +316,13 @@ def get_dataset_meta(directory, meta=None, default_speaker=None, default_emotion
         
         # 2.2.3 - add metadata to list
         meta.append({
-            'path': audio_file,
-            'quote': transcript,
+               'path': audio_file,
+              'quote': transcript,
             'speaker': voice,
-            'emotions': emotions,
-            'noise': noise_level,
-            'source': source,
-            'source_type': source_type,
+           'emotions': emotions,
+              'noise': noise_level,
+             'source': source,
+        'source_type': source_type,
         })
         files_added+=1
     

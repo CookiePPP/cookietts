@@ -43,7 +43,7 @@ def dropout_frame(mels, global_mean, mel_lengths, drop_frame_rate):
                     global_mean[None, :, None] * drop_mask.unsqueeze(1))
     return dropped_mels
     
-def alignment_metric(alignments, input_lengths=None, output_lengths=None, average_across_batch=False):
+def alignment_metric(alignments, input_lengths=None, output_lengths=None, enc_min_thresh=0.7, average_across_batch=False):
     alignments = alignments.transpose(1,2) # [B, dec, enc] -> [B, enc, dec]
     # alignments [batch size, x, y]
     # input_lengths [batch size] for len_x
@@ -68,15 +68,15 @@ def alignment_metric(alignments, input_lengths=None, output_lengths=None, averag
     alignments.masked_fill_(~get_mask_from_lengths(output_lengths, max_len=alignments.size(2))[:,None,:], 0.0)
     attm_enc_total = torch.sum(alignments, dim=2)# [B, enc, dec] -> [B, enc]
     
-    # calc max (with padding ignored)
+    # calc max  encoder durations (with padding ignored)
     attm_enc_total.masked_fill_(~get_mask_from_lengths(input_lengths, max_len=attm_enc_total.size(1)), 0.0)
     encoder_max_focus = attm_enc_total.max(dim=1)[0] # [B, enc] -> [B]
     
-    # calc mean (with padding ignored)
+    # calc mean encoder durations (with padding ignored)
     encoder_avg_focus = attm_enc_total.mean(dim=1)   # [B, enc] -> [B]
     encoder_avg_focus *= (attm_enc_total.size(1)/input_lengths.float())
     
-    # calc min (with padding ignored)
+    # calc min encoder durations (with padding ignored)
     attm_enc_total.masked_fill_(~get_mask_from_lengths(input_lengths, max_len=attm_enc_total.size(1)), 1.0)
     encoder_min_focus = attm_enc_total.min(dim=1)[0] # [B, enc] -> [B]
     
@@ -85,10 +85,23 @@ def alignment_metric(alignments, input_lengths=None, output_lengths=None, averag
     avg_prob = values.mean(dim=1)
     avg_prob *= (alignments.size(2)/output_lengths.float()) # because padding
     
+    # calc portion of encoder durations under min threshold
+    attm_enc_total.masked_fill_(~get_mask_from_lengths(input_lengths, max_len=attm_enc_total.size(1)), float(1e3))
+    p_missing_enc = (torch.sum(attm_enc_total < enc_min_thresh, dim=1)) / input_lengths.float()
+    
     if average_across_batch:
-        diagonalitys = diagonalitys.mean()
+        diagonalitys      = diagonalitys     .mean()
         encoder_max_focus = encoder_max_focus.mean()
         encoder_min_focus = encoder_min_focus.mean()
         encoder_avg_focus = encoder_avg_focus.mean()
-        avg_prob = avg_prob.mean()
-    return diagonalitys, avg_prob, encoder_max_focus, encoder_min_focus, encoder_avg_focus
+        avg_prob          = avg_prob         .mean()
+        p_missing_enc     = p_missing_enc    .mean()
+    
+    output = {}
+    output["diagonalitys"     ] = diagonalitys
+    output["avg_prob"         ] = avg_prob
+    output["encoder_max_focus"] = encoder_max_focus
+    output["encoder_min_focus"] = encoder_min_focus
+    output["encoder_avg_focus"] = encoder_avg_focus
+    output["p_missing_enc"]     = p_missing_enc
+    return output

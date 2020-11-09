@@ -403,7 +403,6 @@ class Decoder(nn.Module):
         self.prenet_noise = hparams.prenet_noise
         self.prenet_blur_min = hparams.prenet_blur_min
         self.prenet_blur_max = hparams.prenet_blur_max
-        self.low_vram_inference = hparams.low_vram_inference if hasattr(hparams, 'low_vram_inference') else False
         self.context_frames = hparams.context_frames
         self.hide_startstop_tokens = hparams.hide_startstop_tokens
         
@@ -776,13 +775,13 @@ class Decoder(nn.Module):
         """ Decoder forward pass for training
         PARAMS
         ------
-        memory: Encoder outputs
-        decoder_inputs: Decoder inputs for teacher forcing. i.e. mel-specs
-        memory_lengths: Encoder output lengths for attention masking.
-        preserve_decoder: [B] Tensor - Preserve model state for True items in batch/Tensor
-        decoder_input: [B, n_mel, context] FloatTensor
-        teacher_force_till: INT - Beginning X frames where Teacher Forcing is forced ON.
-        p_teacher_forcing: Float - 0.0 to 1.0 - Change to use Teacher Forcing during training/validation.
+        memory             : Encoder outputs
+        decoder_inputs     : Decoder inputs for teacher forcing. i.e. mel-specs
+        memory_lengths     : Encoder output lengths for attention masking.
+        preserve_decoder   : [B] Tensor - Preserve model state for True items in batch/Tensor
+        decoder_input      : [B, n_mel, context] FloatTensor
+        teacher_force_till : INT - Beginning X frames where Teacher Forcing is forced ON.
+        p_teacher_forcing  : Float - 0.0 to 1.0 - Change to use Teacher Forcing during training/validation.
         
         RETURNS
         -------
@@ -813,7 +812,7 @@ class Decoder(nn.Module):
         
         decoder_inputs = torch.cat((decoder_input, decoder_inputs), dim=0) # [context_frames+mel_T, B, n_mel] concat T_out
         
-        if self.prenet_noise:
+        if self.prenet_noise and self.training:
             decoder_inputs = decoder_inputs + self.prenet_noise * torch.randn(decoder_inputs.shape, device=decoder_inputs.device, dtype=decoder_inputs.dtype)
         
         #if self.prenet_speaker_embed_dim: # __future__ feature, not added yet!
@@ -860,9 +859,9 @@ class Decoder(nn.Module):
         
         RETURNS
         -------
-        mel_outputs: mel outputs from the decoder
-        gate_outputs: gate outputs from the decoder
-        alignments: sequence of attention weights from the decoder
+        mel_outputs  : mel outputs from the decoder
+        gate_outputs : gate outputs from the decoder
+        alignments   : sequence of attention weights from the decoder
         """
         if self.hide_startstop_tokens: # remove start/stop token from Decoder
             memory = memory[:,1:-1,:]
@@ -885,8 +884,7 @@ class Decoder(nn.Module):
             mel_outputs += [mel_output.squeeze(1)]
             gate_output_cpu = gate_output_gpu.cpu().float() # small operations e.g min(), max() and sigmoid() are faster on CPU # also .float() because Tensor.min() doesn't work on half precision CPU
             gate_outputs += [gate_output_gpu.squeeze(1)]
-            if not self.low_vram_inference:
-                alignments += [alignment]
+            alignments += [alignment]
             if return_hidden_state:
                 hidden_att_contexts += [decoder_hidden_attention_context]
             

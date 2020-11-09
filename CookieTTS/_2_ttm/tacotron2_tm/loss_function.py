@@ -100,8 +100,10 @@ class Tacotron2Loss(nn.Module):
         # Gate Loss
         self.pos_weight = torch.tensor(hparams.gate_positive_weight)
         
-        self.spec_MSE_weight    = hparams.spec_MSE_weight
-        self.postnet_MSE_weight = hparams.postnet_MSE_weight
+        self.spec_MSE_weight     = hparams.spec_MSE_weight
+        self.spec_MFSE_weight    = hparams.spec_MFSE_weight
+        self.postnet_MSE_weight  = hparams.postnet_MSE_weight
+        self.postnet_MFSE_weight = hparams.postnet_MFSE_weight
         self.masked_select = hparams.masked_select
         
         self.gate_loss_weight = hparams.gate_loss_weight
@@ -192,10 +194,22 @@ class Tacotron2Loss(nn.Module):
             losses = spec_SE.split([x*n_mel for x in gt['mel_lengths'].cpu()])
             for i in range(B):
                 audiopath = gt['audiopath'][i]
-                file_losses[audiopath]['postnet_MSE'] = losses[i].mean().item()
+                file_losses[audiopath]['spec_MSE'] = losses[i].mean().item()
             
-            pred_mel_postnet =  torch.masked_select(pred_mel_postnet, mask)
+            # postnet
+            pred_mel_postnet = torch.masked_select(pred_mel_postnet, mask)
             loss_dict['postnet_MSE'] = nn.MSELoss()(pred_mel_postnet, gt_mel)
+            
+            # squared by frame, mean postnet
+            mask = get_mask_from_lengths(gt['mel_lengths']).unsqueeze(-1)# -> [B, mel_T] -> [B, mel_T, 1]
+            
+            spec_AE = nn.L1Loss(reduction='none')(pred['pred_mel'], gt['gt_mel']).transpose(1, 2)# -> [B, mel_T, n_mel]
+            spec_AE = spec_AE.masked_select(mask).view(gt['mel_lengths'].sum(), n_mel)# -> [B*mel_T, n_mel]
+            loss_dict['spec_MFSE'] = (spec_AE * spec_AE.mean(dim=1, keepdim=True)).mean()# multiply by frame means (similar to square op from MSE) and get the mean of the losses
+            
+            post_AE = nn.L1Loss(reduction='none')(pred['pred_mel_postnet'], gt['gt_mel']).transpose(1, 2)# -> [B, mel_T, n_mel]
+            post_AE = post_AE.masked_select(mask).view(gt['mel_lengths'].sum(), n_mel)# -> [B*mel_T, n_mel]
+            loss_dict['postnet_MFSE'] = (post_AE * post_AE.mean(dim=1, keepdim=True)).mean()# multiply by frame means (similar to square op from MSE) and get the mean of the losses
         
         if True: # gate/stop loss
             gate_target =  gt['gt_gate_logits'].view(-1, 1)
@@ -232,19 +246,20 @@ class Tacotron2Loss(nn.Module):
         loss_dict = self.colate_losses(loss_dict, loss_scalars)
         
         if True:# get Avg Max Attention and Diagonality Metrics
-            _ = alignment_metric(pred['alignments'], gt['text_lengths'], gt['mel_lengths'])
-            diagonalitys, avg_prob, char_max_dur, char_min_dur, char_avg_dur = _
+            atd = alignment_metric(pred['alignments'], gt['text_lengths'], gt['mel_lengths'])
+            diagonalitys, avg_prob, char_max_dur, char_min_dur, char_avg_dur, p_missing_enc = atd.values()
             
             loss_dict['diagonality']       = diagonalitys.mean()
             loss_dict['avg_max_attention'] = avg_prob.mean()
             
             for i in range(B):
                 audiopath = gt['audiopath'][i]
-                file_losses[audiopath]['att_diagonality'  ] = diagonalitys[i].cpu().item()
-                file_losses[audiopath]['avg_max_attention'] =     avg_prob[i].cpu().item()
-                file_losses[audiopath]['char_max_dur']      = char_max_dur[i].cpu().item()
-                file_losses[audiopath]['char_min_dur']      = char_min_dur[i].cpu().item()
-                file_losses[audiopath]['char_avg_dur']      = char_avg_dur[i].cpu().item()
+                file_losses[audiopath]['avg_max_attention'] =      avg_prob[i].cpu().item()
+                file_losses[audiopath]['att_diagonality'  ] =  diagonalitys[i].cpu().item()
+                file_losses[audiopath]['p_missing_enc']     = p_missing_enc[i].cpu().item()
+                file_losses[audiopath]['char_max_dur']      =  char_max_dur[i].cpu().item()
+                file_losses[audiopath]['char_min_dur']      =  char_min_dur[i].cpu().item()
+                file_losses[audiopath]['char_avg_dur']      =  char_avg_dur[i].cpu().item()
         
         return loss_dict, file_losses
 

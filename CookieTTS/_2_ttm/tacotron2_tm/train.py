@@ -25,6 +25,7 @@ from hparams import create_hparams
 from CookieTTS.utils.model.GPU import to_gpu
 import time
 from math import e
+from math import ceil
 
 from tqdm import tqdm
 import CookieTTS.utils.audio.stft as STFT
@@ -32,8 +33,6 @@ from CookieTTS.utils.dataset.utils import load_wav_to_torch, load_filepaths_and_
 from scipy.io.wavfile import read
 
 import os.path
-
-from metric import alignment_metric
 
 save_file_check_path = "save"
 start_from_checkpoints_from_zero = 0
@@ -148,9 +147,9 @@ def prepare_dataloaders(hparams, dataloader_args, args, speaker_ids):
         speaker_ids = speaker_ids if hparams.use_saved_speakers else None
     
     trainset = TTSDataset(training_filelist, hparams, dataloader_args, check_files=hparams.check_files, shuffle=False,
-                           speaker_ids=speaker_ids)
+                           deterministic_arpabet=False, speaker_ids=speaker_ids)
     valset = TTSDataset(validation_filelist, hparams, dataloader_args, check_files=hparams.check_files, shuffle=False,
-                           speaker_ids=trainset.speaker_ids)
+                           deterministic_arpabet=True,  speaker_ids=trainset.speaker_ids)
     collate_fn = Collate(hparams)
     
     #use_shuffle = False if hparams.use_TBPTT else True# can't shuffle with TBPTT
@@ -319,6 +318,54 @@ def write_dict_to_file(file_losses, fpath, n_gpus, rank, deliminator='","', ends
                 f.write('\n'+ends+deliminator.join(line)+ends)
     
     return file_losses
+
+def get_mse_sampled_filelist(original_filelist, file_losses):
+    speaker_losses = {}
+    for loss_dict in file_losses.values():
+        speaker_id = str(loss_dict['speaker_id_ext'])
+        if speaker_id not in speaker_losses:
+            speaker_losses[speaker_id] = {k:[v,] for k,v in list(loss_dict.items())[2:] if v is not None}
+        else:
+            for loss_name, loss_value in list(loss_dict.items())[2:]:
+                if loss_name not in speaker_losses[speaker_id]:
+                    speaker_losses[speaker_id][loss_name] = [loss_value,]
+                elif loss_value is not None:
+                    speaker_losses[speaker_id][loss_name].append(loss_value)
+    
+    speaker_avg_losses = speaker_losses
+    for speaker in speaker_avg_losses.keys():
+        for loss_name in speaker_avg_losses[speaker].keys():
+            if loss_name in speaker_avg_losses[speaker].keys() and speaker_avg_losses[speaker][loss_name] is not None:
+                speaker_avg_losses[speaker][loss_name] = sum([x for x in speaker_avg_losses[speaker][loss_name] if x is not None])/len(speaker_avg_losses[speaker][loss_name])
+    
+    # generate speaker filelists
+    spkr_filelist = {}
+    for path, quote, speaker_id, *_ in original_filelist:
+        if speaker_id not in spkr_filelist:
+            spkr_filelist[speaker_id] = [[path, quote, speaker_id, *_],]
+        else:
+            spkr_filelist[speaker_id].append([path, quote, speaker_id, *_])
+    
+    # shuffle speaker filelists
+    for k in spkr_filelist.keys():
+        random.shuffle(spkr_filelist[k])
+    
+    # calculate dataset portion for each speaker and build new filelist
+    dataset_len = len(original_filelist)
+    exp_factor = 2.0
+    new_filelist = []
+    spec_MSE_total = sum([loss_dict['spec_MSE']**exp_factor for loss_dict in speaker_avg_losses.values()])
+    for speaker_id, loss_dict in speaker_avg_losses.items():
+        sample_chance = (loss_dict['spec_MSE']**exp_factor)/spec_MSE_total# chance to sample this speaker
+        n_files = round(sample_chance * dataset_len)
+        spkr_files = spkr_filelist[speaker_id]
+        if (n_files == 0) or ( len(spkr_files) == 0 ):
+            continue
+        if len(spkr_files) < n_files:
+            spkr_files = spkr_files * ceil(n_files/len(spkr_files))# repeat filelist if needed
+        new_filelist.extend(spkr_files[:n_files])
+    
+    return new_filelist
 
 def update_smoothed_dict(orig_dict, new_dict, smoothing_factor=0.6):
     for key, value in new_dict.items():
@@ -503,6 +550,7 @@ def train(args, rank, group_name, hparams):
     epoch_offset = 0
     _learning_rate = 1e-3
     saved_lookup = None
+    original_filelist = None
     
     global file_losses
     file_losses = {}
@@ -577,6 +625,7 @@ def train(args, rank, group_name, hparams):
                 tqdm.write("Epoch:{}".format(epoch))
                 
                 train_loader.dataset.shuffle_dataset()# Shuffle Dataset
+                dataset_len = len(train_loader)
                 
                 start_time = time.time()
                 # start iterating through the epoch
@@ -626,7 +675,9 @@ def train(args, rank, group_name, hparams):
                     
                     loss_scalars = {
                          "spec_MSE_weight": spec_MSE_weight,
+                        "spec_MFSE_weight": spec_MFSE_weight,
                       "postnet_MSE_weight": postnet_MSE_weight,
+                     "postnet_MFSE_weight": postnet_MFSE_weight,
                         "gate_loss_weight": gate_loss_weight,
                         "sylps_kld_weight": sylps_kld_weight,
                         "sylps_MSE_weight": sylps_MSE_weight,
@@ -725,18 +776,22 @@ def train(args, rank, group_name, hparams):
                     # end of iteration loop
                 
                 # update filelist of training dataloader
-                if (iteration > hparams.min_avg_max_att_start) and (checkpoint_iter-iteration > 500):
+                if (iteration > hparams.min_avg_max_att_start) and (checkpoint_iter-iteration > 2*dataset_len):
                     print("Updating File_losses dict!")
                     file_losses = write_dict_to_file(file_losses, os.path.join(args.output_directory, 'file_losses.csv'), args.n_gpus, rank)
                     print("Done!")
                     
                     print("Updating dataloader filtered paths!")
-                    bad_file_paths = [k for k in list(file_losses.keys()) if file_losses[k]['avg_max_attention'] < hparams.min_avg_max_att]
+                    bad_file_paths = [k for k in list(file_losses.keys()) if file_losses[k]['avg_max_attention'] < hparams.min_avg_max_att and file_losses[k]['att_diagonality'] < hparams.max_diagonality and file_losses[k]['spec_MSE'] < hparams.max_spec_mse]
                     bad_file_paths = set(bad_file_paths)
                     filted_filelist = [x for x in train_loader.dataset.filelist if not (x[0] in bad_file_paths)]
                     train_loader.dataset.update_filelist(filted_filelist)
                     del filted_filelist, bad_file_paths
                     print("Done!")
+                    if iteration > hparams.speaker_mse_sampling_start:
+                        if original_filelist is None:
+                            original_filelist = train_loader.dataset.filelist
+                        train_loader.dataset.filelist = get_mse_sampled_filelist(original_filelist, file_losses)
                 
                 # end of epoch loop
             training = False # exit the While loop

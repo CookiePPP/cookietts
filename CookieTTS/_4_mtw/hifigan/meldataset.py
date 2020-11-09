@@ -15,6 +15,16 @@ try:
 except:
     pw = None
 
+def check_file_lengths(sampling_rate, segment_size, training_files_old):
+    segment_size_s = segment_size/sampling_rate
+    training_files_new = []
+    for file in training_files_old:
+        audio, native_sr = load_wav_to_torch(file, target_sr=sampling_rate, return_empty_on_exception=True)
+        audio_s = len(audio) / native_sr
+        if audio_s > segment_size_s:
+            training_files_new.append(file)
+    return training_files_new
+
 def check_files(sampling_rate, segment_size, training_files):
     len_training_files = len(training_files)
     training_files = [x for x in training_files if os.path.exists(x)]
@@ -22,7 +32,8 @@ def check_files(sampling_rate, segment_size, training_files):
         print(len_training_files - len(training_files), "Files don't exist (and have been removed from training)")
     
     len_training_files = len(training_files)
-    training_files = [x for x in training_files if len(load_wav_to_torch(x, target_sr=sampling_rate, return_empty_on_exception=True)[0]) > segment_size]
+    
+    training_files = check_file_lengths(sampling_rate, segment_size, training_files)
     if (len_training_files - len(training_files)) > 0:
         print(len_training_files - len(training_files), "Files are too short (and have been removed from training)")
     return training_files

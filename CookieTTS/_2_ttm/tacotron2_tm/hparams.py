@@ -7,36 +7,42 @@ def create_hparams(hparams_string=None, verbose=False):
     hparams = HParams(
         random_segments=False,# DONT MODIFY
         
-        ################################
-        # Experiment Parameters        #
-        ################################
-        epochs=1000,
-        iters_per_checkpoint=1000,
-        iters_per_validation=250,
-        seed=1234,
+        #################################
+        ## Experiment Parameters       ##
+        #################################
+        epochs = 1000,
+        iters_per_checkpoint = 1000,
+        iters_per_validation = 250,
+        
+        save_best_val_loss = True,# save best   validation   loss as a checkpoint.
+        save_best_tfo_loss = True,# save best teacher forced loss as a checkpoint.
+        save_best_tfo_pmse = True,# save best teacher forced postnet MSE as a checkpoint.
+        save_best_tfo_att  = True,# save best teacher forced attention as a checkpoint.
+        save_best_inf_att  = True,# save best   inference    attention as a checkpoint.
         
         dynamic_loss_scaling=True,
-        fp16_run=True,# requires 20 Series or Better (e.g: RTX 2080 Ti, RTX 2060, Tesla V100, Tesla A100)
-        fp16_run_optlvl='2',
+        fp16_run        = True,# requires 20 Series or Better (e.g: RTX 2080 Ti, RTX 2060, Tesla V100, Tesla A100)
+        fp16_run_optlvl = '2',
         
-        distributed_run=True,
-        dist_backend="nccl",
-        dist_url="tcp://127.0.0.1:54321",
+        distributed_run = True,
+        dist_backend = "nccl",
+        dist_url     = "tcp://127.0.0.1:54321",
         
-        cudnn_enabled  = True,
-        cudnn_benchmark=False,
+        cudnn_enabled   = True,
+        cudnn_benchmark = False,
+        seed = 1234,
         
-        ###############################
-        ## Freezing/Reseting Modules ##
-        ###############################
-        print_layer_names_during_startup=False,# will print every modules key to be used below.
-        ignore_layers   =["layers_here"],# for `warm_start`-ing
-        frozen_modules  =["layers_here"],# only the module names are required e.g: "encoder." will freeze all parameters INSIDE the encoder recursively
-        unfrozen_modules=["layers_here"],# modules that are unfrozen
+        #################################
+        ## Freezing/Reseting Modules   ##
+        #################################
+        print_layer_names_during_startup = False,# will print every modules key to be used below.
+        ignore_layers    = ["layers_here"],# for `warm_start`-ing
+        frozen_modules   = ["layers_here"],# only the module names are required e.g: "encoder." will freeze all parameters INSIDE the encoder recursively
+        unfrozen_modules = ["layers_here"],# modules that are unfrozen
         
-        #########################
-        ## Logging / Verbosity ##
-        #########################
+        #################################
+        ## Logging / Verbosity         ##
+        #################################
         n_tensorboard_outputs=5,# number of items from validation so show in Tensorboard
         n_tensorboard_outputs_highloss=5, # NOT IMPLEMENTED # top X tacotron outputs with worst validation loss.
         n_tensorboard_outputs_badavgatt=5,# NOT IMPLEMENTED # top X tacotron outputs with weakest average attention.
@@ -55,18 +61,20 @@ def create_hparams(hparams_string=None, verbose=False):
         portion_for_worst_speaker=0.1,# NOT IMPLEMENTED
                                       # this portion of the batch_size is dedicated to files from the worst frame-by-frame audio quality speaker.
         
-        min_avg_max_att       = 0.30 ,# files under this alignment strength are filtered out of the dataset during training.
+        min_avg_max_att       = 0.40 ,# files under this alignment strength are filtered out of the dataset during training.
+        max_diagonality       = 1.40 ,# files under this alignment strength are filtered out of the dataset during training.
+        max_spec_mse          = 1.20 ,# files  over this mean squared error are filtered out of the dataset during training.
         min_avg_max_att_start = 20000,# when to start filtering out weak alignments.
                                       # (normally mis-labelled files or files that are too challenging to learn)
                                       # Only applies to training dataset.
                                       # Only updates at the end of each epoch.
         
         num_workers=4,# number of threads for dataloading per GPU
+        
         ###################################
         ## Dataset / Filelist Parameters ##
         ###################################
-        data_source=0,# 0 to use nvidia/tacotron2 filelists, 1 to use automatic dataset processor
-        force_load=True,# if a file fails to load, replace it with a random other file.
+        data_source = 0,# 0 to use nvidia/tacotron2 filelists, 1 to use automatic dataset processor
         
         # if data_source is 0:
         speakerlist='/media/cookie/Samsung 860 QVO/ClipperDatasetV2/filelists/speaker_ids.txt',
@@ -74,11 +82,17 @@ def create_hparams(hparams_string=None, verbose=False):
         validation_files='/media/cookie/Samsung 860 QVO/ClipperDatasetV2/filelists/validation_taca2.txt',
         
         # if data_source is 1:
-        dataset_folder='/media/cookie/Samsung 860 QVO/ClipperDatasetV2',
-        dataset_audio_filters=['*.wav',],
-        dataset_audio_rejects=['*_Noisy_*','*_Very Noisy_*'],
+        dataset_folder = '/media/cookie/Samsung 860 QVO/ClipperDatasetV2',
+        dataset_audio_filters= ['*.wav',],
+        dataset_audio_rejects= ['*_Noisy_*','*_Very Noisy_*'],
         dataset_p_val = 0.03,# portion of dataset for Validation
-        dataset_min_duration=2.0,# minimum duration of audio files to be added
+        dataset_min_duration = 1.4,# minimum duration of audio files to be added
+        
+        force_load  = True,# if a file fails to load, replace it with a random other file.
+        speaker_mse_sampling_start=28000,# when True, instead of loading each audio file in order, load audio files
+                                         #      randomly with higher probability given to more challenging speakers.
+                                         # This must start after "min_avg_max_att_start" has started.
+                                         # Without filtering out outlier files, this would just enchance the damage that mislablled files and noisy speakers do to the model.
         
         ##################################
         ## Text / Speaker Parameters    ##
@@ -87,8 +101,8 @@ def create_hparams(hparams_string=None, verbose=False):
         dict_path='../../dict/merged.dict.txt',
         p_arpabet=0.5, # probability to use ARPAbet / pronounciation dictionary on the text
         
-        use_saved_speakers =False, # use the speaker lookups saved inside the model instead of generating again
-        numeric_speaker_ids=True,  # sort speaker_ids in filelist numerically, rather than alphabetically.
+        use_saved_speakers  = False,# use the speaker lookups saved inside the model instead of generating again
+        numeric_speaker_ids = True, # sort speaker_ids in filelist numerically, rather than alphabetically.
                                    # e.g:
                                    #    [10, 9, 8, 7, 6, 5, 4, 3, 2, 1, 0] -> [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10]
                                    # instead of,
@@ -101,7 +115,7 @@ def create_hparams(hparams_string=None, verbose=False):
         ## Audio Parameters             ##
         ##################################
         sampling_rate=44100,
-        target_lufs=-27.0, # Loudness each file is rescaled to, use None for original file loudness.
+        target_lufs= -27.0, # Loudness each file is rescaled to, use None for original file loudness.
         
         trim_enable = False,# set to False to disable trimming completely
         trim_cache_audio = False,# save trimmed audio to disk to load later. Saves CPU usage, uses more disk space.
@@ -117,25 +131,28 @@ def create_hparams(hparams_string=None, verbose=False):
         ##################################
         ## Spectrogram Parameters       ##
         ##################################
-        filter_length=2048,
-        hop_length=512,
-        win_length=2048,
-        n_mel_channels=80,
-        mel_fmin=20.0,
-        mel_fmax=11025.0,
-        stft_clamp_val=1e-5,# 1e-5 = original
+        filter_length  =  2048,
+        hop_length     =   512,
+        win_length     =  2048,
+        n_mel_channels =    80,
+        mel_fmin       =    20.0,
+        mel_fmax       = 11025.0,
+        stft_clamp_val = 1e-5,# 1e-5 = original
         
-        silence_value=-11.52,
-        silence_pad_start=0,# frames to pad the start of each spectrogram
-        silence_pad_end=0,  # frames to pad the end   of each spectrogram
+        cache_mel=False,# save spectrograms to disk to load later. Saves CPU usage, uses more disk space.
+                        # modifications to params below do not apply to already cached files.
+        
+        silence_value=-11.5129,
+        silence_pad_start = 0,# frames to pad the start of each spectrogram
+        silence_pad_end   = 0,# frames to pad the  end  of each spectrogram
                             # These frames will be added to the loss functions and Tacotron must predict and generate the padded silence.
         
         ######################################
         ## Synthesis / Inference Parameters ##
         ######################################
-        gate_threshold=0.5,# confidence required to end the audio file.
-        gate_delay    =10, # allows the model to continue generative audio slightly after the audio file ends.
-        max_decoder_steps=3000,# max duration of an audio file during a single generation.
+        gate_threshold    = 0.5, # confidence required to end the audio file.
+        gate_delay        = 10,  # allows the model to continue generative audio slightly after the audio file ends.
+        max_decoder_steps = 3000,# max duration of an audio file during a single generation.
         
         ##################################
         ## Model Parameters             ##
@@ -147,18 +164,18 @@ def create_hparams(hparams_string=None, verbose=False):
         gate_positive_weight=10, # how much more valuable 1 positive frame is to 1 zero frame. 80 Frames per seconds, therefore values around 10 are fine.
         
         # Teacher-forcing Config
-        p_teacher_forcing=1.00,    # 1.00 baseline
-        teacher_force_till=20,     # int, number of starting frames with teacher_forcing at 100%, helps with clips that have challenging starting conditions i.e breathing before the text begins.
-        val_p_teacher_forcing=0.80,
-        val_teacher_force_till=20,
+        p_teacher_forcing      = 1.00,# overriden by 'run_every_epoch.py'
+        teacher_force_till     = 20,  # overriden by 'run_every_epoch.py'
+        val_p_teacher_forcing  = 0.80,# overriden by 'run_every_epoch.py'
+        val_teacher_force_till = 20,  # overriden by 'run_every_epoch.py'
         
         # (Encoder) Encoder parameters
-        encoder_speaker_embed_dim   = 64, # speaker_embedding before encoder
-        encoder_concat_speaker_embed= 'before_conv', # concat before encoder convs, or just before the LSTM inside decode. Options 'before_conv','before_lstm'
-        encoder_kernel_size    = 5,
-        encoder_n_convolutions = 3,
-        encoder_conv_hidden_dim= 512,
-        encoder_LSTM_dim = 1024,
+        encoder_speaker_embed_dim    = 64, # speaker_embedding before encoder
+        encoder_concat_speaker_embed = 'before_conv',# concat before encoder convs, or just before the LSTM inside decode. Options 'before_conv','before_lstm'
+        encoder_kernel_size     = 5,
+        encoder_n_convolutions  = 3,
+        encoder_conv_hidden_dim =  512,
+        encoder_LSTM_dim        = 1024,
         
         # (SylpsNet) Predicts speaking speed
         sylpsnet_layer_dims = [32, 32],# width of each layer, LeakyReLU() is used between hiddens
@@ -198,24 +215,24 @@ def create_hparams(hparams_string=None, verbose=False):
         p_prenet_dropout  =0.5,# 0.5 baseline
         
         prenet_speaker_embed_dim=0,# speaker_embedding before encoder
-        prenet_noise   =0.10,# Add Gaussian Noise to Prenet inputs. std defined here.
+        prenet_noise   =0.20,# Add Gaussian Noise to Prenet inputs. std defined here.
         prenet_blur_min=0.00,# Apply random vertical blur between prenet_blur_min
-        prenet_blur_max=1.00,#                                and prenet_blur_max
+        prenet_blur_max=0.00,#                                and prenet_blur_max
                              # Set max to False or Zero to disable
         
         # (Decoder) AttentionRNN
         attention_rnn_dim          = 1280,  # 1024 baseline
         AttRNN_hidden_dropout_type = 'zoneout',# options ('dropout','zoneout')
-        p_AttRNN_hidden_dropout    = 0.10,  # 0.1 baseline
+        p_AttRNN_hidden_dropout    = 0.05,  # 0.1 baseline
         AttRNN_extra_decoder_input = True,  # False baseline # Feed DecoderRNN Hidden State into AttentionRNN
         
         # (Decoder) DecoderRNN
-        decoder_rnn_dim            = 384,  # 1024 baseline
+        decoder_rnn_dim            = 768,  # 1024 baseline
         DecRNN_hidden_dropout_type = 'dropout',# options ('dropout','zoneout')
         p_DecRNN_hidden_dropout    = 0.2,  # 0.1 baseline
         decoder_residual_connection= False,# residual connections with the AttentionRNN hidden state and Attention/Memory Context
         # Optional Second Decoder
-        second_decoder_rnn_dim=0,# 0 baseline # Extra DecoderRNN to learn more complex patterns # set to 0 to disable layer.
+        second_decoder_rnn_dim=768,# 0 baseline # Extra DecoderRNN to learn more complex patterns # set to 0 to disable layer.
         second_decoder_residual_connection=True,# residual connections between the DecoderRNNs
         
         # (Decoder) Attention parameters
@@ -249,7 +266,7 @@ def create_hparams(hparams_string=None, verbose=False):
         normalize_AttRNN_output=False,  # True baseline
         
         # (Decoder) Attention Type 2 Parameters
-        dynamic_filter_num=128, # 8 baseline
+        dynamic_filter_num=128,# 8 baseline
         dynamic_filter_len=21, # 21 baseline # currently only 21 is supported
         
         # (Postnet) Mel-post processing network parameters
@@ -263,24 +280,26 @@ def create_hparams(hparams_string=None, verbose=False):
         ## Optimization Hyperparameters ##
         ##################################
         use_saved_learning_rate=False,
-        learning_rate=0.1e-5,# overriden by 'run_every_epoch.py'
-        weight_decay=1e-6,
-        grad_clip_thresh=1.0,# overriden by 'run_every_epoch.py'
+        learning_rate = 0.1e-5,# overriden by 'run_every_epoch.py'
+        grad_clip_thresh=1.0,  # overriden by 'run_every_epoch.py'
+        weight_decay  = 1e-6,
         
-        mask_padding =True,#mask values by setting them to the same values in target and predicted
-        masked_select=True,#mask values by removing them from the calculation
+        mask_padding  = True,#mask values by setting them to the same values in target and predicted
+        masked_select = True,#mask values by removing them from the calculation
         
         # (DFR) Drop Frame Rate
-        global_mean_npy='global_mean.npy',
-        drop_frame_rate=0.25,# overriden by 'run_every_epoch.py'
+        global_mean_npy = 'global_mean.npy',
+        drop_frame_rate=  0.25,# overriden by 'run_every_epoch.py'
         
         ##################################
         ## Loss Weights/Scalars         ##
         ##################################
         # All of these can be overriden from 'run_every_epoch.py'
-        spec_MSE_weight    = 1.0,# MSE Spectrogram Loss Before Postnet
-        postnet_MSE_weight = 1.0,# MSE Spectrogram Loss After Postnet
-        gate_loss_weight   = 1.0,# Gate Loss
+        spec_MSE_weight     = 0.0,# MSE  Spectrogram Loss Before Postnet
+        spec_MFSE_weight    = 1.0,# MFSE Spectrogram Loss Before Postnet
+        postnet_MSE_weight  = 0.0,# MSE  Spectrogram Loss After Postnet
+        postnet_MFSE_weight = 1.0,# MFSE Spectrogram Loss After Postnet
+        gate_loss_weight    = 1.0,# Gate Loss
         
         sylps_kld_weight = 0.0020, # SylNet KDL Weight
         sylps_MSE_weight = 0.01,# Encoder Pred Sylps MSE weight
