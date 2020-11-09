@@ -21,7 +21,20 @@ decrease_lr_on_restart = True # Decrease the Learning Rate on a LossExplosionThr
 
 # Learning Rate / Optimization
 decay_start = 99999999
-A_ = 5.0e-4 if iteration < 10000 else 2.0e-4
+if   iteration <  10000:
+    A_ = 5.0e-4
+elif iteration <  50000:
+    A_ = 2.0e-4
+elif iteration <  80000:
+    A_ = 1.0e-4
+elif iteration < 110000:
+    A_ = 0.5e-4
+elif iteration < 140000:
+    A_ = 0.25e-4
+elif iteration < 170000:
+    A_ = 0.125e-4
+else:
+    A_ = 0.05e-4
 B_ = 40000
 C_ = 0e-5
 min_learning_rate = 1e-6
