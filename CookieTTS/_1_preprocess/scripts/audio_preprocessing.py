@@ -70,9 +70,9 @@ def normalize_volumes_mixmode(directory, amplitude=0.08, ext='.wav'):
     RETURNS:
         None
     """
-    subdirectories = [x[0] for x in os.walk(directory)]
-    for subdirectory in subdirectories:
-        os.system(f"normalize-audio -w 16 -a {amplitude} -b '{subdirectory}/'*{ext}")
+    for root, _, files in os.walk(directory):
+        for filename in files:
+            os.system(f"normalize-audio -w 16 -a {amplitude} -b '{os.path.join(root, filename)}'")
 
 
 def process_audio_multiprocess(file_paths_arr,
