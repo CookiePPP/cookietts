@@ -415,7 +415,7 @@ if True:
     
     # add paths, transcripts, speaker names, emotions, noise levels to meta object
     print(f'{step_complete:>3}/{step_total:<3} Adding paths, transcripts, speaker names, emotions, noise levels from Datasets to meta...')
-    from scripts.metadata import get_dataset_meta
+    from CookieTTS.utils.dataset.metadata import get_dataset_meta
     
     for dataset in datasets:
         dataset_dir = os.path.join(DATASET_FOLDER, dataset)
