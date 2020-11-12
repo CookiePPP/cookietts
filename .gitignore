@@ -24,8 +24,9 @@ ipython_config.py
 /CookieTTS/_2_ttm/untts/outdir/
 /CookieTTS/_2_ttm/tacotron2/outdir/
 /CookieTTS/_4_mtw/waveglow/outdir/
-/CookieTTS/_2_ttm/tacotron2/checkpoints/
-/CookieTTS/_2_ttm/tacotron2/NewCPs/
+/CookieTTS/_2_ttm/tacotron2_ssvae/checkpoints/
+/CookieTTS/_2_ttm/tacotron2_ssvae/NewCPs/
+/CookieTTS/_2_ttm/tacotron2_tm/outdir/
 /CookieTTS/_4_mtw/waveglow/checkpoints/
 
 # Model logs
@@ -34,6 +35,7 @@ ipython_config.py
 /CookieTTS/_2_ttm/untts/old_logs/
 /CookieTTS/_2_ttm/tacotron2/logs/
 /CookieTTS/_2_ttm/tacotron2/GTA_flist/
+GPU_?.log
 
 # megatools folders
 megatools-*-git-*-win64/

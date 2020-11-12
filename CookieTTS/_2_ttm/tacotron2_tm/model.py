@@ -1055,7 +1055,7 @@ class Tacotron2(nn.Module):
         memory.append( speaker_embed[:, None].repeat(1, encoder_outputs.size(1), 1) )
         
         # (SylpsNet) Sylps -> sylzu, mu, logvar
-        sylzu = self.sylps_net.infer_auto(gt_sylps or pred_sylps, rand_sampling=True)
+        sylzu = self.sylps_net.infer_auto(gt_sylps or pred_sylps, rand_sampling=False)
         memory.append( sylzu[:, None].repeat(1, encoder_outputs.size(1), 1) )
         
         # (TorchMoji)

@@ -98,7 +98,7 @@ def init_distributed(hparams, n_gpus, rank, group_name):
     # Initialize distributed communication
     dist.init_process_group(
         backend=hparams.dist_backend, init_method=hparams.dist_url,
-        world_size=args.n_gpus, rank=rank, group_name=group_name)
+        world_size=n_gpus, rank=rank, group_name=group_name)
 
     print("Done initializing distributed")
 
@@ -117,7 +117,7 @@ def get_filelist(hparams, val=False):
             filelist = load_filepaths_and_text(hparams.training_files)
     return filelist
 
-def prepare_dataloaders(hparams, dataloader_args, args, speaker_ids):
+def prepare_dataloaders(hparams, dataloader_args, args, speaker_ids, audio_offset=0):
     # Get data, data loaders and collate function ready
     if hparams.data_source == 1:
         if args.rank == 0:
@@ -147,9 +147,9 @@ def prepare_dataloaders(hparams, dataloader_args, args, speaker_ids):
         speaker_ids = speaker_ids if hparams.use_saved_speakers else None
     
     trainset = TTSDataset(training_filelist, hparams, dataloader_args, check_files=hparams.check_files, shuffle=False,
-                           deterministic_arpabet=False, speaker_ids=speaker_ids)
+                           deterministic_arpabet=False, speaker_ids=speaker_ids,          audio_offset=audio_offset)
     valset = TTSDataset(validation_filelist, hparams, dataloader_args, check_files=hparams.check_files, shuffle=False,
-                           deterministic_arpabet=True,  speaker_ids=trainset.speaker_ids)
+                           deterministic_arpabet=True,  speaker_ids=trainset.speaker_ids, audio_offset=audio_offset)
     collate_fn = Collate(hparams)
     
     #use_shuffle = False if hparams.use_TBPTT else True# can't shuffle with TBPTT
@@ -219,23 +219,25 @@ def warm_start_model(checkpoint_path, model, ignore_layers):
     return model, iteration, saved_lookup
 
 
-def load_checkpoint(checkpoint_path, model, optimizer, best_val_loss_dict, best_loss_dict, best_validation_loss=1e3):
+def load_checkpoint(checkpoint_path, model, optimizer, best_val_loss_dict, best_loss_dict, best_validation_loss=1e3, best_inf_attsc=-99.):
     assert os.path.isfile(args.checkpoint_path)
     print("Loading checkpoint '{}'".format(args.checkpoint_path))
     checkpoint_dict = torch.load(args.checkpoint_path, map_location='cpu')
     
-    model.load_state_dict(checkpoint_dict['state_dict']) # original
+    model.load_state_dict(checkpoint_dict['state_dict'])# load model weights
     
     if 'optimizer' in checkpoint_dict.keys():
-        optimizer.load_state_dict(checkpoint_dict['optimizer'])
+        optimizer.load_state_dict(checkpoint_dict['optimizer'])# load optimizer state
     if 'amp' in checkpoint_dict.keys() and amp is not None:
-        amp.load_state_dict(checkpoint_dict['amp'])
+        amp.load_state_dict(checkpoint_dict['amp']) # load AMP (fp16) state.
     if 'learning_rate' in checkpoint_dict.keys():
         learning_rate = checkpoint_dict['learning_rate']
     #if 'hparams' in checkpoint_dict.keys():
     #    hparams = checkpoint_dict['hparams']
     if 'best_validation_loss' in checkpoint_dict.keys():
         best_validation_loss = checkpoint_dict['best_validation_loss']
+    if 'best_inf_attsc' in checkpoint_dict.keys():
+        best_inf_attsc = checkpoint_dict['best_inf_attsc']
     if 'best_val_loss_dict' in checkpoint_dict.keys():
         best_val_loss_dict = checkpoint_dict['best_val_loss_dict']
     if 'best_loss_dict' in checkpoint_dict.keys():
@@ -247,12 +249,11 @@ def load_checkpoint(checkpoint_path, model, optimizer, best_val_loss_dict, best_
     iteration = 0 if start_from_checkpoints_from_zero else checkpoint_dict['iteration']
     saved_lookup = checkpoint_dict['speaker_id_lookup'] if 'speaker_id_lookup' in checkpoint_dict.keys() else None
     
-    print("Loaded checkpoint '{}' from iteration {}" .format(
-        args.checkpoint_path, iteration))
-    return model, optimizer, learning_rate, iteration, best_validation_loss, saved_lookup, best_val_loss_dict, best_loss_dict
+    print(f"Loaded checkpoint '{args.checkpoint_path}' from iteration {iteration}")
+    return model, optimizer, learning_rate, iteration, best_validation_loss, best_inf_attsc, saved_lookup, best_val_loss_dict, best_loss_dict
 
 
-def save_checkpoint(model, optimizer, learning_rate, iteration, hparams, best_validation_loss, average_loss, best_val_loss_dict, best_loss_dict, speaker_id_lookup, filepath):
+def save_checkpoint(model, optimizer, learning_rate, iteration, hparams, best_validation_loss, best_inf_attsc, average_loss, best_val_loss_dict, best_loss_dict, speaker_id_lookup, filepath):
     from CookieTTS.utils.dataset.utils import load_filepaths_and_text
     tqdm.write("Saving model and optimizer state at iteration {} to {}".format(
         iteration, filepath))
@@ -269,6 +270,7 @@ def save_checkpoint(model, optimizer, learning_rate, iteration, hparams, best_va
                  'speaker_id_lookup'   : speaker_id_lookup,
                  'speaker_name_lookup' : speaker_name_lookup,
                  'best_validation_loss': best_validation_loss,
+                 'best_inf_attsc'      : best_inf_attsc,
                  'best_val_loss_dict'  : best_val_loss_dict,
                  'best_loss_dict'      : best_loss_dict,
                  'average_loss'        : average_loss}
@@ -319,7 +321,7 @@ def write_dict_to_file(file_losses, fpath, n_gpus, rank, deliminator='","', ends
     
     return file_losses
 
-def get_mse_sampled_filelist(original_filelist, file_losses):
+def get_mse_sampled_filelist(original_filelist, file_losses, exp_factor, seed=None):
     speaker_losses = {}
     for loss_dict in file_losses.values():
         speaker_id = str(loss_dict['speaker_id_ext'])
@@ -348,22 +350,22 @@ def get_mse_sampled_filelist(original_filelist, file_losses):
     
     # shuffle speaker filelists
     for k in spkr_filelist.keys():
-        random.shuffle(spkr_filelist[k])
+        random.Random(seed).shuffle(spkr_filelist[k])
     
     # calculate dataset portion for each speaker and build new filelist
     dataset_len = len(original_filelist)
-    exp_factor = 2.0
     new_filelist = []
     spec_MSE_total = sum([loss_dict['spec_MSE']**exp_factor for loss_dict in speaker_avg_losses.values()])
     for speaker_id, loss_dict in speaker_avg_losses.items():
-        sample_chance = (loss_dict['spec_MSE']**exp_factor)/spec_MSE_total# chance to sample this speaker
-        n_files = round(sample_chance * dataset_len)
-        spkr_files = spkr_filelist[speaker_id]
-        if (n_files == 0) or ( len(spkr_files) == 0 ):
-            continue
-        if len(spkr_files) < n_files:
-            spkr_files = spkr_files * ceil(n_files/len(spkr_files))# repeat filelist if needed
-        new_filelist.extend(spkr_files[:n_files])
+        if speaker_id in spkr_filelist:
+            sample_chance = (loss_dict['spec_MSE']**exp_factor)/spec_MSE_total# chance to sample this speaker
+            n_files = round(sample_chance * dataset_len)
+            spkr_files = spkr_filelist[speaker_id]
+            if (n_files == 0) or ( len(spkr_files) == 0 ):
+                continue
+            if len(spkr_files) < n_files:
+                spkr_files = spkr_files * ceil(n_files/len(spkr_files))# repeat filelist if needed
+            new_filelist.extend(spkr_files[:n_files])
     
     return new_filelist
 
@@ -372,31 +374,30 @@ def update_smoothed_dict(orig_dict, new_dict, smoothing_factor=0.6):
         if key in orig_dict:# if audio file already in dict, merge new with old using smoothing_factor
             loss_names, loss_values = orig_dict[key].keys(), orig_dict[key].values()
             for loss_name in loss_names:
-                if all(type(loss) in [int, float] for loss in [orig_dict[key][loss_name], new_dict[key][loss_name]]):
+                if all(loss_name in dict_ for dict_ in [orig_dict[key], new_dict[key]]) and all(type(loss) in [int, float] for loss in [orig_dict[key][loss_name], new_dict[key][loss_name]]):
                     orig_dict[key][loss_name] = orig_dict[key][loss_name]*(smoothing_factor) + new_dict[key][loss_name]*(1-smoothing_factor)
+                elif loss_name in new_dict[key] and type(new_dict[key][loss_name]) in [int, float]:
+                    orig_dict[key][loss_name] = new_dict[key][loss_name]
+        
         else:# if audio file not in dict, assign new key to dict
             orig_dict[key] = new_dict[key]
     return orig_dict
     
 
 def validate(hparams, args, file_losses, model, criterion, valset, best_val_loss_dict, iteration,
-             collate_fn, logger, val_teacher_force_till, val_p_teacher_forcing, teacher_force=1):
+             collate_fn, logger, val_teacher_force_till, val_p_teacher_forcing, teacher_force=-1):
     """Handles all the validation scoring and printing"""
+    assert teacher_force >= 0, 'teacher_force not specified.'
     model.eval()
     with torch.no_grad():
+        if teacher_force == 2:# if inference, sample from each speaker equally. So speakers with smaller datasets get the same weighting onto the val loss.
+            orig_filelist = valset.filelist
+            valset.update_filelist(get_mse_sampled_filelist(orig_filelist, file_losses, 0.0, seed=1234))
         val_sampler = DistributedSampler(valset) if hparams.distributed_run else None
         val_loader = DataLoader(valset, sampler=val_sampler, num_workers=hparams.num_workers,
                                 shuffle=False, batch_size=hparams.batch_size,
                                 pin_memory=False, drop_last=True, collate_fn=collate_fn)
-        if teacher_force == 1:
-            val_teacher_force_till = 0
-            val_p_teacher_forcing = 1.0
-        elif teacher_force == 2:
-            val_teacher_force_till = 0
-            val_p_teacher_forcing = 0.0
         
-        diagonality = torch.zeros(1)
-        avg_prob = torch.zeros(1)
         loss_dict_total = None
         for i, batch in tqdm(enumerate(val_loader), desc="Validation", total=len(val_loader), smoothing=0): # i = index, batch = stuff in array[i]
             y = model.parse_batch(batch)
@@ -404,16 +405,18 @@ def validate(hparams, args, file_losses, model, criterion, valset, best_val_loss
                 torch.random.manual_seed(i)# use repeatable seeds during validation so results are more consistent and comparable.
                 y_pred = force(model, valid_kwargs=model_args, **{**y, "teacher_force_till": val_teacher_force_till, "p_teacher_forcing": val_p_teacher_forcing})
             
-            loss_scalars = {
-                 "spec_MSE_weight": 1.00,
-              "postnet_MSE_weight": 1.00,
+            val_loss_scalars = {
+                 "spec_MSE_weight": 0.00,
+                "spec_MFSE_weight": 1.00,
+              "postnet_MSE_weight": 0.00,
+             "postnet_MFSE_weight": 1.00,
                 "gate_loss_weight": 1.00,
                 "sylps_kld_weight": 0.00,
                 "sylps_MSE_weight": 0.00,
-                "sylps_MAE_weight": 0.10,
-                 "diag_att_weight": 0.05,
+                "sylps_MAE_weight": 0.05,
+                 "diag_att_weight": 0.00,
             }
-            loss_dict, file_losses_batch = criterion(y_pred, y, loss_scalars)
+            loss_dict, file_losses_batch = criterion(y_pred, y, val_loss_scalars)
             file_losses = update_smoothed_dict(file_losses, file_losses_batch, file_losses_smoothness)
             if loss_dict_total is None:
                 loss_dict_total = {k: 0. for k, v in loss_dict.items()}
@@ -429,25 +432,34 @@ def validate(hparams, args, file_losses, model, criterion, valset, best_val_loss
             # end forloop
         loss_dict_total = {k: v/(i+1) for k, v in loss_dict_total.items()}
         # end torch.no_grad()
+        
+    # reverse changes to valset and model
+    if teacher_force == 2:# if inference, sample from each speaker equally. So speakers with smaller datasets get the same weighting onto the val loss.
+        valset.filelist = orig_filelist
     model.train()
     
+    # update best losses
     if best_val_loss_dict is None:
         best_val_loss_dict = loss_dict_total
     else:
         best_val_loss_dict = {k: min(best_val_loss_dict[k], loss_dict_total[k]) for k in best_val_loss_dict.keys()}
     
+    # print, log data and return.
     if args.rank == 0:
         tqdm.write(f"Validation loss {iteration}: {loss_dict_total['loss']:9f}  Average Max Attention: {loss_dict_total['avg_max_attention']:9f}")
         if iteration > 1:
             log_terms = (loss_dict_total, best_val_loss_dict, model, y, y_pred, iteration, val_teacher_force_till, val_p_teacher_forcing)
-            if teacher_force == 1:
-                logger.log_teacher_forced_validation(*log_terms)
-            elif teacher_force == 2:
+            if teacher_force == 2:
                 logger.log_infer(*log_terms)
             else:
                 logger.log_validation(*log_terms)
     
-    return best_val_loss_dict['loss'], best_val_loss_dict, file_losses
+    torch.distributed.barrier()# wait till all graphics cards reach this point.
+    if teacher_force == 2:
+        return loss_dict_total['weighted_score'], best_val_loss_dict, file_losses
+    else:
+        return loss_dict_total['loss'], best_val_loss_dict, file_losses
+    
 
 
 def calculate_global_mean(data_loader, global_mean_npy, hparams):
@@ -543,7 +555,9 @@ def train(args, rank, group_name, hparams):
     logger = prepare_directories_and_logger(hparams, args)
     
     # Load checkpoint if one exists
-    best_validation_loss = 1e3 # used to see when "best_val_model" should be saved
+    best_validation_loss = 1e3# used to see when "best_val_model" should be saved
+    best_inf_attsc       = -99# used to see when "best_inf_attsc" should be saved
+    
     n_restarts = 0
     checkpoint_iter = 0
     iteration = 0
@@ -575,7 +589,7 @@ def train(args, rank, group_name, hparams):
                 args.checkpoint_path, model)
         else:
             _ = load_checkpoint(args.checkpoint_path, model, optimizer, best_val_loss_dict, best_loss_dict)
-            model, optimizer, _learning_rate, iteration, best_validation_loss, saved_lookup, best_val_loss_dict, best_loss_dict = _
+            model, optimizer, _learning_rate, iteration, best_validation_loss, best_inf_attsc, saved_lookup, best_val_loss_dict, best_loss_dict = _
             if hparams.use_saved_learning_rate:
                 learning_rate = _learning_rate
         checkpoint_iter = iteration
@@ -668,6 +682,7 @@ def train(args, rank, group_name, hparams):
                             just_did_val=False
                         for param_group in optimizer.param_groups:
                             param_group['lr'] = learning_rate
+                    
                     # /run external code every epoch, allows the run to be adjusting without restarts/
                     model.zero_grad()
                     y = model.parse_batch(batch) # move batch to GPU (async)
@@ -685,6 +700,7 @@ def train(args, rank, group_name, hparams):
                          "diag_att_weight": diag_att_weight,
                     }
                     loss_dict, file_losses_batch = criterion(y_pred, y, loss_scalars)
+                    
                     file_losses = update_smoothed_dict(file_losses, file_losses_batch, file_losses_smoothness)
                     loss = loss_dict['loss']
                     
@@ -692,7 +708,8 @@ def train(args, rank, group_name, hparams):
                         reduced_loss_dict = {k: reduce_tensor(v.data, args.n_gpus).item() if v is not None else 0. for k, v in loss_dict.items()}
                     else:
                         reduced_loss_dict = {k: v.item() if v is not None else 0. for k, v in loss_dict.items()}
-                    reduced_loss = reduced_loss_dict['loss']     
+                    
+                    reduced_loss = reduced_loss_dict['loss']
                     
                     if hparams.fp16_run:
                         with amp.scale_loss(loss, optimizer) as scaled_loss:
@@ -736,47 +753,56 @@ def train(args, rank, group_name, hparams):
                         duration = time.time() - start_time
                         if not is_overflow:
                             average_loss = rolling_loss.process(reduced_loss)
-                            tqdm.write("{} [Train_loss:{:.4f} Avg:{:.4f}] [Grad Norm {:.4f}] "
-                                "[{:.2f}s/it] [{:.3f}s/file] [{:.7f} LR] [{} LS]".format(
-                                iteration, reduced_loss, average_loss, grad_norm,
-                                    duration, (duration/(hparams.batch_size*args.n_gpus)), learning_rate, round(loss_scale)))
+                            tqdm.write(
+                                f"{iteration} [Train_loss:{reduced_loss:.4f} Avg:{average_loss:.4f}] "
+                                f"[Grad Norm {grad_norm:.4f}] [{duration:.2f}s/it] "
+                                f"[{(duration/(hparams.batch_size*args.n_gpus)):.3f}s/file] "
+                                f"[{learning_rate:.7f} LR] [{loss_scale:.0f} LS]")
                             logger.log_training(reduced_loss_dict, expavg_loss_dict, best_loss_dict, grad_norm, learning_rate, duration, iteration, teacher_force_till, p_teacher_forcing, drop_frame_rate)
                         else:
                             tqdm.write("Gradient Overflow, Skipping Step")
                         start_time = time.time()
                     
-                    if not is_overflow and ((iteration % (hparams.iters_per_checkpoint/1) == 0) or (os.path.exists(save_file_check_path))):
+                    if iteration%checkpoint_interval==0 or os.path.exists(save_file_check_path):
                         # save model checkpoint like normal
                         if rank == 0:
                             checkpoint_path = os.path.join(args.output_directory, "checkpoint_{}".format(iteration))
-                            save_checkpoint(model, optimizer, learning_rate, iteration, hparams, best_validation_loss, average_loss, best_val_loss_dict, best_loss_dict, speaker_lookup, checkpoint_path)
+                            save_checkpoint(model, optimizer, learning_rate, iteration, hparams, best_validation_loss, best_inf_attsc, average_loss, best_val_loss_dict, best_loss_dict, speaker_lookup, checkpoint_path)
                     
-                    if not is_overflow and iteration%dump_filelosses_interval==0:
+                    if iteration%dump_filelosses_interval==0:
                         print("Updating File_losses dict!")
                         file_losses = write_dict_to_file(file_losses, os.path.join(args.output_directory, 'file_losses.csv'), args.n_gpus, rank)
                     
-                    if not is_overflow and ((iteration % int(validation_interval) == 0) or (os.path.exists(save_file_check_path)) or (iteration < 1000 and (iteration % 250 == 0))):
+                    if (iteration % int(validation_interval) == 0) or (os.path.exists(save_file_check_path)) or (iteration < 1000 and (iteration % 250 == 0)):
                         if rank == 0 and os.path.exists(save_file_check_path):
                             os.remove(save_file_check_path)
                         # perform validation and save "best_val_model" depending on validation loss
-                        if iteration > 0:
-                            val_loss, best_val_loss_dict, _ = validate(hparams, args, {}, model, criterion, valset, best_val_loss_dict, iteration, collate_fn, logger, val_teacher_force_till, val_p_teacher_forcing, teacher_force=1) #teacher_force
-                            val_loss, best_val_loss_dict, _ = validate(hparams, args, {}, model, criterion, valset, best_val_loss_dict, iteration, collate_fn, logger, val_teacher_force_till, val_p_teacher_forcing, teacher_force=2) #infer
-                        val_loss, best_val_loss_dict, file_losses = validate(hparams, args, file_losses, model, criterion, valset, best_val_loss_dict, iteration, collate_fn, logger, val_teacher_force_till, val_p_teacher_forcing, teacher_force=0) #validate (0.8 forcing)
+                        val_loss, best_val_loss_dict, file_losses = validate(hparams, args, file_losses, model, criterion, valset, best_val_loss_dict, iteration, collate_fn, logger, val_teacher_force_till, val_p_teacher_forcing, teacher_force=0)# validate/teacher_force
+                        file_losses = write_dict_to_file(file_losses, os.path.join(args.output_directory, 'file_losses.csv'), args.n_gpus, rank)
+                        valatt_loss, *_ = validate(hparams, args, file_losses, model, criterion, valset, best_val_loss_dict, iteration, collate_fn, logger, 0, 0.0, teacher_force=2)# infer
                         if use_scheduler:
                             scheduler.step(val_loss)
                         if (val_loss < best_validation_loss):
                             best_validation_loss = val_loss
-                            if rank == 0:
+                            if rank == 0 and hparams.save_best_val_model:
                                 checkpoint_path = os.path.join(args.output_directory, "best_val_model")
-                                save_checkpoint(model, optimizer, learning_rate, iteration, hparams, best_validation_loss, average_loss, best_val_loss_dict, best_loss_dict, speaker_lookup, checkpoint_path)
+                                save_checkpoint(
+                                    model, optimizer, learning_rate, iteration, hparams, best_validation_loss, max(best_inf_attsc, val_loss),
+                                    average_loss, best_val_loss_dict, best_loss_dict, speaker_lookup, checkpoint_path)
+                        if (valatt_loss > best_inf_attsc):
+                            best_inf_attsc = valatt_loss
+                            if rank == 0 and hparams.save_best_inf_attsc:
+                                checkpoint_path = os.path.join(args.output_directory, "best_inf_attsc")
+                                save_checkpoint(
+                                    model, optimizer, learning_rate, iteration, hparams, best_validation_loss, best_inf_attsc,
+                                    average_loss, best_val_loss_dict, best_loss_dict, speaker_lookup, checkpoint_path)
                         just_did_val = True
                     
                     iteration += 1
                     # end of iteration loop
                 
                 # update filelist of training dataloader
-                if (iteration > hparams.min_avg_max_att_start) and (iteration-checkpoint_iter > (dataset_len+50)):
+                if (iteration > hparams.min_avg_max_att_start) and (iteration-checkpoint_iter >= dataset_len):
                     print("Updating File_losses dict!")
                     file_losses = write_dict_to_file(file_losses, os.path.join(args.output_directory, 'file_losses.csv'), args.n_gpus, rank)
                     print("Done!")
@@ -793,9 +819,12 @@ def train(args, rank, group_name, hparams):
                     print(f"Done! {len(bad_file_paths)} Files removed from dataset. {len(filted_filelist)} Files remain.")
                     del filted_filelist, bad_file_paths
                     if iteration > hparams.speaker_mse_sampling_start:
+                        print("Updating dataset with speaker MSE Sampler!")
                         if original_filelist is None:
                             original_filelist = train_loader.dataset.filelist
-                        train_loader.dataset.filelist = get_mse_sampled_filelist(original_filelist, file_losses)
+                        train_loader.dataset.update_filelist(get_mse_sampled_filelist(
+                                                             original_filelist, file_losses, hparams.speaker_mse_exponent, seed=iteration))
+                        print("Done!")
                 
                 # end of epoch loop
             training = False # exit the While loop
@@ -822,7 +851,8 @@ def train(args, rank, group_name, hparams):
             checkpoint_iter = iteration
             iteration += 1
             n_restarts += 1
-
+        except KeyboardInterrupt as ex:
+            print(ex)
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()

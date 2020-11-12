@@ -42,7 +42,20 @@ def dropout_frame(mels, global_mean, mel_lengths, drop_frame_rate):
     dropped_mels = (mels * (~drop_mask).unsqueeze(1) +
                     global_mean[None, :, None] * drop_mask.unsqueeze(1))
     return dropped_mels
-    
+
+
+def get_first_over_thresh(x, threshold):
+    """Takes [B, T] and outputs first T over threshold for each B (output.shape = [B])."""
+    device = x.device
+    x = x.clone().cpu().float() # using CPU because GPU implementation of argmax() splits tensor into 32 elem chunks, each chunk is parsed forward then the outputs are collected together... backwards
+    x[:,-1] = threshold # set last to threshold just incase the output didn't finish generating.
+    x[x>threshold] = threshold
+    if int(''.join(torch.__version__.split('.'))) < 170:
+        return ( (x.size(1)-1)-(x.flip(dims=(1,)).argmax(dim=1)) ).to(device).int()
+    else:
+        return x.argmax(dim=1).to(device).int()
+
+
 def alignment_metric(alignments, input_lengths=None, output_lengths=None, enc_min_thresh=0.7, average_across_batch=False):
     alignments = alignments.transpose(1,2) # [B, dec, enc] -> [B, enc, dec]
     # alignments [batch size, x, y]

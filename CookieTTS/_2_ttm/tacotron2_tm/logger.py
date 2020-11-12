@@ -8,8 +8,7 @@ class Tacotron2Logger(SummaryWriter):
     def __init__(self, logdir, hparams):
         super(Tacotron2Logger, self).__init__(logdir)
         self.n_items = hparams.n_tensorboard_outputs
-        self.plotted_targets_val = False# validation
-        self.plotted_targets_tf = False # teacher forcing
+        self.plotted_targets_val = False# validation/teacher-forcing
         self.plotted_targets_inf = False# infer
         self.best_loss_dict = None
     
@@ -65,6 +64,9 @@ class Tacotron2Logger(SummaryWriter):
         # plot spects / imgs
         n_items = min(self.n_items, y['gt_mel'].shape[0])
         
+        mel_L1_map = torch.nn.L1Loss(reduction='none')(y_pred['pred_mel_postnet'], y['gt_mel'])
+        mel_L1_map[:, -1, -1] = 5.0 # because otherwise the color map scale is crap
+        
         for idx in range(n_items):# plot target spectrogram of longest audio file(s)
             self.add_image(
                 f"{prepend}_alignment/{idx}",
@@ -73,6 +75,10 @@ class Tacotron2Logger(SummaryWriter):
             self.add_image(
                 f"{prepend}_mel_pred/{idx}",
                 plot_spectrogram_to_numpy(y_pred['pred_mel_postnet'][idx].data.cpu().numpy()),
+                iteration, dataformats='HWC')
+            self.add_image(
+                f"{prepend}_mel_SE/{idx}",
+                plot_spectrogram_to_numpy(mel_L1_map[idx].data.cpu().numpy()),
                 iteration, dataformats='HWC')
             if not self.plotted_targets_val:
                 self.add_image(
@@ -106,36 +112,3 @@ class Tacotron2Logger(SummaryWriter):
                     plot_spectrogram_to_numpy(y['gt_mel'][idx].data.cpu().numpy()),
                     iteration, dataformats='HWC')
         self.plotted_targets_inf = True # target spect doesn't change so only needs to be plotted once.
-    
-    def log_teacher_forced_validation(self, reduced_loss_dict, reduced_bestval_loss_dict, model, y, y_pred, iteration, val_teacher_force_till, val_p_teacher_forcing):
-        prepend = 'teacher_forced'
-        
-        # plot datapoints/graphs
-        self.plot_loss_dict(reduced_loss_dict,         iteration, f'{prepend}')
-        self.plot_loss_dict(reduced_bestval_loss_dict, iteration, f'{prepend}_best')
-        
-        # plot spects / imgs
-        n_items = min(self.n_items, y['gt_mel'].shape[0])
-        
-        mel_L1_map = torch.nn.L1Loss(reduction='none')(y_pred['pred_mel_postnet'], y['gt_mel'])
-        mel_L1_map[:, -1, -1] = 10.0 # because otherwise the color map scale is crap
-        
-        for idx in range(n_items):# plot target spectrogram of longest audio file(s)
-            self.add_image(
-                f"{prepend}_alignment/{idx}",
-                plot_alignment_to_numpy(y_pred['alignments'][idx].data.cpu().numpy().T),
-                iteration, dataformats='HWC')
-            self.add_image(
-                f"{prepend}_mel_pred/{idx}",
-                plot_spectrogram_to_numpy(y_pred['pred_mel_postnet'][idx].data.cpu().numpy()),
-                iteration, dataformats='HWC')
-            self.add_image(
-                f"{prepend}_mel_SE/{idx}",
-                plot_spectrogram_to_numpy(mel_L1_map[idx].data.cpu().numpy()),
-                iteration, dataformats='HWC')
-            if not self.plotted_targets_tf:
-                self.add_image(
-                    f"{prepend}_mel_gt/{idx}",
-                    plot_spectrogram_to_numpy(y['gt_mel'][idx].data.cpu().numpy()),
-                    iteration, dataformats='HWC')
-        self.plotted_targets_tf = True # target spect doesn't change so only needs to be plotted once.

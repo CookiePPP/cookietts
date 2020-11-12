@@ -14,63 +14,82 @@
             "style_mode"     : "torchmoji_hidden",
             "textseg_mode"   : "segment_by_sentencequote",
             "batch_mode"     : "nochange",
-            "max_attempts"   : 16,
-            "max_duration_s" : 10.0,
+            "max_attempts"   : 64,
+            "max_duration_s" : 12.0,
             "batch_size"     : 256,
             "use_arpabet"    : "on",
             "target_score"   : 0.75,
-            "cat_silence_s"  : 0.1,
+            "cat_silence_s"  : 0.20,
             "multispeaker_mode": "random",
-            "textseg_len_target": 120,
+            "textseg_len_target": 100,
             "dyna_max_duration_s": 0.125
         }
     },
     "workers": {
         "devices": ["cpu", "cuda:0"],
         "sox_output_ext": "flac",
-        "working_directory": "D:/Audiobooks/unsorted_tmp",
-        "output_directory": "D:/Audiobooks/unsorted",
+        "working_directory": "/media/cookie/MoreStable/Audiobooks/tmp",
+        "output_directory": "/media/cookie/MoreStable/Audiobooks",
         "output_maxsize_gb": 0.01,
-        "dict_path": "G:/TwiBot/tacotron2/filelists/merged.dict_.txt",
+        "dict_path": "/media/cookie/Samsung PM961/TwiBot/tacotron2/filelists/merged.dict_.txt",
         "TTM": {
-            "speaker_ids_file": "H:/ClipperDatasetV2/filelists/speaker_ids.txt",
+            "speaker_ids_file": "/media/cookie/Samsung 860 QVO/ClipperDatasetV2/filelists/speaker_ids.txt",
             "use_speaker_ids_file_override": true,
-            "default_model": "MEL | Tacotron2 TM P3 V0 (39K Iters)",
+            "default_model": "MEL | Tacotron2 TM P3 0.2DFR 0.3DO (best_inf_attsc)",
             "models": {
                 "MEL | Tacotron2 TM P0 V0 (Best Val Model)": {
-                    "modelpath": "G:/TwiBot/CookiePPPTTS/CookieTTS/_2_ttm/tacotron2_tm/outdir/best_val_model"
+                    "modelpath": "/media/cookie/Samsung PM961/TwiBot/CookiePPPTTS/CookieTTS/_2_ttm/tacotron2_tm/outdir/best_val_model"
                 },
                 "MEL | Tacotron2 TM P0 V1 (Best Val Model)": {
-                    "modelpath": "G:/TwiBot/CookiePPPTTS/CookieTTS/_2_ttm/tacotron2_tm/outdir_p0_1_warm/best_val_model"
+                    "modelpath": "/media/cookie/Samsung PM961/TwiBot/CookiePPPTTS/CookieTTS/_2_ttm/tacotron2_tm/outdir_p0_1_warm/best_val_model"
                 },
                 "MEL | Tacotron2 TM P2 V0 (8.5K Iters)": {
-                    "modelpath": "G:/TwiBot/CookiePPPTTS/CookieTTS/_2_ttm/tacotron2_tm/outdir_p2_0_scratch/checkpoint_8500"
+                    "modelpath": "/media/cookie/Samsung PM961/TwiBot/CookiePPPTTS/CookieTTS/_2_ttm/tacotron2_tm/outdir_p2_0_scratch/checkpoint_8500"
                 },
                 "MEL | Tacotron2 TM P3 V0 (9.5K Iters)": {
-                    "modelpath": "G:/TwiBot/CookiePPPTTS/CookieTTS/_2_ttm/tacotron2_tm/outdir_p3_0_scratch/checkpoint_9500"
+                    "modelpath": "/media/cookie/Samsung PM961/TwiBot/CookiePPPTTS/CookieTTS/_2_ttm/tacotron2_tm/outdir_p3_0_scratch/checkpoint_9500"
                 },
                 "MEL | Tacotron2 TM P3 V0 (12K Iters)": {
-                    "modelpath": "G:/TwiBot/CookiePPPTTS/CookieTTS/_2_ttm/tacotron2_tm/outdir_p3_0_scratch/checkpoint_12000"
+                    "modelpath": "/media/cookie/Samsung PM961/TwiBot/CookiePPPTTS/CookieTTS/_2_ttm/tacotron2_tm/outdir_p3_0_scratch/checkpoint_12000"
                 },
                 "MEL | Tacotron2 TM P3 V0 (17K Iters)": {
-                    "modelpath": "G:/TwiBot/CookiePPPTTS/CookieTTS/_2_ttm/tacotron2_tm/outdir_p3_0_scratch/checkpoint_17000"
+                    "modelpath": "/media/cookie/Samsung PM961/TwiBot/CookiePPPTTS/CookieTTS/_2_ttm/tacotron2_tm/outdir_p3_0_scratch/checkpoint_17000"
                 },
                 "MEL | Tacotron2 TM P3 V0 (24K Iters)": {
-                    "modelpath": "G:/TwiBot/CookiePPPTTS/CookieTTS/_2_ttm/tacotron2_tm/outdir_p3_0_scratch/checkpoint_24000"
+                    "modelpath": "/media/cookie/Samsung PM961/TwiBot/CookiePPPTTS/CookieTTS/_2_ttm/tacotron2_tm/outdir_p3_0_scratch/checkpoint_24000"
                 },
                 "MEL | Tacotron2 TM P3 V0 (35K Iters)": {
-                    "modelpath": "G:/TwiBot/CookiePPPTTS/CookieTTS/_2_ttm/tacotron2_tm/outdir_p3_0_scratch/checkpoint_35000"
+                    "modelpath": "/media/cookie/Samsung PM961/TwiBot/CookiePPPTTS/CookieTTS/_2_ttm/tacotron2_tm/outdir_p3_0_scratch/checkpoint_35000"
                 },
-                "MEL | Tacotron2 TM P3 V0 (39K Iters)": {
-                    "modelpath": "G:/TwiBot/CookiePPPTTS/CookieTTS/_2_ttm/tacotron2_tm/outdir_p3_0_scratch/checkpoint_39000"
+                "MEL | Tacotron2 TM P3 V0 (45K Iters)": {
+                    "modelpath": "/media/cookie/Samsung PM961/TwiBot/CookiePPPTTS/CookieTTS/_2_ttm/tacotron2_tm/outdir_p3_0_scratch/checkpoint_45000"
+                },
+                "MEL | Tacotron2 TM P3 V0 (47K Iters)": {
+                    "modelpath": "/media/cookie/Samsung PM961/TwiBot/CookiePPPTTS/CookieTTS/_2_ttm/tacotron2_tm/outdir_p3_0_scratch/checkpoint_47000"
+                },
+                "MEL | Tacotron2 TM P3 V0 (54K Iters)": {
+                    "modelpath": "/media/cookie/Samsung PM961/TwiBot/CookiePPPTTS/CookieTTS/_2_ttm/tacotron2_tm/outdir_p3_0_scratch/checkpoint_54000"
+                },
+                "MEL | Tacotron2 TM P3 V0 (57K Iters)": {
+                    "modelpath": "/media/cookie/Samsung PM961/TwiBot/CookiePPPTTS/CookieTTS/_2_ttm/tacotron2_tm/outdir_p3_1_0.5DFR_0.0Dropout/checkpoint_57000"
+                },
+                "MEL | Tacotron2 TM P3 V0 (61.539K Iters)": {
+                    "modelpath": "/media/cookie/Samsung PM961/TwiBot/CookiePPPTTS/CookieTTS/_2_ttm/tacotron2_tm/outdir_p3_1_0.5DFR_0.0Dropout/checkpoint_61539"
+                },
+                "MEL | Tacotron2 TM P3 0.5DFR 0.0DO (best_inf_attsc)": {
+                    "modelpath": "/media/cookie/Samsung PM961/TwiBot/CookiePPPTTS/CookieTTS/_2_ttm/tacotron2_tm/outdir_p3_2_0.5DFR_0.0Dropout/best_inf_attsc"
+                },
+                "MEL | Tacotron2 TM P3 0.2DFR 0.3DO (best_inf_attsc)": {
+                    "modelpath": "/media/cookie/Samsung PM961/TwiBot/CookiePPPTTS/CookieTTS/_2_ttm/tacotron2_tm/outdir_p3_1_0.2DFR_0.3Dropout/best_inf_attsc"
                 }
+
             }
         },
         "MTW": {
             "default_model": "MEL | HiFi-GAN V1 44Khz",
             "models": {
                 "MEL | HiFi-GAN V1 44Khz": {
-                    "modelpath": "G:/TwiBot/VocoderComparisons/repos/hifi-gan/cp_hifigan_universal44Khz/g_00175000"
+                    "modelpath": "/media/cookie/Samsung PM961/TwiBot/VocoderComparisons/repos/hifi-gan/cp_hifigan_universal44Khz/g_00175000"
                 }
             }
         }

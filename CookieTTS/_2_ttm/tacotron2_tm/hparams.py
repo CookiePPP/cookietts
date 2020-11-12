@@ -11,14 +11,12 @@ def create_hparams(hparams_string=None, verbose=False):
         ## Experiment Parameters       ##
         #################################
         epochs = 1000,
-        iters_per_checkpoint = 1000,
-        iters_per_validation = 250,
         
-        save_best_val_loss = True,# save best   validation   loss as a checkpoint.
-        save_best_tfo_loss = True,# save best teacher forced loss as a checkpoint.
-        save_best_tfo_pmse = True,# save best teacher forced postnet MSE as a checkpoint.
-        save_best_tfo_att  = True,# save best teacher forced attention as a checkpoint.
-        save_best_inf_att  = True,# save best   inference    attention as a checkpoint.
+        n_models_to_keep=4,# NOT IMPLEMENTED # if over this number, will delete oldest checkpoint(s). Will never delete "best" checkpoints (as shown below).
+        save_best_val_model = True,# save best teacher forced postnet MFSE as a seperate checkpoint.
+                                   # This is basically best audio quality model.
+        save_best_inf_attsc = True,# save best inference weighted attention score as a seperate checkpoint.
+                              # This is basically best stability model.
         
         dynamic_loss_scaling=True,
         fp16_run        = True,# requires 20 Series or Better (e.g: RTX 2080 Ti, RTX 2060, Tesla V100, Tesla A100)
@@ -55,16 +53,13 @@ def create_hparams(hparams_string=None, verbose=False):
         use_TBPTT=False,  # continue processing longer files into the next training iteration
         max_segment_length=800,# max mel length till a segment is sliced.
         
-        sort_text_len_decending = True,# IMPLEMENTED, NEEDS TO BE TESTED
-                                       # Should allow more flexibility with TBPTT and remove quite a few problems.
+        sort_text_len_decending = True,# IMPLEMENTED, NEEDS TO BE TESTED IN THE DISABLED POSITION
+                                     # Should allow more flexibility with TBPTT and remove quite a few problems when disabled.
         
-        portion_for_worst_speaker=0.1,# NOT IMPLEMENTED
-                                      # this portion of the batch_size is dedicated to files from the worst frame-by-frame audio quality speaker.
-        
-        min_avg_max_att       = 0.40 ,# files under this alignment strength are filtered out of the dataset during training.
-        max_diagonality       = 1.40 ,# files under this alignment strength are filtered out of the dataset during training.
-        max_spec_mse          = 1.20 ,# files  over this mean squared error are filtered out of the dataset during training.
-        min_avg_max_att_start = 20000,# when to start filtering out weak alignments.
+        min_avg_max_att       = 0.50 ,# files under this alignment strength are filtered out of the dataset during training.
+        max_diagonality       = 1.16 ,# files under this alignment strength are filtered out of the dataset during training.
+        max_spec_mse          = 1.00 ,# files  over this mean squared error are filtered out of the dataset during training.
+        min_avg_max_att_start = 30000,# when to start filtering out weak alignments.
                                       # (normally mis-labelled files or files that are too challenging to learn)
                                       # Only applies to training dataset.
                                       # Only updates at the end of each epoch.
@@ -89,10 +84,17 @@ def create_hparams(hparams_string=None, verbose=False):
         dataset_min_duration = 1.4,# minimum duration of audio files to be added
         
         force_load  = True,# if a file fails to load, replace it with a random other file.
-        speaker_mse_sampling_start=28000,# when True, instead of loading each audio file in order, load audio files
-                                         #      randomly with higher probability given to more challenging speakers.
+        
+        speaker_mse_sampling_start = 65000,# when True, instead of loading each audio file in order, load audio files
+                                         #        randomly with higher probability given to more challenging speakers.
                                          # This must start after "min_avg_max_att_start" has started.
-                                         # Without filtering out outlier files, this would just enchance the damage that mislablled files and noisy speakers do to the model.
+                                         #  - Without filtering out outlier files, this would just enchance the damage that mislablled files and noisy speakers do to the model.
+        speaker_mse_exponent       = 1.0,# Power for weighting speakers sampling chances.
+                                         # 0.0 = All speakers are sampled equally often. error values also have no effect.
+                                         # 1.0 = Speakers are sampled proportionally to their spectrogram error,
+                                         #     e.g: double MSE = double chance to appear in training set.
+                                         # 2.0 = Speakers are sampled with weighting by the square of their errors,
+                                         #     e.g: double MSE = quadrulple chance to appear in training set.
         
         ##################################
         ## Text / Speaker Parameters    ##
@@ -215,21 +217,21 @@ def create_hparams(hparams_string=None, verbose=False):
         p_prenet_dropout  =0.5,# 0.5 baseline
         
         prenet_speaker_embed_dim=0,# speaker_embedding before encoder
-        prenet_noise   =0.20,# Add Gaussian Noise to Prenet inputs. std defined here.
+        prenet_noise   =0.00,# Add Gaussian Noise to Prenet inputs. std defined here.
         prenet_blur_min=0.00,# Apply random vertical blur between prenet_blur_min
         prenet_blur_max=0.00,#                                and prenet_blur_max
                              # Set max to False or Zero to disable
         
         # (Decoder) AttentionRNN
         attention_rnn_dim          = 1280,  # 1024 baseline
-        AttRNN_hidden_dropout_type = 'zoneout',# options ('dropout','zoneout')
-        p_AttRNN_hidden_dropout    = 0.05,  # 0.1 baseline
+        AttRNN_hidden_dropout_type = 'dropout',# options ('dropout','zoneout')
+        p_AttRNN_hidden_dropout    = 0.10,  # 0.1 baseline
         AttRNN_extra_decoder_input = True,  # False baseline # Feed DecoderRNN Hidden State into AttentionRNN
         
         # (Decoder) DecoderRNN
         decoder_rnn_dim            = 768,  # 1024 baseline
         DecRNN_hidden_dropout_type = 'dropout',# options ('dropout','zoneout')
-        p_DecRNN_hidden_dropout    = 0.2,  # 0.1 baseline
+        p_DecRNN_hidden_dropout    = 0.30,  # 0.1 baseline
         decoder_residual_connection= False,# residual connections with the AttentionRNN hidden state and Attention/Memory Context
         # Optional Second Decoder
         second_decoder_rnn_dim=768,# 0 baseline # Extra DecoderRNN to learn more complex patterns # set to 0 to disable layer.

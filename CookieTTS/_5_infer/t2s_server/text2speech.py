@@ -37,19 +37,23 @@ def chunks(lst, n):
 
 
 # generator for text splitting.
-def parse_text_into_segments(texts, split_at_quotes=True, target_segment_length=200):
+def parse_text_into_segments(texts, split_at_quotes=True, target_segment_length=200, split_at_newline=True):
     """Swap speaker at every quote mark. Each split segment will have quotes around it (for information later on rather than accuracy to the original text)."""
     
     # split text by quotes
     quo ='"' # nested quotes in list comprehension are hard to work with
-    texts = [f'"{text.replace(quo,"").strip()}"' if i%2 else text.replace(quo,"").strip() for i, text in enumerate(unidecode(texts).split('"'))]
+    wsp =' '
+    texts = [f'"{text.replace(quo,"").strip(wsp)}"' if i%2 else text.replace(quo,"").strip(wsp) for i, text in enumerate(unidecode(texts).split('"'))]
     
     # clean up and remove empty texts
     def clean_text(text):
-        text = text.strip()
-        text = text.replace("\n"," ").replace("  "," ").replace("> --------------------------------------------------------------------------","").replace("------------------------------------","")
+        text = (text.strip(" ")
+                   #.replace("\n"," ")
+                    .replace("  "," ")
+                    .replace("> --------------------------------------------------------------------------","")
+                    .replace("------------------------------------",""))
         return text
-    texts = [clean_text(text) for text in texts if len(text.strip().replace('"','').strip()) or len(clean_text(text))]
+    texts = [clean_text(text) for text in texts if len(text.replace('"','').strip(' ')) or len(clean_text(text))]
     assert len(texts)
     
     # split text by sentences and add commas in where needed.
@@ -59,7 +63,15 @@ def parse_text_into_segments(texts, split_at_quotes=True, target_segment_length=
             if seg[-1] != '"': seg+='"'
         return seg
     texts_tmp = []
-    texts = [texts_tmp.extend([quotify(x.strip(), text) for x in sent_tokenize(text) if len(x.replace('"','').strip())]) for text in texts]
+    for text in texts:
+        if len(text.strip()):
+            for x in sent_tokenize(text):
+                if len(x.replace('"','').strip(' ')):
+                    texts_tmp.extend([quotify(x.strip(" "), text)])
+        else:
+            if len(text.replace('"','').strip(' ')):
+                texts_tmp.extend([quotify(text.strip(" "), text)])
+    #texts = [texts_tmp.extend([quotify(x.strip(" "), text) for x in sent_tokenize(text) if len(x.replace('"','').strip(' '))]) for text in texts]
     texts = texts_tmp
     del texts_tmp
     assert len(texts)
@@ -70,24 +82,68 @@ def parse_text_into_segments(texts, split_at_quotes=True, target_segment_length=
     texts_segmented = ''
     texts_len = len(texts)
     for i, text in enumerate(texts):
+        
         # split segment if quote swap
         if split_at_quotes and ('"' in text and quote_mode == False) or (not '"' in text and quote_mode == True):
-            texts_segmented.replace('""','')
-            texts_output.append(texts_segmented)
+            texts_output.append(texts_segmented.replace('"','').replace("\n","").strip())
             texts_segmented=text
             quote_mode = not quote_mode
-        
-        # split segment if max length
-        elif len(texts_segmented+text) > target_segment_length:
-            texts_segmented.replace('""','')
-            texts_output.append(texts_segmented)
+        # if the prev text is already longer than the target length
+        elif len(texts_segmented) > target_segment_length:
+            text = text.replace('"','')
+            while len(texts_segmented):
+                texts_segmented_parts = texts_segmented.split(',')
+                texts_segmented = ''
+                texts_segmented_overflow = ''
+                for i, part in enumerate(texts_segmented_parts):
+                    
+                    if split_at_newline and part.strip(' ').endswith('\n'):
+                        part = part.replace('\n','')
+                        texts_segmented += part if i == 0 else f',{part}'
+                        texts_segmented_overflow = ','.join(texts_segmented_parts[i+1:])
+                        break
+                    elif split_at_newline and part.strip(' ').startswith('\n'):
+                        part = part.replace('\n','')
+                        texts_segmented = ''
+                        texts_segmented_overflow = ','.join(texts_segmented_parts[i+1:])
+                        break
+                    elif i > 0 and len(texts_segmented)+len(part.replace('\n','')) > target_segment_length:
+                        texts_segmented_overflow = ','.join(texts_segmented_parts[i:])
+                        break
+                    else:
+                        part = part.replace('\n','')
+                        texts_segmented += part if i == 0 else f',{part}'
+                
+                if len(texts_segmented.replace('\n','').strip()):
+                    texts_output.append(texts_segmented.replace('\n','').strip())
+                    texts_segmented = ''
+                if len(texts_segmented_overflow):
+                    texts_segmented = texts_segmented_overflow
+                del texts_segmented_overflow, texts_segmented_parts
             texts_segmented=text
         
         else: # continue adding to segment
+            text = text.replace('"','')
             texts_segmented+= f' {text}'
+    
     # add any remaining stuff.
-    if len(texts_segmented):
-        texts_output.append(texts_segmented)
+    while len(texts_segmented):
+        texts_segmented_parts = texts_segmented.split(',')
+        texts_segmented = ''
+        texts_segmented_overflow = ''
+        for i, part in enumerate(texts_segmented_parts):
+            if i > 0 and len(texts_segmented)+len(part) > target_segment_length:
+                texts_segmented_overflow = ','.join(texts_segmented_parts[i:])
+                break
+            else:
+                texts_segmented += part if i == 0 else f',{part}'
+        if len(texts_segmented.strip()):
+            texts_output.append(texts_segmented.strip())
+        texts_segmented = ''
+        if len(texts_segmented_overflow):
+            texts_segmented = texts_segmented_overflow
+        del texts_segmented_overflow, texts_segmented_parts
+    
     assert len(texts_output)
     
     return texts_output
@@ -99,7 +155,10 @@ def get_first_over_thresh(x, threshold):
     x = x.clone().cpu().float() # using CPU because GPU implementation of argmax() splits tensor into 32 elem chunks, each chunk is parsed forward then the outputs are collected together... backwards
     x[:,-1] = threshold # set last to threshold just incase the output didn't finish generating.
     x[x>threshold] = threshold
-    return ( (x.size(1)-1)-(x.flip(dims=(1,)).argmax(dim=1)) ).to(device).int()
+    if int(''.join(torch.__version__.split('.'))) < 170:
+        return ( (x.size(1)-1)-(x.flip(dims=(1,)).argmax(dim=1)) ).to(device).int()
+    else:
+        return x.argmax(dim=1).to(device).int()
 
 
 class T2S:
@@ -272,7 +331,7 @@ class T2S:
     
     
     @torch.no_grad()
-    def infer(self, text, speaker_names, style_mode, textseg_mode, batch_mode, max_attempts, max_duration_s, batch_size, dyna_max_duration_s, use_arpabet, target_score, speaker_mode, cat_silence_s, textseg_len_target, gate_delay=2, gate_threshold=0.5, filename_prefix=None, status_updates=True, show_time_to_gen=True, end_mode='thresh', absolute_maximum_tries=2048, absolutely_required_score=-1e3):
+    def infer(self, text, speaker_names, style_mode, textseg_mode, batch_mode, max_attempts, max_duration_s, batch_size, dyna_max_duration_s, use_arpabet, target_score, speaker_mode, cat_silence_s, textseg_len_target, gate_delay=2, gate_threshold=0.7, filename_prefix=None, status_updates=True, show_time_to_gen=True, end_mode='thresh', absolute_maximum_tries=2048, absolutely_required_score=-1e3):
         """
         PARAMS:
         ...
@@ -285,7 +344,7 @@ class T2S:
                   If this param is set too high then the model will try to start speaking again
                   despite not having any text left to speak, therefore keeping it low is typical.
         gate_threshold
-            default: 0.6
+            default: 0.7
             options: float ( 0.0 -> 1.0 )
             info: used to control when Tacotron2 will stop generating new mel frames.
                   This will effect speed of generation as the model will generate
@@ -376,6 +435,7 @@ class T2S:
         
         # keeping track of stats for html/terminal
         show_inference_progress_start = time.time()
+        all_best_scores = []
         continue_from = 0
         counter = 0
         total_specs = 0
@@ -462,7 +522,7 @@ class T2S:
             text_batch = [text+'.' if (text[-1] not in valid_last_char) else text for text in text_batch]
             
             # parse text
-            text_batch = [unidecode(text.replace("...",". ").replace("  "," ").strip()) for text in text_batch] # remove eclipses, double spaces, unicode and spaces before/after the text.
+            text_batch = [unidecode(text.replace("...",". ").replace(". . ",". ").replace("  "," ").strip().lstrip('. ')) for text in text_batch] # remove eclipses, double spaces, unicode and spaces before/after the text.
             gtext_batch = text_batch
             if use_arpabet: # convert texts to ARPAbet (phonetic) versions.
                 text_batch = [self.ARPA(text) for text in text_batch]
@@ -536,11 +596,11 @@ class T2S:
                         for k, (output_length, mel_outputs_postnet, gate_outputs, alignments, diagonality, avg_prob, enc_max_focus, enc_min_focus, enc_avg_focus, p_missing_enc) in enumerate(sametext_batch):
                             # factors that make up score
                             weighted_score = avg_prob.item() # general alignment quality
-                            diagonality_punishment = (max(diagonality.item(),1.14)-1.14) * 0.5 * diagonality_weighting  # speaking each letter at a similar pace.
+                            diagonality_punishment = (max(diagonality.item(),1.10)-1.10) * 0.5 * diagonality_weighting  # speaking each letter at a similar pace.
                             max_dur_punishment = max((enc_max_focus.item()-60), 0) * 0.005 * max_focus_weighting # getting stuck on same letter for 0.5s
                             min_dur_punishment = max(0.00-enc_min_focus.item(),0) * min_focus_weighting # skipping single enc outputs
                             avg_dur_punishment = max(3.6-enc_avg_focus.item(), 0) * avg_focus_weighting # skipping most enc outputs
-                            mis_dur_punishment = max(p_missing_enc.item()-0.10, 0) if text_lengths[j] > 12 else 0.0 # skipping some percent of the text
+                            mis_dur_punishment = max(p_missing_enc.item()-0.08, 0) if text_lengths[j] > 12 else 0.0 # skipping some percent of the text
                             
                             weighted_score -= (diagonality_punishment + max_dur_punishment + min_dur_punishment + avg_dur_punishment + mis_dur_punishment)
                             score_str = (f"[{weighted_score:.3f}weighted_score] "
@@ -575,6 +635,9 @@ class T2S:
             
             assert not any([x == 0 for x in best_generations]), 'Tacotron Failed to generate one of the texts after multiple attempts.'
             
+            # logging
+            all_best_scores.extend(best_score)
+            
             # cleanup VRAM
             style_input = sequence = None
             
@@ -592,7 +655,7 @@ class T2S:
                 vo_start = time.time()
                 print("Running Vocoder... ")
             
-            self.vocoder_batch_size = 8
+            self.vocoder_batch_size = 16
             
             # Run Vocoder
             vocoder_dtype = next(self.vocoder.parameters()).dtype
@@ -703,7 +766,7 @@ class T2S:
             audio_seconds_generated = round(audio_len.item()/self.ttm_hparams.sampling_rate,3)
             time_to_gen = round(time.time()-start_time,3)
             if show_time_to_gen:
-                print(f"Generated {audio_seconds_generated}s of audio in {time_to_gen}s wall time - so far. (best of {tries.sum().astype('int')} tries this pass)")
+                print(f"Generated {audio_seconds_generated}s of audio in {time_to_gen}s wall time - so far. (best of {tries.sum().astype('int')} tries this pass) ({audio_seconds_generated/time_to_gen:.2f}xRT) ({sum([x<0.6 for x in all_best_scores])/len(all_best_scores):.1%}Failure Rate)")
             
             print("\n") # seperate each pass
         

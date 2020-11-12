@@ -6,7 +6,7 @@ import torch.nn.functional as F
 import torch.distributed as dist
 import numpy as np
 import math
-from CookieTTS.utils.model.utils import get_mask_from_lengths, alignment_metric
+from CookieTTS.utils.model.utils import get_mask_from_lengths, alignment_metric, get_first_over_thresh
 from typing import Optional
 
 
@@ -197,6 +197,7 @@ class Tacotron2Loss(nn.Module):
                 file_losses[audiopath]['spec_MSE'] = losses[i].mean().item()
             
             # postnet
+            pred_mel_postnet.masked_fill_(~mask, 0.0)
             pred_mel_postnet = torch.masked_select(pred_mel_postnet, mask)
             loss_dict['postnet_MSE'] = nn.MSELoss()(pred_mel_postnet, gt_mel)
             
@@ -245,7 +246,8 @@ class Tacotron2Loss(nn.Module):
         #################################################################
         loss_dict = self.colate_losses(loss_dict, loss_scalars)
         
-        if True:# get Avg Max Attention and Diagonality Metrics
+        with torch.no_grad():# get Avg Max Attention and Diagonality Metrics
+            
             atd = alignment_metric(pred['alignments'], gt['text_lengths'], gt['mel_lengths'])
             diagonalitys, avg_prob, char_max_dur, char_min_dur, char_avg_dur, p_missing_enc = atd.values()
             
@@ -260,6 +262,30 @@ class Tacotron2Loss(nn.Module):
                 file_losses[audiopath]['char_max_dur']      =  char_max_dur[i].cpu().item()
                 file_losses[audiopath]['char_min_dur']      =  char_min_dur[i].cpu().item()
                 file_losses[audiopath]['char_avg_dur']      =  char_avg_dur[i].cpu().item()
+            
+            pred_gate = pred['pred_gate_logits'].sigmoid()
+            pred_gate[:, :5] = 0.0
+            # Get inference alignment scores
+            pred_mel_lengths = get_first_over_thresh(pred_gate, 0.7)
+            atd = alignment_metric(pred['alignments'], gt['text_lengths'], pred_mel_lengths)
+            atd = {k: v.cpu() for k, v in atd.items()}
+            diagonalitys, avg_prob, char_max_dur, char_min_dur, char_avg_dur, p_missing_enc = atd.values()
+            scores = []
+            for i in range(B):
+                # factors that make up score
+                weighted_score = avg_prob[i].item() # general alignment quality
+                diagonality_punishment = max( diagonalitys[i].item()-1.10, 0) * 0.25 # speaking each letter at a similar pace.
+                max_dur_punishment     = max( char_max_dur[i].item()-60.0, 0) * 0.005# getting stuck on same letter for 0.5s
+                min_dur_punishment     = max(0.00-char_min_dur[i].item(),  0) * 0.5  # skipping single enc outputs
+                avg_dur_punishment     = max(3.60-char_avg_dur[i].item(),  0)        # skipping most enc outputs
+                mis_dur_punishment     = max(p_missing_enc[i].item()-0.08, 0) if gt['text_lengths'][i] > 12 and gt['mel_lengths'][i] < gt['mel_lengths'].max()*0.75 else 0.0 # skipping some percent of the text
+                
+                weighted_score -= (diagonality_punishment+max_dur_punishment+min_dur_punishment+avg_dur_punishment+mis_dur_punishment)
+                scores.append(weighted_score)
+                file_losses[audiopath]['att_score'] = weighted_score
+            scores = torch.tensor(scores)
+            scores[torch.isnan(scores)] = scores[~torch.isnan(scores)].mean()
+            loss_dict['weighted_score'] = scores.to(pred['alignments'].device).mean()
         
         return loss_dict, file_losses
 

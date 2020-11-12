@@ -389,13 +389,13 @@ class TTSDataset(torch.utils.data.Dataset):
         self.trim_ref           = getattr(hparams, 'trim_ref'          , [np.amax]*5               )
         self.trim_emphasis_str  = getattr(hparams, 'trim_emphasis_str' , [0.0 ,0.0 ,0.0 ,0.0 ,0.0 ])
         self.trim_cache_audio   = getattr(hparams, 'trim_cache_audio'  , False)
-        self.trim_enable        = getattr(hparams, 'trim_enable'      , True)
+        self.trim_enable        = getattr(hparams, 'trim_enable'       , True)
         
         self.target_lufs = getattr(hparams, 'target_lufs' , None)
         ###############################
         ## Mel-Spectrogram Generator ##
         ###############################
-        self.cache_mel = getattr(hparams, "cache_mel", False)
+        self.cache_mel = False if audio_offset > 0 else getattr(hparams, "cache_mel", False)
         self.sampling_rate = hparams.sampling_rate
         self.filter_length = hparams.filter_length
         self.hop_length    = hparams.hop_length
@@ -778,11 +778,10 @@ class TTSDataset(torch.utils.data.Dataset):
     
     def get_alignments(self, audiopath, arpa=False):
         if arpa:
-            alignpath = os.path.splitext(audiopath)[0]+'_palign.npy'
+            alignpath = os.path.splitext(audiopath)[0]+'_palign.pt'
         else:
-            alignpath = os.path.splitext(audiopath)[0]+'_galign.npy'
-        alignment = np.load(alignpath)
-        return torch.from_numpy(alignment).float()
+            alignpath = os.path.splitext(audiopath)[0]+'_galign.pt'
+        return torch.load(alignpath).float()
     
     def get_perc_loudness(self, audio, sampling_rate, audiopath, audio_duration):
         meter = pyln.Meter(sampling_rate) # create BS.1770 meter
