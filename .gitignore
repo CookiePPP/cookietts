@@ -18,6 +18,7 @@ ipython_config.py
 /CookieTTS/_1_preprocess/datasets/*
 /CookieTTS/_1_preprocess/MFA_tmp/
 /CookieTTS/utils/dataset/_1_preprocess/tests/littlepip_sample/
+/CookieTTS/_2_ttm/tacotron2_tm/global_mean.npy
 
 # Model Checkpoints
 /CookieTTS/_2_ttm/flowtts/outdir/
