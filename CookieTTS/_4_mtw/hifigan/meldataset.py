@@ -9,6 +9,7 @@ from scipy.io.wavfile import read
 from librosa.filters import mel as librosa_mel_fn
 from CookieTTS._4_mtw.hifigan.nvSTFT import load_wav_to_torch
 from CookieTTS._4_mtw.hifigan.nvSTFT import STFT as STFT_Class
+from CookieTTS.utils.dataset.data_utils import DTW
 from glob import glob
 from tqdm import tqdm
 try:
@@ -181,7 +182,8 @@ class MelDataset(torch.utils.data.Dataset):
                     mel = torch.nn.functional.pad(mel, (0, frames_per_seg - mel.size(2)), 'constant')
                     audio = torch.nn.functional.pad(audio, (0, self.segment_size - audio.size(1)), 'constant')
             gt_mel = self.STFT.get_mel(audio)
-            
+            mel = DTW(mel, gt_mel, 5, 3)
+        
         return (mel.squeeze(), audio.squeeze(0), audiopath, gt_mel.squeeze())
 
     def __len__(self):

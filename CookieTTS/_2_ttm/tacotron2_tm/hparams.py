@@ -231,7 +231,7 @@ def create_hparams(hparams_string=None, verbose=False):
         # (Decoder) DecoderRNN
         decoder_rnn_dim            = 768,  # 1024 baseline
         DecRNN_hidden_dropout_type = 'dropout',# options ('dropout','zoneout')
-        p_DecRNN_hidden_dropout    = 0.30,  # 0.1 baseline
+        p_DecRNN_hidden_dropout    = 0.10,  # 0.1 baseline
         decoder_residual_connection= False,# residual connections with the AttentionRNN hidden state and Attention/Memory Context
         # Optional Second Decoder
         second_decoder_rnn_dim=768,# 0 baseline # Extra DecoderRNN to learn more complex patterns # set to 0 to disable layer.

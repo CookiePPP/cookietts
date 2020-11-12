@@ -104,7 +104,7 @@ def GTA_Synthesis(hparams, args, extra_info='', audio_offset=0):
     
     # ================ MAIN TRAINNIG LOOP! ===================
     os.makedirs(os.path.join(args.output_directory), exist_ok=True)
-    f = open(os.path.join(args.output_directory, f'map_{filelisttype}_gpu{rank}.txt'),'a', encoding='utf-8')
+    f = open(os.path.join(args.output_directory, f'map_{filelisttype}_gpu{rank}.txt'),'w', encoding='utf-8')
     
     processed_files = 0
     failed_files = 0
@@ -130,7 +130,7 @@ def GTA_Synthesis(hparams, args, extra_info='', audio_offset=0):
             audiopath      = y['audiopath'][j]
             speaker_id_ext = y['speaker_id_ext'][j]
             
-            if args.max_mse or args.max_mae:
+            if True and args.max_mse or args.max_mae:
                 MAE = F. l1_loss(pred_mel, gt_mel).item()
                 MSE = F.mse_loss(pred_mel, gt_mel).item()
                 if args.max_mse and MSE > args.max_mse:
@@ -164,6 +164,9 @@ def GTA_Synthesis(hparams, args, extra_info='', audio_offset=0):
         print(f'{extra_info}{i}/{total} compute and save GTA melspectrograms in {i}th batch, {duration}s, {time_left}hrs left. {processed_files} processed, {failed_files} failed.')
         duration = time.time()
     f.close()
+    
+    if n_gpus > 1:
+        torch.distributed.barrier()# wait till all graphics cards reach this point.
     
     # merge all generated filelists from every GPU
     filenames = [f'map_{filelisttype}_gpu{j}.txt' for j in range(n_gpus)]

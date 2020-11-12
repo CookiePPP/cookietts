@@ -67,7 +67,7 @@ if iteration > 25000:
 # Drop Frame Rate
 dfr_warmup_start = 0
 dfr_warmup_iters = 10
-dfr_max_value    = 0.2
+dfr_max_value    = 0.5
 drop_frame_rate = dfr_max_value if dfr_max_value < 0.01 else min(max(current_iteration-dfr_warmup_start,0)/(dfr_warmup_iters*dfr_max_value), dfr_max_value) # linearly increase DFR from 0.0 to 0.2 from iteration 1 to 10001.
 
 # Teacher-forcing Config

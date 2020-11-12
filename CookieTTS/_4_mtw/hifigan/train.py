@@ -205,11 +205,11 @@ def train(rank, a, h):
                         for i, batch in enumerate(validation_loader):
                             x, y, _, _ = batch
                             y_g_hat = generator(x.to(device))
-
+                            
                             if steps == 0:
                                 sw.add_audio('gt/y_{}'.format(i), y[0], steps, h.sampling_rate)
                                 sw.add_figure('gt/y_spec_{}'.format(i), plot_spectrogram(x[0]), steps)
-
+                            
                             sw.add_audio('generated/y_hat_{}'.format(i), y_g_hat[0], steps, h.sampling_rate)
                             y_hat_spec = STFT.get_mel(y_g_hat.squeeze(1))
                             sw.add_figure('generated/y_hat_spec_{}'.format(i),
