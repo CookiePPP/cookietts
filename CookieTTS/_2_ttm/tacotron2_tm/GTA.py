@@ -147,7 +147,7 @@ def GTA_Synthesis(hparams, args, extra_info='', audio_offset=0):
                 pred_mel_path = os.path.splitext(audiopath)[0]+'.pred_mel.pt'
                 torch.save(pred_mel.clone(), pred_mel_path)
                 pm_audio_path = os.path.splitext(audiopath)[0]+'.pm_audio.pt'# predicted mel audio
-                torch.save(y['gt_audio'][j, :audio_lengths[j]].clone(), pm_audio_path)
+                torch.save(y['gt_audio'][j, :y['audio_lengths'][j]].clone(), pm_audio_path)
             if args.save_letter_alignments and hparams.p_arpabet == 0.:
                 save_path_align_out = os.path.splitext(audiopath)[0]+'_galign.pt'
                 np.save(alignments[j].clone(), save_path_align_out)
