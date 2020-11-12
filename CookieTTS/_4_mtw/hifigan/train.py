@@ -26,14 +26,14 @@ def train(rank, a, h):
     if h.num_gpus > 1:
         init_process_group(backend=h.dist_config['dist_backend'], init_method=h.dist_config['dist_url'],
                            world_size=h.dist_config['world_size'] * h.num_gpus, rank=rank)
-
+    
     torch.cuda.manual_seed(h.seed)
     device = torch.device('cuda:{:d}'.format(rank))
-
+    
     generator = Generator(h).to(device)
     mpd = MultiPeriodDiscriminator(h["discriminator_periods"] if "discriminator_periods" in h.keys() else None).to(device)
     msd = MultiScaleDiscriminator().to(device)
-
+    
     if rank == 0:
         print(generator)
         os.makedirs(a.checkpoint_path, exist_ok=True)
