@@ -454,7 +454,6 @@ def validate(hparams, args, file_losses, model, criterion, valset, best_val_loss
             else:
                 logger.log_validation(*log_terms)
     
-    torch.distributed.barrier()# wait till all graphics cards reach this point.
     if teacher_force == 2:
         return loss_dict_total['weighted_score'], best_val_loss_dict, file_losses
     else:
