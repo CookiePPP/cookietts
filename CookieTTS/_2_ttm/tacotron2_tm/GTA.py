@@ -124,8 +124,8 @@ def GTA_Synthesis(hparams, args, extra_info='', audio_offset=0):
         
         offset_append = '' if audio_offset == 0 else str(audio_offset)
         for j in range(len(y['gt_mel'])):
-            gt_mel   =      y['gt_mel'  ][j, :, :y['mel_lengths'][j]]
-            pred_mel = y_pred['pred_mel'][j, :, :y['mel_lengths'][j]]
+            gt_mel   = y['gt_mel'  ][j, :, :y['mel_lengths'][j]]
+            pred_mel = y_pred['pred_mel_postnet'][j, :, :y['mel_lengths'][j]]
             
             audiopath      = y['audiopath'][j]
             speaker_id_ext = y['speaker_id_ext'][j]

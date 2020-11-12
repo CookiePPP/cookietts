@@ -182,6 +182,9 @@ class MelDataset(torch.utils.data.Dataset):
                     mel = torch.nn.functional.pad(mel, (0, frames_per_seg - mel.size(2)), 'constant')
                     audio = torch.nn.functional.pad(audio, (0, self.segment_size - audio.size(1)), 'constant')
             gt_mel = self.STFT.get_mel(audio)
+            min_mel_len = min(gt_mel.shape[-1], mel.shape[-1])
+            mel    = mel[:, :, :min_mel_len]
+            gt_mel = gt_mel[:, :, :min_mel_len]
             mel = DTW(mel, gt_mel, 5, 3)
         
         return (mel.squeeze(), audio.squeeze(0), audiopath, gt_mel.squeeze())
