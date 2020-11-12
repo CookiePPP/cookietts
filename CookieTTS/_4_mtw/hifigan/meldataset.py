@@ -10,6 +10,7 @@ from librosa.filters import mel as librosa_mel_fn
 from CookieTTS._4_mtw.hifigan.nvSTFT import load_wav_to_torch
 from CookieTTS._4_mtw.hifigan.nvSTFT import STFT as STFT_Class
 from glob import glob
+from tqdm import tqdm
 try:
     import pyworld as pw
 except:
@@ -18,8 +19,8 @@ except:
 def check_file_lengths(sampling_rate, segment_size, training_files_old):
     segment_size_s = segment_size/sampling_rate
     training_files_new = []
-    for file in training_files_old:
-        audio, native_sr = load_wav_to_torch(file, target_sr=sampling_rate, return_empty_on_exception=True)
+    for file in tqdm(training_files_old):
+        audio, native_sr = load_wav_to_torch(file, target_sr=None, return_empty_on_exception=True)
         audio_s = len(audio) / native_sr
         if audio_s > segment_size_s:
             training_files_new.append(file)
@@ -29,10 +30,22 @@ def check_files(sampling_rate, segment_size, training_files):
     len_training_files = len(training_files)
     training_files = [x for x in training_files if os.path.exists(x)]
     if (len_training_files - len(training_files)) > 0:
-        print(len_training_files - len(training_files), "Files don't exist (and have been removed from training)")
+        print(len_training_files - len(training_files), "Audio Files don't exist (and have been removed from training)")
     
+    # check for fine-tuning audio files
     len_training_files = len(training_files)
+    training_files = [x for x in training_files if os.path.exists(os.path.splitext(x)[0]+'.pm_audio.pt')]
+    if (len_training_files - len(training_files)) > 0:
+        print(len_training_files - len(training_files), "GTA Audio Files don't exist (and have been removed from training)")
     
+    # check for fine-tuning postnet spectrograms.
+    len_training_files = len(training_files)
+    training_files = [x for x in training_files if os.path.exists(os.path.splitext(x)[0]+'.pred_mel.pt')]
+    if (len_training_files - len(training_files)) > 0:
+        print(len_training_files - len(training_files), "GTA Pred Spect Files don't exist (and have been removed from training)")
+    
+    # check audio files are sufficient length for Vocoder.
+    len_training_files = len(training_files)
     training_files = check_file_lengths(sampling_rate, segment_size, training_files)
     if (len_training_files - len(training_files)) > 0:
         print(len_training_files - len(training_files), "Files are too short (and have been removed from training)")
@@ -94,9 +107,6 @@ class MelDataset(torch.utils.data.Dataset):
         self.fmax = fmax
         self.fmax_loss = fmax_loss
         self.STFT = STFT_Class(sampling_rate, num_mels, n_fft, win_size, hop_size, fmin, fmax)
-        self.cached_wav = None
-        self.n_cache_reuse = n_cache_reuse
-        self._cache_ref_count = 0
         self.device = device
         self.fine_tuning = fine_tuning
         self.trim_non_voiced = trim_non_voiced
@@ -126,30 +136,23 @@ class MelDataset(torch.utils.data.Dataset):
         return f0, voiced_mask# [dec_T], [dec_T]
     
     def __getitem__(self, index):
-        filename = self.audio_files[index]
-        if self._cache_ref_count == 0:
-            audio, sampling_rate = load_wav_to_torch(filename, target_sr=self.sampling_rate)
-            if not self.fine_tuning:
-                #audio = audio - audio.mean()
-                audio = audio / audio.abs().max()
-            self.cached_wav = audio
-            if sampling_rate != self.sampling_rate:
-                raise ValueError("{} SR doesn't match target {} SR".format(
-                    sampling_rate, self.sampling_rate))
-            self._cache_ref_count = self.n_cache_reuse
+        audiopath = self.audio_files[index]
+        
+        # load audio
+        if not self.fine_tuning:
+            audio, sampling_rate = load_wav_to_torch(audiopath, target_sr=self.sampling_rate)
+            audio = audio - audio.mean()# remove DC offset
+            audio = (audio / audio.abs().max()) * 0.95# and normalize volume        
+            if self.trim_non_voiced:# trim out non-voiced segments
+                assert len(audio.shape) == 1# [B]
+                f0, voiced = self.get_pitch(audio)
+                start_indx, end_indx = get_nonzero_indexes(voiced)
+                audio = audio[start_indx*self.hop_size:end_indx*self.hop_size]
         else:
-            audio = self.cached_wav
-            self._cache_ref_count -= 1
+            pm_audio_path = os.path.splitext(audiopath)[0]+'.pm_audio.pt'# predicted mel audio
+            audio = torch.load(pm_audio_path).float()# [T]
         
-        if self.trim_non_voiced:# trim out non-voiced segments
-            assert len(audio.shape) == 1
-            f0, voiced = self.get_pitch(audio)
-            start_indx, end_indx = get_nonzero_indexes(voiced)
-            audio = audio[start_indx*self.hop_size:end_indx*self.hop_size]
-        
-        #audio = torch.FloatTensor(audio)
-        audio = audio.unsqueeze(0)
-        
+        audio = audio.unsqueeze(0)# [B] -> [1, B]
         if not self.fine_tuning:
             if self.split:
                 if audio.size(1) >= self.segment_size:
@@ -159,14 +162,17 @@ class MelDataset(torch.utils.data.Dataset):
                 else:
                     audio = torch.nn.functional.pad(audio, (0, self.segment_size - audio.size(1)), 'constant')
             
-            mel = self.STFT.get_mel(audio)
+            gt_mel = self.STFT.get_mel(audio)
+            mel = gt_mel# 'mel' is the input to the vocoder, gt_mel is the original mel that will be used as a target by the model.
         else:
-            mel = np.load(filename.replace(".wav", ".npy"))
-            mel = torch.from_numpy(mel)
+            pred_mel_path = os.path.splitext(audiopath)[0]+'.pred_mel.pt'
+            mel = torch.load(pred_mel_path).float()
+            if len(mel.shape) == 2:
+                mel = mel.unsqueeze(0)# [n_mel, mel_T] -> [1, n_mel, mel_T]
             
             if self.split:
                 frames_per_seg = math.ceil(self.segment_size / self.hop_size)
-
+                
                 if audio.size(1) >= self.segment_size:
                     mel_start = random.randint(0, mel.size(2) - frames_per_seg - 1)
                     mel = mel[:, :, mel_start:mel_start + frames_per_seg]
@@ -174,10 +180,9 @@ class MelDataset(torch.utils.data.Dataset):
                 else:
                     mel = torch.nn.functional.pad(mel, (0, frames_per_seg - mel.size(2)), 'constant')
                     audio = torch.nn.functional.pad(audio, (0, self.segment_size - audio.size(1)), 'constant')
-        
-        mel_loss = mel
-        
-        return (mel.squeeze(), audio.squeeze(0), filename, mel_loss.squeeze())
+            gt_mel = self.STFT.get_mel(audio)
+            
+        return (mel.squeeze(), audio.squeeze(0), audiopath, gt_mel.squeeze())
 
     def __len__(self):
         return len(self.audio_files)

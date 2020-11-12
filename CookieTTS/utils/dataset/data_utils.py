@@ -1020,6 +1020,9 @@ class Collate():
         elif all("gt_frame_f0" in item for item in batch):
             out['mel_lengths'] = torch.tensor([batch[ids_sorted[i]]['gt_frame_f0'].shape[-1] for i in range(B)])
         
+        if all("gt_audio" in item for item in batch):
+            out['audio_lengths'] = torch.tensor([batch[ids_sorted[i]]['gt_audio'].shape[-1] for i in range(B)])
+        
         out['text']              = self.collatek(batch, 'text',              ids_sorted, dtype=torch.long )# [B, txt_T]
         out['gtext_str']         = self.collatek(batch, 'gtext_str',         ids_sorted, dtype=None       )# [str, ...]
         out['ptext_str']         = self.collatek(batch, 'ptext_str',         ids_sorted, dtype=None       )# [str, ...]
