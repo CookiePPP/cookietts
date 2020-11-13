@@ -57,7 +57,7 @@ def create_hparams(hparams_string=None, verbose=False):
                                      # Should allow more flexibility with TBPTT and remove quite a few problems when disabled.
         
         min_avg_max_att       = 0.50 ,# files under this alignment strength are filtered out of the dataset during training.
-        max_diagonality       = 1.16 ,# files under this alignment strength are filtered out of the dataset during training.
+        max_diagonality       = 1.16 ,# files  over this     diagonality    are filtered out of the dataset during training.
         max_spec_mse          = 1.00 ,# files  over this mean squared error are filtered out of the dataset during training.
         min_avg_max_att_start = 30000,# when to start filtering out weak alignments.
                                       # (normally mis-labelled files or files that are too challenging to learn)
@@ -231,7 +231,7 @@ def create_hparams(hparams_string=None, verbose=False):
         # (Decoder) DecoderRNN
         decoder_rnn_dim            = 768,  # 1024 baseline
         DecRNN_hidden_dropout_type = 'dropout',# options ('dropout','zoneout')
-        p_DecRNN_hidden_dropout    = 0.10,  # 0.1 baseline
+        p_DecRNN_hidden_dropout    = 0.25,  # 0.1 baseline
         decoder_residual_connection= False,# residual connections with the AttentionRNN hidden state and Attention/Memory Context
         # Optional Second Decoder
         second_decoder_rnn_dim=768,# 0 baseline # Extra DecoderRNN to learn more complex patterns # set to 0 to disable layer.

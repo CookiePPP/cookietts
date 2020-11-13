@@ -245,7 +245,6 @@ def load_checkpoint(checkpoint_path, model, optimizer, best_val_loss_dict, best_
     if 'average_loss' in checkpoint_dict.keys():
         average_loss = checkpoint_dict['average_loss']
 	
-	
     iteration = 0 if start_from_checkpoints_from_zero else checkpoint_dict['iteration']
     saved_lookup = checkpoint_dict['speaker_id_lookup'] if 'speaker_id_lookup' in checkpoint_dict.keys() else None
     

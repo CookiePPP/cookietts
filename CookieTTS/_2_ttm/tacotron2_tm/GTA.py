@@ -130,7 +130,7 @@ def GTA_Synthesis(hparams, args, extra_info='', audio_offset=0):
             audiopath      = y['audiopath'][j]
             speaker_id_ext = y['speaker_id_ext'][j]
             
-            if True and args.max_mse or args.max_mae:
+            if True or (args.max_mse or args.max_mae):
                 MAE = F. l1_loss(pred_mel, gt_mel).item()
                 MSE = F.mse_loss(pred_mel, gt_mel).item()
                 if args.max_mse and MSE > args.max_mse:
@@ -155,7 +155,9 @@ def GTA_Synthesis(hparams, args, extra_info='', audio_offset=0):
                 save_path_align_out = os.path.splitext(audiopath)[0]+'_palign.pt'
                 np.save(alignments[j].clone(), save_path_align_out)
             map = f"{audiopath}|{y['gtext_str'][j]}|{speaker_id_ext}|\n"
-            f.write(map) # write paths to text file
+            
+            f.write(map)# write paths to text file
+            processed_files+=1
             print("")
         
         duration = time.time() - duration
