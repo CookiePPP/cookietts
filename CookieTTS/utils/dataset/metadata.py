@@ -1,4 +1,5 @@
 import os
+import fnmatch as fnm 
 from glob import glob
 
 
@@ -302,6 +303,7 @@ def get_dataset_meta(directory, meta=None, default_speaker=None, default_emotion
         source = default_source           # defaults
         source_type = default_source_type # defaults
         
+        # If Clipper style dataset
         if len(audio_basename.split("_")) >= 6: # eg.: "00_00_00_Mrs. Cake_Sad_Noisy_Transcript 3_.wav"
             splitted = audio_basename.split("_") # e.g: ["00","00","00","Mrs. Cake","Sad","Noisy","Transcript 3",""]
             
@@ -313,6 +315,12 @@ def get_dataset_meta(directory, meta=None, default_speaker=None, default_emotion
             
             if "Sliced Dialogue" in audio_file: # overrides for clipper dataset
                 voice, source, source_type = clipper_naming_exceptions(audio_file, source, source_type, voice)
+        
+        # If VCTK Style speaker voices
+        if fnm.fnmatch(audio_file, '*VCTK-Corpus*p2*') or fnm.fnmatch(audio_file, '*VCTK-Corpus*p3*'):
+            voice_tmp = os.path.split(os.path.split(audio_file)[0])[-1]# should return p2?? or p3??
+            if fnm.fnmatch(voice_tmp, 'p2??') or fnm.fnmatch(voice_tmp, 'p3??'):
+                voice = voice_tmp
         
         # 2.2.3 - add metadata to list
         meta.append({

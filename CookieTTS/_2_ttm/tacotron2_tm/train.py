@@ -259,6 +259,12 @@ def save_checkpoint(model, optimizer, learning_rate, iteration, hparams, best_va
 
     # get speaker names to ID
     if os.path.exists(hparams.speakerlist):
+        # expects speakerlist to look like below
+        # |Nancy|0
+        # |Bob|1
+        # |Phil|2
+        #
+        # every line must have at least 2 pipe symbols
         speakerlist = load_filepaths_and_text(hparams.speakerlist)
         speaker_name_lookup = {x[1]: speaker_id_lookup[x[2]] for x in speakerlist if x[2] in speaker_id_lookup.keys()}
     else:
