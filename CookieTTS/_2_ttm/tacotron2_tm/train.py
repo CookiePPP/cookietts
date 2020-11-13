@@ -391,10 +391,10 @@ def validate(hparams, args, file_losses, model, criterion, valset, best_val_loss
     assert teacher_force >= 0, 'teacher_force not specified.'
     model.eval()
     with torch.no_grad():
-        if teacher_force == 2:# if inference, sample from each speaker equally. So speakers with smaller datasets get the same weighting onto the val loss.
+        if hparams.inference_equally_sample_speakers and teacher_force == 2:# if inference, sample from each speaker equally. So speakers with smaller datasets get the same weighting onto the val loss.
             orig_filelist = valset.filelist
             valset.update_filelist(get_mse_sampled_filelist(orig_filelist, file_losses, 0.0, seed=1234))
-            assert len(valset.filelist), '0 files in valset!'
+            assert len(valset.filelist), '0 files in valset! If your dataset has single speaker, you can change "inference_equally_sample_speakers" to False in hparams.py'
         val_sampler = DistributedSampler(valset) if hparams.distributed_run else None
         val_loader = DataLoader(valset, sampler=val_sampler, num_workers=hparams.num_workers,
                                 shuffle=False, batch_size=hparams.batch_size,
@@ -434,10 +434,10 @@ def validate(hparams, args, file_losses, model, criterion, valset, best_val_loss
             # end forloop
         loss_dict_total = {k: v/(i+1) for k, v in loss_dict_total.items()}
         # end torch.no_grad()
-        
+    
     # reverse changes to valset and model
-    if teacher_force == 2:# if inference, sample from each speaker equally. So speakers with smaller datasets get the same weighting onto the val loss.
-        valset.filelist = orig_filelist
+    if hparams.inference_equally_sample_speakers and teacher_force == 2:# if inference, sample from each speaker equally. So speakers with smaller datasets get the same weighting onto the val loss.
+        valset.update_filelist(orig_filelist)
     model.train()
     
     # update best losses

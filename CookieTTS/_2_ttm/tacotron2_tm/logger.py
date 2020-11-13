@@ -80,12 +80,12 @@ class Tacotron2Logger(SummaryWriter):
                 f"{prepend}_mel_SE/{idx}",
                 plot_spectrogram_to_numpy(mel_L1_map[idx].data.cpu().numpy()),
                 iteration, dataformats='HWC')
-            if not self.plotted_targets_val:
+            if self.plotted_targets_val < 2:
                 self.add_image(
                     f"{prepend}_mel_gt/{idx}",
                     plot_spectrogram_to_numpy(y['gt_mel'][idx].data.cpu().numpy()),
                     iteration, dataformats='HWC')
-        self.plotted_targets_val = True # target spect doesn't change so only needs to be plotted once.
+        self.plotted_targets_val +=1 # target spect doesn't change so only needs to be plotted once.
     
     def log_infer(self, reduced_loss_dict, reduced_bestval_loss_dict, model, y, y_pred, iteration, val_teacher_force_till, val_p_teacher_forcing):
         prepend = 'inference'
@@ -106,9 +106,9 @@ class Tacotron2Logger(SummaryWriter):
                 f"{prepend}_mel_pred/{idx}",
                 plot_spectrogram_to_numpy(y_pred['pred_mel_postnet'][idx].data.cpu().numpy()),
                 iteration, dataformats='HWC')
-            if not self.plotted_targets_inf:
+            if self.plotted_targets_inf < 2:
                 self.add_image(
                     f"{prepend}_mel_gt/{idx}",
                     plot_spectrogram_to_numpy(y['gt_mel'][idx].data.cpu().numpy()),
                     iteration, dataformats='HWC')
-        self.plotted_targets_inf = True # target spect doesn't change so only needs to be plotted once.
+        self.plotted_targets_inf +=1 # target spect doesn't change so only needs to be plotted ~~once~~ a couple times.

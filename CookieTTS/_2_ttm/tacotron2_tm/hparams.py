@@ -83,6 +83,8 @@ def create_hparams(hparams_string=None, verbose=False):
         dataset_p_val = 0.03,# portion of dataset for Validation
         dataset_min_duration = 1.4,# minimum duration of audio files to be added
         
+        inference_equally_sample_speakers=True,# Will change the 'inference' results to use the same number of files from each speaker.
+                                               # This makes sense if the speakers you want to clone aren't the same as the speakers with the most audio data.
         force_load  = True,# if a file fails to load, replace it with a random other file.
         
         speaker_mse_sampling_start = 65000,# when True, instead of loading each audio file in order, load audio files
