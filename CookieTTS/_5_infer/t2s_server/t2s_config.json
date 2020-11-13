@@ -8,21 +8,19 @@
         "sort_speakers": true,
         "localhost": false,
         "defaults": {
-            "current_text"   : "",
-            "background_text": "Enter text.",
-            "speaker"       : ["(Audiobook) Blizzard2011_Nancy"],
-            "style_mode"     : "torchmoji_hidden",
-            "textseg_mode"   : "segment_by_sentencequote",
-            "batch_mode"     : "nochange",
-            "max_attempts"   : 64,
-            "max_duration_s" : 12.0,
-            "batch_size"     : 256,
-            "use_arpabet"    : "on",
-            "target_score"   : 0.75,
-            "cat_silence_s"  : 0.20,
-            "multispeaker_mode": "random",
-            "textseg_len_target": 100,
-            "dyna_max_duration_s": 0.125
+            "current_text"       : "",
+            "background_text"    : "Enter text.",
+            "speaker"            : ["(Audiobook) Blizzard2011_Nancy"],
+            "use_arpabet"        : "on",
+            "cat_silence_s"      : 0.20,
+            "batch_size"         : 256,
+            "max_attempts"       : 64,
+            "max_duration_s"     : 12.0,
+            "dyna_max_duration_s": 0.125,
+            "textseg_len_target" : 120,
+            "split_nl"           : "on",
+            "split_quo"          : "on",
+            "multispeaker_mode"  : "random"
         }
     },
     "workers": {
@@ -86,10 +84,10 @@
             }
         },
         "MTW": {
-            "default_model": "MEL | HiFi-GAN V1 44Khz",
+            "default_model": "MEL80C | HiFi-GAN V1.3 44Khz FT",
             "models": {
-                "MEL | HiFi-GAN V1 44Khz": {
-                    "modelpath": "/media/cookie/Samsung PM961/TwiBot/VocoderComparisons/repos/hifi-gan/cp_hifigan_universal44Khz/g_00175000"
+                "MEL80C | HiFi-GAN V1.3 44Khz FT": {
+                    "modelpath": "../../_4_mtw/hifigan/cp_hifigan_universal44Khz_3/g_00247750"
                 }
             }
         }

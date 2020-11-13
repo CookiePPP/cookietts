@@ -19,10 +19,38 @@ speakers = [x for x in list(t2s.ttm_sp_name_lookup.keys()) if "(Music)" not in x
 if conf['webpage']['sort_speakers']:
     speakers = sorted(speakers)
 tacotron_conf = [[name,details] if os.path.exists(details['modelpath']) else [f"[MISSING]{name}",details] for name, details in list(conf['workers']['TTM']['models'].items())]
-waveglow_conf = [[name,details] if os.path.exists(details['modelpath']) else [f"[MISSING]{name}",details] for name, details in list(conf['workers']['MTW']['models'].items())]
+vocoder_conf  = [[name,details] if os.path.exists(details['modelpath']) else [f"[MISSING]{name}",details] for name, details in list(conf['workers']['MTW']['models'].items())]
 
 # Initialize Flask.
 app = Flask(__name__, static_url_path='/static', static_folder='static', template_folder='templates')
+
+def process_rq_result(result):
+    out = {}
+    
+    assert result.get('input_text'), "No input_text found in request form!"
+    
+    text                       =       result.get(    'input_text'           )
+    out['speaker']             =       result.getlist('input_speaker'        )# list of speaker(s)
+    out['use_arpabet']         = True if result.get(  'input_use_arpabet'    ) == "on" else False
+    out['cat_silence_s']       = float(result.get(    'input_cat_silence_s'  ))
+    out['batch_size']          =   int(result.get(    'input_batch_size'     ))
+    out['max_attempts']        =   int(result.get(    'input_max_attempts'   ))
+    out['max_duration_s']      = float(result.get(    'input_max_duration_s' ))
+    out['dyna_max_duration_s'] = float(result.get('input_dyna_max_duration_s'))
+    out['textseg_len_target']  =   int(result.get('input_textseg_len_target' ))
+    out['split_nl']            = True if result.get('input_split_nl'         ) == "on" else False
+    out['split_quo']           = True if result.get('input_split_quo'        ) == "on" else False
+    out['multispeaker_mode']   =       result.get(  'input_multispeaker_mode')
+    
+    # (Text) CRLF to LF
+    text = text.replace('\r\n','\n')
+    
+    # (Text) Max Length Limit
+    text = text[:int(conf['webpage']['max_input_len'])]
+    
+    out['text'] = text
+    
+    return out
 
 @app.route('/tts', methods=['GET', 'POST'])
 def texttospeech():
@@ -31,22 +59,8 @@ def texttospeech():
         # grab all the form inputs
         result = request.form
         
-        assert result.get('input_text'), "No input_text found in request form!"
+        tts_dict = process_rq_result(result)
         
-        speaker = result.getlist('input_speaker')
-        text = result.get('input_text')
-        style_mode = result.get('input_style_mode')
-        textseg_mode = result.get('input_textseg_mode')
-        batch_mode = result.get('input_batch_mode')
-        max_attempts = int(result.get('input_max_attempts')) if result.get('input_max_attempts') else 256
-        max_duration_s = float(result.get('input_max_duration_s'))
-        batch_size = int(result.get('input_batch_size'))
-        dyna_max_duration_s = float(result.get('input_dyna_max_duration_s'))
-        use_arpabet = True if result.get('input_use_arpabet') == "on" else False
-        target_score = float(result.get('input_target_score'))
-        multispeaker_mode = result.get('input_multispeaker_mode')
-        cat_silence_s = float(result.get('input_cat_silence_s'))
-        textseg_len_target = int(result.get('input_textseg_len_target'))
         MTW_current = result.get('input_MTW_current') # current mel-to-wave
         ttm_current = result.get('input_ttm_current') # current text-to-mel
         print(result)
@@ -59,96 +73,104 @@ def texttospeech():
         #if t2s.MTW_current != MTW_current:
         #    t2s.update_wg(MTW_current)
         
-        # (Text) CRLF to LF
-        text = text.replace('\r\n','\n')
+        if False:
+            # (Text) Split into segments and send to worker(s)
+            pass
+            
+            # Wait for audio files to be generated or fail
+            pass
+            
+            # Merge the finished product to a single audio file and serve back to user.
+            pass
         
-        # (Text) Max Length Limit
-        text = text[:int(conf['webpage']['max_input_len'])]
-        
-        # (Text) Split into segments and send to worker(s)
-        pass
-        
-        # Wait for audio files to be generated or fail
-        pass
-        
-        # Merge the finished product to a single audio file and serve back to user.
-        pass
-        
-        # generate an audio file from the inputs
-        filename, gen_time, gen_dur, total_specs, n_passes, avg_score = t2s.infer(text, speaker, style_mode, textseg_mode, batch_mode, max_attempts, max_duration_s, batch_size, dyna_max_duration_s, use_arpabet, target_score, multispeaker_mode, cat_silence_s, textseg_len_target)
-        print(f"GENERATED {filename}\n\n")
+        else:
+            # generate an audio file from the inputs
+            tts_outdict = t2s.infer(**tts_dict)
+            print(f"GENERATED {tts_outdict['out_name']}\n\n")
         
         # send updated webpage back to client along with page to the file
         return render_template('main.html',
-                                use_localhost=conf['webpage']['localhost'],
-                                max_input_length=conf['webpage']['max_input_len'],
+                                voice=tts_outdict['out_name'],# audio path
+                                
+                                use_localhost    = conf['webpage']['localhost'],
+                                max_input_length = conf['webpage']['max_input_len'],
+                                
                                 tacotron_conf=tacotron_conf,
                                 ttm_current=ttm_current,
                                 ttm_len=len(tacotron_conf),
-                                waveglow_conf=waveglow_conf,
+                                
+                                vocoder_conf=vocoder_conf,
                                 MTW_current=MTW_current,
-                                MTW_len=len(waveglow_conf),
+                                MTW_len=len(vocoder_conf),
+                                
                                 sp_len=len(speakers),
                                 speakers_available_short=[sp.split("_")[-1] for sp in speakers],
                                 speakers_available=speakers,
-                                current_text=text,
-                                voice=filename,
-                                sample_text=conf['webpage']['defaults']['background_text'],
-                                speaker=speaker,
-                                style_mode=style_mode,
-                                textseg_mode=textseg_mode,
-                                batch_mode=batch_mode,
-                                max_attempts=max_attempts,
-                                max_duration_s=max_duration_s,
-                                batch_size=batch_size,
-                                dyna_max_duration_s=dyna_max_duration_s,
-                                use_arpabet=result.get('input_use_arpabet'),
-                                target_score=target_score,
-                                gen_time=round(gen_time,2),
-                                gen_dur=round(gen_dur,2),
-                                total_specs=total_specs,
-                                n_passes=n_passes,
-                                avg_score=round(avg_score,3),
-                                multispeaker_mode=multispeaker_mode,
-                                cat_silence_s=cat_silence_s,
-                                textseg_len_target=textseg_len_target,)
+                                
+                                current_text  =tts_dict['text'],
+                                sample_text   =conf['webpage']['defaults']['background_text'],
+                                speaker=tts_dict['speaker'][0],
+                                
+                                use_arpabet         = tts_dict['use_arpabet'],
+                                cat_silence_s       = tts_dict['cat_silence_s'],
+                                batch_size          = tts_dict['batch_size'],
+                                max_attempts        = tts_dict['max_attempts'],
+                                max_duration_s      = tts_dict['max_duration_s'],
+                                dyna_max_duration_s = tts_dict['dyna_max_duration_s'],
+                                textseg_len_target  = tts_dict['textseg_len_target'],
+                                split_nl            = tts_dict['split_nl'],
+                                split_quo           = tts_dict['split_quo'],
+                                multispeaker_mode   = tts_dict['multispeaker_mode'],
+                                
+                                gen_time    = f'{tts_outdict["time_to_gen"]:.1f}',
+                                gen_dur     = f'{tts_outdict["audio_seconds_generated"]:.1f}',
+                                total_specs = f'{tts_outdict["total_specs"]:.0f}',
+                                n_passes    = f'{tts_outdict["n_passes"]:.0f}',
+                                avg_score   = f'{tts_outdict["avg_score"]:.3f}',
+                                rtf         = f'{tts_outdict["rtf"]:.2f}',
+                                fail_rate   = f'{tts_outdict["fail_rate"]*100.:.1f}',
+                              )
 
 #Route to render GUI
 @app.route('/')
 def show_entries():
     return render_template('main.html',
-                            use_localhost=conf['webpage']['localhost'],
-                            max_input_length=conf['webpage']['max_input_len'],
+                            voice=None,
+                            
+                            use_localhost    = conf['webpage']['localhost'],
+                            max_input_length = conf['webpage']['max_input_len'],
+                            
                             tacotron_conf=tacotron_conf,
                             ttm_current=conf['workers']['TTM']['default_model'],
                             ttm_len=len(tacotron_conf),
-                            waveglow_conf=waveglow_conf,
+                            
+                            vocoder_conf=vocoder_conf,
                             MTW_current=conf['workers']['MTW']['default_model'],
-                            MTW_len=len(waveglow_conf),
+                            MTW_len=len(vocoder_conf),
+                            
                             sp_len=len(speakers),
                             speakers_available_short=[sp.split("_")[-1] for sp in speakers],
                             speakers_available=speakers,
-                            current_text=conf['webpage']['defaults']['current_text'],
-                            sample_text=conf['webpage']['defaults']['background_text'],
-                            voice=None,
-                            speaker=conf['webpage']['defaults']['speaker'],
-                            style_mode=conf['webpage']['defaults']['style_mode'],
-                            textseg_mode=conf['webpage']['defaults']['textseg_mode'],
-                            batch_mode=conf['webpage']['defaults']['batch_mode'],
-                            max_attempts=conf['webpage']['defaults']['max_attempts'],
-                            max_duration_s=conf['webpage']['defaults']['max_duration_s'],
-                            batch_size=conf['webpage']['defaults']['batch_size'],
-                            dyna_max_duration_s=conf['webpage']['defaults']['dyna_max_duration_s'],
-                            use_arpabet=conf['webpage']['defaults']['use_arpabet'],
-                            target_score=conf['webpage']['defaults']['target_score'],
-                            gen_time="",
-                            gen_dur="",
-                            total_specs="",
-                            n_passes="",
-                            avg_score="",
-                            multispeaker_mode=conf['webpage']['defaults']['multispeaker_mode'],
-                            cat_silence_s=conf['webpage']['defaults']['cat_silence_s'],
-                            textseg_len_target=conf['webpage']['defaults']['textseg_len_target'],)
+                            
+                            current_text        = conf['webpage']['defaults']['current_text'],
+                            sample_text         = conf['webpage']['defaults']['background_text'],
+                            speaker             = conf['webpage']['defaults']['speaker'],
+                            use_arpabet         = conf['webpage']['defaults']['use_arpabet'],
+                            cat_silence_s       = conf['webpage']['defaults']['cat_silence_s'],
+                            batch_size          = conf['webpage']['defaults']['batch_size'],
+                            max_attempts        = conf['webpage']['defaults']['max_attempts'],
+                            max_duration_s      = conf['webpage']['defaults']['max_duration_s'],
+                            dyna_max_duration_s = conf['webpage']['defaults']['dyna_max_duration_s'],
+                            textseg_len_target  = conf['webpage']['defaults']['textseg_len_target'],
+                            split_nl            = conf['webpage']['defaults']['split_nl'],
+                            split_quo           = conf['webpage']['defaults']['split_quo'],
+                            multispeaker_mode   = conf['webpage']['defaults']['multispeaker_mode'],
+                            gen_time   = "",
+                            gen_dur    = "",
+                            total_specs= "",
+                            n_passes   = "",
+                            avg_score  = "",
+                            fail_rate  = "",)
 
 #Route to stream audio
 @app.route('/<voice>', methods=['GET'])

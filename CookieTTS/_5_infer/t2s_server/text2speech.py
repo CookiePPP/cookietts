@@ -37,116 +37,92 @@ def chunks(lst, n):
 
 
 # generator for text splitting.
-def parse_text_into_segments(texts, split_at_quotes=True, target_segment_length=200, split_at_newline=True):
-    """Swap speaker at every quote mark. Each split segment will have quotes around it (for information later on rather than accuracy to the original text)."""
-    
-    # split text by quotes
-    quo ='"' # nested quotes in list comprehension are hard to work with
-    wsp =' '
-    texts = [f'"{text.replace(quo,"").strip(wsp)}"' if i%2 else text.replace(quo,"").strip(wsp) for i, text in enumerate(unidecode(texts).split('"'))]
-    
-    # clean up and remove empty texts
-    def clean_text(text):
-        text = (text.strip(" ")
-                   #.replace("\n"," ")
-                    .replace("  "," ")
-                    .replace("> --------------------------------------------------------------------------","")
-                    .replace("------------------------------------",""))
-        return text
-    texts = [clean_text(text) for text in texts if len(text.replace('"','').strip(' ')) or len(clean_text(text))]
+def parse_text_into_segments(texts, target_segment_len=120, split_at_quotes=True, split_at_newline=True):
+    texts = (texts.strip()
+                 .replace("  "," ")
+                 .replace("_" ," ")
+                 .replace("> --------------------------------------------------------------------------","")
+                 .replace("------------------------------------","")
+            )
     assert len(texts)
     
-    # split text by sentences and add commas in where needed.
-    def quotify(seg, text):
-        if '"' in text:
-            if seg[0] != '"': seg='"'+seg
-            if seg[-1] != '"': seg+='"'
-        return seg
-    texts_tmp = []
-    for text in texts:
-        if len(text.strip()):
-            for x in sent_tokenize(text):
-                if len(x.replace('"','').strip(' ')):
-                    texts_tmp.extend([quotify(x.strip(" "), text)])
+    if split_at_quotes:
+        # split text by quotes
+        quo ='"' # nested quotes in list comprehension are hard to work with
+        wsp =' '
+        texts = [f'"{text.replace(quo,"").strip(wsp)}"' if i%2 else text.replace(quo,"").strip(wsp) for i, text in enumerate(unidecode(texts).split('"'))]
+        assert len(texts)
+    else:
+        texts = [unidecode(texts),]
+    
+    if split_at_newline:
+        texts = [x.lstrip(',.!? ') for textp in texts for text in sent_tokenize(textp) for x in text.split('\n')]
+    else:
+        texts = [text.lstrip(',.!? ') for textp in texts for text in sent_tokenize(textp)]
+        assert len(texts)
+    
+    is_inside_quotes = False
+    texts_out = []
+    rev_texts = list(reversed(texts))
+    while len(rev_texts):
+        text = rev_texts.pop()# pop current segment to text_seg
+        if len(text.strip()) == 0:
+            continue
+        
+        if text.startswith('"'):
+            is_inside_quotes = not is_inside_quotes
+        
+        if (len(rev_texts) and
+            len(text)+1+len(rev_texts[-1]) <= target_segment_len and
+            ((not split_at_newline) or (' ' not in text)) and
+            ((not split_at_quotes ) or ('"' not in text))
+           ):
+            rev_texts[-1] = f'{text} {rev_texts[-1]}'
+            continue
+        if len(text) <= target_segment_len:
+            texts_out.append(text.strip())
         else:
-            if len(text.replace('"','').strip(' ')):
-                texts_tmp.extend([quotify(text.strip(" "), text)])
-    #texts = [texts_tmp.extend([quotify(x.strip(" "), text) for x in sent_tokenize(text) if len(x.replace('"','').strip(' '))]) for text in texts]
-    texts = texts_tmp
-    del texts_tmp
-    assert len(texts)
-    
-    # merge neighbouring sentences
-    quote_mode = False
-    texts_output = []
-    texts_segmented = ''
-    texts_len = len(texts)
-    for i, text in enumerate(texts):
-        
-        # split segment if quote swap
-        if split_at_quotes and ('"' in text and quote_mode == False) or (not '"' in text and quote_mode == True):
-            texts_output.append(texts_segmented.replace('"','').replace("\n","").strip())
-            texts_segmented=text
-            quote_mode = not quote_mode
-        # if the prev text is already longer than the target length
-        elif len(texts_segmented) > target_segment_length:
-            text = text.replace('"','')
-            while len(texts_segmented):
-                texts_segmented_parts = texts_segmented.split(',')
-                texts_segmented = ''
-                texts_segmented_overflow = ''
-                for i, part in enumerate(texts_segmented_parts):
-                    
-                    if split_at_newline and part.strip(' ').endswith('\n'):
-                        part = part.replace('\n','')
-                        texts_segmented += part if i == 0 else f',{part}'
-                        texts_segmented_overflow = ','.join(texts_segmented_parts[i+1:])
-                        break
-                    elif split_at_newline and part.strip(' ').startswith('\n'):
-                        part = part.replace('\n','')
-                        texts_segmented = ''
-                        texts_segmented_overflow = ','.join(texts_segmented_parts[i+1:])
-                        break
-                    elif i > 0 and len(texts_segmented)+len(part.replace('\n','')) > target_segment_length:
-                        texts_segmented_overflow = ','.join(texts_segmented_parts[i:])
-                        break
+            if ',' in text:
+                text_parts = text.split(',')
+                tmp = ''
+                j = 0
+                for part in text_parts:
+                    if j==0 or len(tmp)+1+len(part) <= target_segment_len:
+                        tmp+=f' {part}'
+                        j+=1
                     else:
-                        part = part.replace('\n','')
-                        texts_segmented += part if i == 0 else f',{part}'
-                
-                if len(texts_segmented.replace('\n','').strip()):
-                    texts_output.append(texts_segmented.replace('\n','').strip())
-                    texts_segmented = ''
-                if len(texts_segmented_overflow):
-                    texts_segmented = texts_segmented_overflow
-                del texts_segmented_overflow, texts_segmented_parts
-            texts_segmented=text
-        
-        else: # continue adding to segment
-            text = text.replace('"','')
-            texts_segmented+= f' {text}'
-    
-    # add any remaining stuff.
-    while len(texts_segmented):
-        texts_segmented_parts = texts_segmented.split(',')
-        texts_segmented = ''
-        texts_segmented_overflow = ''
-        for i, part in enumerate(texts_segmented_parts):
-            if i > 0 and len(texts_segmented)+len(part) > target_segment_length:
-                texts_segmented_overflow = ','.join(texts_segmented_parts[i:])
-                break
-            else:
-                texts_segmented += part if i == 0 else f',{part}'
-        if len(texts_segmented.strip()):
-            texts_output.append(texts_segmented.strip())
-        texts_segmented = ''
-        if len(texts_segmented_overflow):
-            texts_segmented = texts_segmented_overflow
-        del texts_segmented_overflow, texts_segmented_parts
-    
-    assert len(texts_output)
-    
-    return texts_output
+                        break
+                if len(tmp) <= target_segment_len:
+                    text = ','.join(text_parts[:j])
+                    if text[-1] not in set(".,?!;:"):
+                        text+=','
+                    texts_out.append(text.strip())
+                    if len(text_parts[j:]):
+                        rev_texts.append(','.join(text_parts[j:]))
+                    continue
+            if ' ' in text:
+                text_parts = text.split(' ')
+                tmp = ''
+                j = 0
+                for part in text_parts:
+                    if j==0 or len(tmp)+1+len(part) <= target_segment_len:
+                        tmp+=f' {part}'
+                        j+=1
+                    else:
+                        break
+                if len(tmp) <= target_segment_len:
+                    text = ' '.join(text_parts[:j])
+                    if text[-1] not in set(".,?!;:"):
+                        text+=','
+                    texts_out.append(text.strip())
+                    if len(text_parts[j:]):
+                        rev_texts.append(' '.join(text_parts[j:]))
+                    continue
+                else:
+                    print(f'[{tmp.lstrip()}]')
+                    raise Exception('Found text segment over target length with no punctuation breaks. (no spaces, commas, periods, exclaimation/question points, colons, etc.)')
+    texts = texts_out
+    return texts
 
 
 def get_first_over_thresh(x, threshold):
@@ -331,7 +307,12 @@ class T2S:
     
     
     @torch.no_grad()
-    def infer(self, text, speaker_names, style_mode, textseg_mode, batch_mode, max_attempts, max_duration_s, batch_size, dyna_max_duration_s, use_arpabet, target_score, speaker_mode, cat_silence_s, textseg_len_target, gate_delay=2, gate_threshold=0.7, filename_prefix=None, status_updates=True, show_time_to_gen=True, end_mode='thresh', absolute_maximum_tries=2048, absolutely_required_score=-1e3):
+    def infer(self, text, speaker, use_arpabet, cat_silence_s,
+              batch_size, max_attempts, max_duration_s, dyna_max_duration_s,
+              textseg_len_target, split_nl, split_quo, multispeaker_mode,
+              gate_delay=2, gate_threshold=0.7, filename_prefix=None,
+              status_updates=True, show_time_to_gen=True, end_mode='thresh',
+              target_score=0.75, absolute_maximum_tries=2048, absolutely_required_score=-1e3):
         """
         PARAMS:
         ...
@@ -388,20 +369,8 @@ class T2S:
         output_filename = f"{filename_prefix}_output"
         
         # split the text into chunks (if applicable)
-        if textseg_mode == 'no_segmentation':
-            texts = [text,]
-        elif textseg_mode == 'segment_by_line':
-            texts = text.split("\n")
-        elif textseg_mode == 'segment_by_sentence':
-            texts = parse_text_into_segments(text, split_at_quotes=False, target_segment_length=textseg_len_target)
-        elif textseg_mode == 'segment_by_sentencequote':
-            texts = parse_text_into_segments(text, split_at_quotes=True, target_segment_length=textseg_len_target)
-        else:
-            raise NotImplementedError(f"textseg_mode of {textseg_mode} is invalid.")
+        texts = parse_text_into_segments(text, target_segment_len=textseg_len_target, split_at_quotes=split_quo, split_at_newline=split_nl)
         del text
-        
-        # cleanup for empty inputs.
-        texts = [x.strip() for x in texts if len(x.strip())]
         
         total_len = len(texts)
         
@@ -412,21 +381,11 @@ class T2S:
         self.tacotron.decoder.gate_threshold = float(gate_threshold)
         
         # find closest valid name(s)
-        speaker_names = self.get_closest_names(speaker_names)
+        speaker_names = self.get_closest_names(speaker)
         
         # pick how the batch will be handled
-        batch_size = int(batch_size)
-        if batch_mode == "scaleup":
-            simultaneous_texts = total_len
-            batch_size_per_text = batch_size
-        elif batch_mode == "nochange":
-            simultaneous_texts = max(batch_size//max_attempts, 1)
-            batch_size_per_text = min(batch_size, max_attempts)
-        elif batch_mode == "scaledown":
-            simultaneous_texts = total_len
-            batch_size_per_text = -(-batch_size//total_len)
-        else:
-            raise NotImplementedError(f"batch_mode of {batch_mode} is invalid.")
+        simultaneous_texts = max(batch_size//max_attempts, 1)
+        batch_size_per_text = min(batch_size, max_attempts)
         
         # for size merging
         running_fsize = 0
@@ -456,15 +415,15 @@ class T2S:
             
             self.tacotron.decoder.max_decoder_steps = int(min(max([len(t) for t in text_batch]) * float(dyna_max_duration_s)*frames_per_second, float(max_duration_s)*frames_per_second))
             
-            if speaker_mode == "not_interleaved": # non-interleaved
+            if multispeaker_mode == "not_interleaved": # non-interleaved
                 batch_speaker_names = speaker_names * -(-simultaneous_texts//len(speaker_names))
                 batch_speaker_names = batch_speaker_names[:simultaneous_texts]
-            elif speaker_mode == "interleaved": # interleaved
+            elif multispeaker_mode == "interleaved": # interleaved
                 repeats = -(-simultaneous_texts//len(speaker_names))
                 batch_speaker_names = [i for i in speaker_names for _ in range(repeats)][:simultaneous_texts]
-            elif speaker_mode == "random": # random
+            elif multispeaker_mode == "random": # random
                 batch_speaker_names = [random.choice(speaker_names),] * simultaneous_texts
-            elif speaker_mode == "cycle_next": # use next speaker for each text input
+            elif multispeaker_mode == "cycle_next": # use next speaker for each text input
                 def shuffle_and_return():
                     first_speaker = speaker_names[0]
                     speaker_names.append(speaker_names.pop(0))
@@ -486,32 +445,17 @@ class T2S:
             tacotron_speaker_ids = torch.LongTensor(tacotron_speaker_ids).cuda().repeat_interleave(batch_size_per_text)
             
             # get style input
-            if style_mode == 'mel':
-                mel = load_mel(audio_path.replace(".npy",".wav")).cuda().half()
-                style_input = mel
-            elif style_mode == 'token':
-                pass
-                #style_input =
-            elif style_mode == 'zeros':
-                style_input = None
-            elif style_mode == 'torchmoji_hidden':
-                try:
-                    tokenized, _, _ = self.tm_sentence_tokenizer.tokenize_sentences(text_batch) # input array [B] e.g: ["Test?","2nd Sentence!"]
-                except:
-                    raise Exception(f"TorchMoji failed to tokenize text:\n{text_batch}")
-                try:
-                    embedding = self.tm_torchmoji(tokenized) # returns np array [B, Embed]
-                except Exception as ex:
-                    print(f'Exception: {ex}')
-                    print(f"TorchMoji failed to process text:\n{text_batch}")
-                    #raise Exception(f"text\n{text}\nfailed to process.")
-                style_input = torch.from_numpy(embedding).cuda().repeat_interleave(batch_size_per_text, dim=0)
-                style_input = style_input.to(next(self.tacotron.parameters()).dtype)
-            elif style_mode == 'torchmoji_string':
-                style_input = text_batch
-                raise NotImplementedError
-            else:
-                raise NotImplementedError
+            try:
+                tokenized, _, _ = self.tm_sentence_tokenizer.tokenize_sentences(text_batch) # input array [B] e.g: ["Test?","2nd Sentence!"]
+            except:
+                raise Exception(f"TorchMoji failed to tokenize text:\n{text_batch}")
+            try:
+                embedding = self.tm_torchmoji(tokenized) # returns np array [B, Embed]
+            except Exception as ex:
+                print(f'Exception: {ex}')
+                print(f"TorchMoji failed to process text:\n{text_batch}")
+            style_input = torch.from_numpy(embedding).cuda().repeat_interleave(batch_size_per_text, dim=0)
+            style_input = style_input.to(next(self.tacotron.parameters()).dtype)
             
             if style_input.size(0) < (simultaneous_texts*batch_size_per_text):
                 diff = -(-(simultaneous_texts*batch_size_per_text) // style_input.size(0))
@@ -522,7 +466,6 @@ class T2S:
             text_batch = [text+'.' if (text[-1] not in valid_last_char) else text for text in text_batch]
             
             # parse text
-            text_batch = [unidecode(text.replace("...",". ").replace(". . ",". ").replace("  "," ").strip().lstrip('. ')) for text in text_batch] # remove eclipses, double spaces, unicode and spaces before/after the text.
             gtext_batch = text_batch
             if use_arpabet: # convert texts to ARPAbet (phonetic) versions.
                 text_batch = [self.ARPA(text) for text in text_batch]
@@ -539,9 +482,7 @@ class T2S:
             
             # debug # Looks like pytorch 1.5 doesn't run contiguous on some operations the previous versions did.
             text_lengths = text_lengths.clone()
-            sequence = sequence.clone()
-            
-            print("tacotron2 batchsize =",sequence.shape[0]) # debug
+            sequence     = sequence.clone()
             
             if status_updates: tt_start=time.time(); print("Running Tacotron2... ")
             try:
@@ -770,10 +711,23 @@ class T2S:
             
             print("\n") # seperate each pass
         
-        scores = np.stack(scores)
+        scores    = np.stack(scores)
         avg_score = np.mean(scores)
         
-        return out_name, time_to_gen, audio_seconds_generated, total_specs, n_passes, avg_score
+        fail_rate = sum([x<0.6 for x in all_best_scores])/len(all_best_scores)
+        rtf = audio_seconds_generated/time_to_gen# seconds of audio generated per second in real life
+        
+        out = {
+                  "out_name": out_name,
+               "time_to_gen": time_to_gen,
+   "audio_seconds_generated": audio_seconds_generated,
+               "total_specs": total_specs,
+                  "n_passes": n_passes,
+                 "avg_score": avg_score,
+                       "rtf": rtf,
+                 "fail_rate": fail_rate,
+        }
+        return out
 
 
 def start_worker(config, device, request_queue, finished_queue):
