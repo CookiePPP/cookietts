@@ -18,6 +18,7 @@ from CookieTTS._4_mtw.hifigan.nvSTFT import STFT as STFT_Class
 from CookieTTS._4_mtw.hifigan.models import Generator, MultiPeriodDiscriminator, MultiScaleDiscriminator, feature_loss, generator_loss,\
     discriminator_loss
 from utils import plot_spectrogram, scan_checkpoint, load_checkpoint, del_old_checkpoints, save_checkpoint
+from tqdm import tqdm
 
 torch.backends.cudnn.benchmark = True
 
@@ -107,6 +108,7 @@ def train(rank, a, h):
                                        drop_last=True)
         
         sw = SummaryWriter(os.path.join(a.checkpoint_path, 'logs'), max_queue=10000)
+        sw.logged_gt_plots = False
     
     if h.num_gpus > 1:
         import gc
@@ -127,14 +129,13 @@ def train(rank, a, h):
         for i, batch in enumerate(train_loader):
             if rank == 0:
                 start_b = time.time()
-            x, y, _, mel_spec = batch
+            x, y, _, y_mel = batch
             x = torch.autograd.Variable(x.to(device, non_blocking=True))
             y = torch.autograd.Variable(y.to(device, non_blocking=True))
-            mel_spec = torch.autograd.Variable(mel_spec.to(device, non_blocking=True))
+            y_mel = torch.autograd.Variable(y_mel.to(device, non_blocking=True))
             y = y.unsqueeze(1)
 
             y_g_hat = generator(x)
-            y_mel = mel_spec
             y_g_hat_mel = STFT.get_mel(y_g_hat.squeeze(1))
             
             optim_d.zero_grad()
@@ -156,7 +157,7 @@ def train(rank, a, h):
             optim_g.zero_grad()
 
             # L1 Mel-Spectrogram Loss
-            loss_mel = F.l1_loss(y_mel, y_g_hat_mel) * 45
+            loss_mel = F.l1_loss(y_mel, y_g_hat_mel)
 
             y_df_hat_r, y_df_hat_g, fmap_f_r, fmap_f_g = mpd(y, y_g_hat)
             y_ds_hat_r, y_ds_hat_g, fmap_s_r, fmap_s_g = msd(y, y_g_hat)
@@ -164,20 +165,18 @@ def train(rank, a, h):
             loss_fm_s = feature_loss(fmap_s_r, fmap_s_g)
             loss_gen_f, losses_gen_f = generator_loss(y_df_hat_g)
             loss_gen_s, losses_gen_s = generator_loss(y_ds_hat_g)
-            loss_gen_all = loss_gen_s + loss_gen_f + loss_fm_s + loss_fm_f + loss_mel
+            loss_gen_all = loss_gen_s + loss_gen_f + loss_fm_s + loss_fm_f + loss_mel * 45
 
             loss_gen_all.backward()
             optim_g.step()
 
             if rank == 0:
+                torch.set_grad_enabled(False)
                 # STDOUT logging
                 if steps % a.stdout_interval == 0:
-                    with torch.no_grad():
-                        mel_error = F.l1_loss(y_mel, y_g_hat_mel).item()
-
                     print('Steps : {:d}, Gen Loss Total : {:4.3f}, Mel-Spec. Error : {:4.3f}, s/b : {:4.3f}'.
-                          format(steps, loss_gen_all, mel_error, time.time() - start_b))
-
+                          format(steps, loss_gen_all, loss_mel.item(), time.time() - start_b))
+                
                 # checkpointing
                 if steps % a.checkpoint_interval == 0 and steps != 0:
                     checkpoint_path = "{}/g_{:08d}".format(a.checkpoint_path, steps)
@@ -195,31 +194,38 @@ def train(rank, a, h):
                 # Tensorboard summary logging
                 if steps % a.summary_interval == 0:
                     sw.add_scalar("training/gen_loss_total", loss_gen_all, steps)
-                    sw.add_scalar("training/mel_spec_error", mel_error, steps)
-
+                    sw.add_scalar("training/mel_spec_error", loss_mel.item(), steps)
+                
                 # Validation
                 if steps % a.validation_interval == 0:  # and steps != 0:
+                    print("Validating...")
+                    n_audios_to_plot = 6
                     generator.eval()
                     torch.cuda.empty_cache()
-                    with torch.no_grad():
-                        for i, batch in enumerate(validation_loader):
-                            x, y, _, _ = batch
-                            y_g_hat = generator(x.to(device))
-                            
-                            if steps == 0:
-                                sw.add_audio('gt/y_{}'.format(i), y[0], steps, h.sampling_rate)
-                                sw.add_figure('gt/y_spec_{}'.format(i), plot_spectrogram(x[0]), steps)
-                            
-                            sw.add_audio('generated/y_hat_{}'.format(i), y_g_hat[0], steps, h.sampling_rate)
-                            y_hat_spec = STFT.get_mel(y_g_hat.squeeze(1))
-                            sw.add_figure('generated/y_hat_spec_{}'.format(i),
-                                          plot_spectrogram(y_hat_spec.squeeze(0).cpu().numpy()), steps)
-                            if i == 4:
-                                break
+                    val_err_tot = 0
+                    for j, batch in tqdm(enumerate(validation_loader)):
+                        x, y, _, y_mel = batch
+                        y_g_hat = generator(x.to(device))
+                        y_hat_spec = STFT.get_mel(y_g_hat.squeeze(1))
+                        val_err_tot += F.l1_loss(y_mel, y_hat_spec.to(y_mel)).item() 
+                        
+                        if j < n_audios_to_plot and not sw.logged_gt_plots:
+                            sw.add_audio(f'gt/y_{j}', y[0], steps, h.sampling_rate)
+                            sw.add_figure(f'spec_{j:02}/gt_spec', plot_spectrogram(y_mel[0]), steps)
+                        if j < n_audios_to_plot:
+                            sw.add_audio(f'generated/y_hat_{j}', y_g_hat[0], steps, h.sampling_rate)
+                            sw.add_figure(f'spec_{j:02}/pred_spec', plot_spectrogram(y_hat_spec.squeeze(0).cpu().numpy()), steps)
+                        
+                        if j > 64:# I am NOT patient enough to complete an entire validation cycle with over 1536 files.
+                            break
+                    sw.logged_gt_plots = True
+                    val_err = val_err_tot / (j+1)
+                    sw.add_scalar("validation/mel_spec_error", val_err, steps)
                     generator.train()
-
+                    print(f"Done. Val_loss = {val_err}")
+                torch.set_grad_enabled(True)
             steps += 1
-
+        
         scheduler_g.step()
         scheduler_d.step()
         
@@ -232,18 +238,18 @@ def main():
     
     parser = argparse.ArgumentParser()
     
-    parser.add_argument('--group_name',          default=None)
-    parser.add_argument('--input_wavs_dir',      default=None)
-    parser.add_argument('--input_training_file', default='LJSpeech-1.1/training.txt')
+    parser.add_argument('--group_name',       default=None)
+    parser.add_argument('--input_wavs_dir',   default=None)
+    parser.add_argument('--input_training_file',   default='LJSpeech-1.1/training.txt')
     parser.add_argument('--input_validation_file', default='LJSpeech-1.1/validation.txt')
-    parser.add_argument('--checkpoint_path',     default='cp_hifigan')
-    parser.add_argument('--config', default='')
+    parser.add_argument('--checkpoint_path',  default='cp_hifigan')
+    parser.add_argument('--config',           default='')
     parser.add_argument('--training_epochs',  default=3100, type=int)
     parser.add_argument('--stdout_interval',  default=5, type=int)
+    parser.add_argument('--validation_interval', default=1000, type=int)
     parser.add_argument('--checkpoint_interval', default=5000, type=int)
     parser.add_argument('--n_models_to_keep', default=2,  type=int)
     parser.add_argument('--summary_interval', default=20, type=int)
-    parser.add_argument('--validation_interval', default=1000, type=int)
     parser.add_argument('--skip_file_checks', action='store_true')
     parser.add_argument('--trim_non_voiced',  action='store_true')
     parser.add_argument('--fine_tuning',      action='store_true')
