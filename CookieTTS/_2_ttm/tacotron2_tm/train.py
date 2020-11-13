@@ -556,6 +556,7 @@ def train(args, rank, group_name, hparams):
     best_validation_loss = 1e3# used to see when "best_val_model" should be saved
     best_inf_attsc       = -99# used to see when "best_inf_attsc" should be saved
     
+    average_loss = 9e9
     n_restarts = 0
     checkpoint_iter = 0
     iteration = 0
