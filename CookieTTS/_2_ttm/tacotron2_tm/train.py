@@ -258,8 +258,12 @@ def save_checkpoint(model, optimizer, learning_rate, iteration, hparams, best_va
         iteration, filepath))
 
     # get speaker names to ID
-    speakerlist = load_filepaths_and_text(hparams.speakerlist)
-    speaker_name_lookup = {x[1]: speaker_id_lookup[x[2]] for x in speakerlist if x[2] in speaker_id_lookup.keys()}
+    if os.path.exists(hparams.speakerlist):
+        speakerlist = load_filepaths_and_text(hparams.speakerlist)
+        speaker_name_lookup = {x[1]: speaker_id_lookup[x[2]] for x in speakerlist if x[2] in speaker_id_lookup.keys()}
+    else:
+        print("'speakerlist' in hparams.py not found! Speaker names will be IDs instead.")
+        speaker_name_lookup = speaker_id_lookup# if there is no speaker
     
     save_dict = {'iteration'           : iteration,
                  'state_dict'          : model.state_dict(),
