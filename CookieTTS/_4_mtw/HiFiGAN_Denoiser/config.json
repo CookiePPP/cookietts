@@ -1,0 +1,95 @@
+{
+    "train_config": {
+        "fp16_run": true,
+        "output_directory": "outdir_01",
+        "epochs": 1000,
+        "learning_rate": 40e-5,
+        "sigma": 1.0,
+        "iters_per_checkpoint": 20000,
+        "batch_size": 1,
+        "seed": 1234,
+        "checkpoint_path": "",
+        "with_tensorboard": true,
+        "logdirname": "logs_gt",
+        "datedlogdir": false,
+        "warm_start": 0,
+        "start_zero": 0,
+        "optimizer": "adam"
+    },
+    "data_config": {
+        "training_files": "/media/cookie/Samsung PM961/TwiBot/CookiePPPTTS/CookieTTS/_2_ttm/tacotron2/GTA_flist/map_train_gt.txt",
+        "validation_files": "/media/cookie/Samsung PM961/TwiBot/CookiePPPTTS/CookieTTS/_2_ttm/tacotron2/GTA_flist/map_val_without_VCTK_gt.txt",
+        "segment_length": 24000,
+        "sampling_rate": 48000,
+        "min_log_std": -7.1
+    },
+    "dist_config": {
+        "dist_backend": "nccl",
+        "dist_url": "tcp://127.0.0.1:54321"
+    },
+    "hifigan_config": {
+        "sampling_rate": 48000,
+        "stage": 0,
+        "WN_config": {
+            "n_layers": 22,
+            "n_channels": 128,
+            "kernel_size": 3,
+            "end_kernel_size": 5,
+            "dilations": [1, 2, 4, 8, 16, 32, 64, 128, 256, 512, 1024,
+                          1, 2, 4, 8, 16, 32, 64, 128, 256, 512, 1024],
+            "seperable_conv": false
+        },
+        "postnet_config": {
+            "n_layers": 12,
+            "n_channels": 128,
+            "kernel_size": 32
+        },
+        "DW_config": {
+            "n_discriminators": 3,
+            "kernel_sizes": [15, 41,  41,   41,   41,    5, 3],
+            "strides":      [ 1,  4,   4,    4,    4,    1, 1],
+            "n_channels":   [16, 64, 256, 1024, 1024, 1024, 1],
+            "group_sizes":  [ 1,  4,  16,   64,  256,    1, 1]
+        },
+        "DS_config": {
+            "max_freq": 18000,
+            "min_freq": 20,
+            "window_lengths": [
+                2400, 1200, 600
+            ],
+            "filter_lengths": [
+                2400, 1200, 600
+            ],
+            "hop_lengths": [
+                600, 300, 150
+            ],
+            "block_confs": [
+                {
+                    "kernel_h": 3,
+                    "kernel_w": 9,
+                    "stride_h": 1,
+                    "stride_w": 2,
+                    "n_channels": 32
+                }, {
+                    "kernel_h": 3,
+                    "kernel_w": 8,
+                    "stride_h": 1,
+                    "stride_w": 2,
+                    "n_channels": 32
+                }, {
+                    "kernel_h": 3,
+                    "kernel_w": 8,
+                    "stride_h": 1,
+                    "stride_w": 2,
+                    "n_channels": 32
+                }, {
+                    "kernel_h": 3,
+                    "kernel_w": 6,
+                    "stride_h": 1,
+                    "stride_w": 2,
+                    "n_channels": 32
+                }
+            ]
+        }
+    }
+}

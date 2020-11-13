@@ -1,6 +1,7 @@
 import os
 
 step_total = '??'
+step_complete = 0
 
 # save preprocessing directory for later
 preprocess_dir = os.path.abspath(os.path.split(__file__)[0])
@@ -80,7 +81,8 @@ def step_2_1():
     
     # move back to preprocess directorys
     os.chdir(preprocess_dir)
-    
+
+
 def step_2_2():
     """move remaining folders/files to preprocessed datasets folder."""
     # chdir to downloads dir
@@ -115,13 +117,13 @@ def step_2_2():
     os.chdir(preprocess_dir)
 
 # extract compressed files from downloads into preprocessed folder for processing.
-if 0:
+if 1:
     print(f'{step_complete:>3}/{step_total:<3} Extracting files into Datasets folder...')
     step_2_1()
     print('Done!'); step_complete+=1
 
 # move remaining folders/files to preprocessed datasets folder
-if 0:
+if 1:
     print(f'{step_complete:>3}/{step_total:<3} Moving remaining files to Datasets folder...')
     step_2_2()
     print('Done!'); step_complete+=1
@@ -140,7 +142,8 @@ def remove_ending_periods(directory, ext='.wav'):
     "00_00_49_Celestia_Neutral_Very Noisy_girls, thank you so much for coming.wav"
     """
     files_arr = sorted([os.path.abspath(x) for x in glob(os.path.join(directory,f"**/*{ext}"), recursive=True)])
-    assert len(files_arr), f'no audio files found for {directory} dataset.'
+    if not len(files_arr):
+        print(f'[info] no "{ext}" files found for {directory} dataset.')
     
     file_dict = {x: (os.path.splitext(x)[0].rstrip('.')+os.path.splitext(x)[-1]) for x in files_arr if x != (os.path.splitext(x)[0].rstrip('.')+os.path.splitext(x)[-1])}
     for src, dst in file_dict.items():
@@ -190,10 +193,10 @@ if os.path.exists(dataset_dir):
 del dataset, dataset_dir
 
 
-#################################################################################
-### for Blizzard2011                                                          ###
-###  - Slice clips from original Studio files                                 ###
-#################################################################################
+##################################################################################
+### for Blizzard2011                                                           ###
+###  - Slice clips from original Studio files                                  ###
+##################################################################################
 dataset = 'Blizzard2011'
 dataset_dir = os.path.join(DATASET_FOLDER, dataset)
 if dconf['Blizzard2011']['download'] and os.path.exists(dataset_dir):
@@ -206,18 +209,53 @@ if dconf['Blizzard2011']['download'] and os.path.exists(dataset_dir):
 del dataset, dataset_dir
 
 
-#################################################################################
-### for VCTK                                                                  ###
+##################################################################################
+### for all audio                                                              ###
+###   Equalize volumes/amplitudes (avoid clipped samples for later sections)   ###
+##################################################################################
+if 1:
+    print(f"{step_complete:>3}/{step_total:<3} Normalizing Volume of ALL Datasets")
+    from scripts.audio_preprocessing import normalize_volumes_mixmode
+    normalize_volumes_mixmode(DATASET_FOLDER, amplitude=0.08, ext='.wav')
+    print("Done!"); step_complete+=1
+
+
+##################################################################################
+### for all audio                                                              ###
+###  - If FLAC (backup) doesn't exist, convert .wav to FLAC                    ###
+##################################################################################
+if 1:
+    import soundfile as sf
+    print('Creating ".flac" backups of all ".wav" audio files...\n')
+    ext = ".wav"
+    files_arr_wav = sorted([os.path.abspath(x) for x in glob(os.path.join(DATASET_FOLDER,f"**/*{ext}"), recursive=True)])
+    del ext
+    ext = ".flac"
+    files_arr_flac = sorted([os.path.abspath(x) for x in glob(os.path.join(DATASET_FOLDER,f"**/*{ext}"), recursive=True)])
+    del ext
+    assert len(files_arr_wav) or len(files_arr_flac), f'No audio files found in "{DATASET_FOLDER}"!'
+    files_without_flac = [file for file in files_arr_wav if not file.replace('.wav', '.flac') in files_arr_flac]
+    len_files_without_flac = len(files_without_flac)
+    for i, wav_path in enumerate(files_without_flac):
+        flac_path = wav_path.replace('.wav', '.flac')
+        audio, sr = sf.read(wav_path)
+        sf.write(flac_path, audio, sr)
+        assert os.path.exists(flac_path)
+        print(f'{i:>5}/{len_files_without_flac}', end='\r')
+    print('\nDone!'); step_complete+=1
+
+##################################################################################
+### for VCTK                                                                   ###
 ###  - delete/ignore microphone not in use.                                    ###
 ###  - High-pass filter                                                        ###
 ###  - Low-Pass filter                                                         ###
 ###  - Resample to target sample rate. # note, need to save sr info somewhere. ###
 ###  - Aggressive Trimming                                                     ###
 ###  - Save the ['path','sample_rate'] pairs                                   ###
-#################################################################################
+##################################################################################
 path_sample_rates = {}
 dataset = 'VCTK'
-if dconf['VCTK']['download']:
+if False: #dconf['VCTK']['download']:
     import numpy as np
     from scripts.audio_preprocessing import multiprocess_directory, process_audio_multiprocess
     dataset_dir = os.path.join(DATASET_FOLDER, dataset)
@@ -266,14 +304,14 @@ del dataset
 ###  - Resample to target sample rate. # note, need to save sr info somewhere. ###
 ###  - Trim                                                                    ###
 ##################################################################################
-if 0:
+if 1:
     import numpy as np
     from scripts.audio_preprocessing import multiprocess_directory, process_audio_multiprocess
     # lp/hp filter and trim global
     # Filter Pass |  1  |  2  |  3  |
-    type        = ['hp' ,'hp' ,'lp' ]
-    cutoff_freq = [150  ,40   ,18000]
-    order       = [4    ,9    ,9    ]
+    type        = ['hp' ,'hp' ]#,'lp' ]
+    cutoff_freq = [150  ,40   ]#,18000]
+    order       = [4    ,9    ]#,9    ]
     
     #Trim Pass |  1 |  2 |  3 |  4 |  5 |
     ref_db   = [46  ,46  ,46  ,46  ,46  ]
@@ -307,7 +345,7 @@ if 0:
     print(f'Currently Processing folder: "{DATASET_FOLDER}"')
     multiproc_path_srs = multiprocess_directory(func, DATASET_FOLDER, threads=THREADS)
     merged_path_srs = {k:v for list_item in multiproc_path_srs for (k,v) in list_item.items()}
-    path_sample_rates = {**path_sample_rates, **merged_path_srs}
+    #path_sample_rates = {**path_sample_rates, **merged_path_srs}
     print('Done!'); step_complete+=1
     del type, cutoff_freq, order, ref_db, win_len, hop_len, ref_f, empth, margin_l, margin_r, multiproc_path_srs, merged_path_srs
 
@@ -316,7 +354,7 @@ if 0:
 ### for all audio                                                              ###
 ###   Equalize volumes/amplitudes                                              ###
 ##################################################################################
-if 0:
+if 1:
     print(f"{step_complete:>3}/{step_total:<3} Normalizing Volume of ALL Datasets")
     from scripts.audio_preprocessing import normalize_volumes_mixmode
     normalize_volumes_mixmode(DATASET_FOLDER, amplitude=0.08, ext='.wav')
@@ -347,24 +385,29 @@ if True:
         dataset_conf_dir = os.path.join(DATASET_CONF_FOLDER, dataset)
         if not os.path.exists(dataset_conf_dir):
             os.makedirs(dataset_conf_dir)
-        if not os.path.exists(os.path.join(dataset_conf_dir, 'default_speaker.txt')):
-            with open(os.path.join(dataset_conf_dir, 'default_speaker.txt'), 'w') as f:
+        fpath = os.path.join(dataset_conf_dir, 'default_speaker.txt')
+        if not os.path.exists(fpath) or not len(open(fpath, 'r').read()):
+            with open(fpath, 'w') as f:
                 f.write( input(f'default speaker for "{dataset}" dataset is missing.\nPlease enter the name of the default speaker\nExamples: "Nancy", "Littlepip"\n> ') )
                 print('')
-        if not os.path.exists(os.path.join(dataset_conf_dir, 'default_emotion.txt')):
-            with open(os.path.join(dataset_conf_dir, 'default_emotion.txt'), 'w') as f:
-                f.write( input(f'default emotion for "{dataset}" dataset is missing.\nPlease enter the default emotion\nExamples: "Neutral", "Bored", "Audiobook"\n> ') )
+        fpath = os.path.join(dataset_conf_dir, 'default_emotion.txt')
+        if not os.path.exists(fpath) or not len(open(fpath, 'r').read()):
+            with open(fpath, 'w') as f:
+                f.write( input(f'default emotion for "{dataset}" dataset is missing.\nPlease enter the default emotion\nExamples: "Neutral", "Bored", "Audiobook"\n> ') or "Neutral" )
                 print('')
-        if not os.path.exists(os.path.join(dataset_conf_dir, 'default_noise_level.txt')):
-            with open(os.path.join(dataset_conf_dir, 'default_noise_level.txt'), 'w') as f:
-                f.write( input(f'default noise level for "{dataset}" dataset is missing.\nPlease enter the default noise level\nExamples: "Clean", "Noisy", "Very Noisy"\n> ') )
+        fpath = os.path.join(dataset_conf_dir, 'default_noise_level.txt')
+        if not os.path.exists(fpath) or not len(open(fpath, 'r').read()):
+            with open(fpath, 'w') as f:
+                f.write( input(f'default noise level for "{dataset}" dataset is missing.\nPlease enter the default noise level\nExamples: "Clean", "Noisy", "Very Noisy"\n> ') or "Clean" )
                 print('')
-        if not os.path.exists(os.path.join(dataset_conf_dir, 'default_source.txt')):
-            with open(os.path.join(dataset_conf_dir, 'default_source.txt'), 'w') as f:
+        fpath = os.path.join(dataset_conf_dir, 'default_source.txt')
+        if not os.path.exists(fpath) or not len(open(fpath, 'r').read()):
+            with open(fpath, 'w') as f:
                 f.write( input(f'default source for "{dataset}" dataset is missing.\nPlease enter the default source\nExamples: "My Little Pony", "Team Fortress 2", "University of Edinburgh"\n> ') )
                 print('')
-        if not os.path.exists(os.path.join(dataset_conf_dir, 'default_source_type.txt')):
-            with open(os.path.join(dataset_conf_dir, 'default_source_type.txt'), 'w') as f:
+        fpath = os.path.join(dataset_conf_dir, 'default_source_type.txt')
+        if not os.path.exists(fpath) or not len(open(fpath, 'r').read()):
+            with open(fpath, 'w') as f:
                 f.write( input(f'default source type for "{dataset}" dataset is missing.\nPlease enter the default source type\nExamples: "TV Show", "Audiobook", "Audiodrama", "Newspaper Extracts", "Game"\n> ') )
                 print('')
         del dataset_conf_dir
@@ -372,7 +415,7 @@ if True:
     
     # add paths, transcripts, speaker names, emotions, noise levels to meta object
     print(f'{step_complete:>3}/{step_total:<3} Adding paths, transcripts, speaker names, emotions, noise levels from Datasets to meta...')
-    from scripts.metadata import get_dataset_meta
+    from CookieTTS.utils.dataset.metadata import get_dataset_meta
     
     for dataset in datasets:
         dataset_dir = os.path.join(DATASET_FOLDER, dataset)
@@ -459,14 +502,18 @@ if True:
     # Write 'emotion|emotion_id|emotion_latent_0|emotion_latent_1' lookup table to txt file
     # note - I'm not sure how to set the latents so this will just generate an blakn table for the user to fill-in.
     if not os.path.exists('emotion_info.txt') or REGENERATE_EMOTION_INFO:
-        emotions = list(set([j for i in [y['emotions'] for z in meta.values() for y in z] for j in i])) # find all emotions in all clips in all datasets
+        from collections import Counter
+        emotions = [j for i in [y['emotions'] for z in meta.values() for y in z] for j in i] # find all emotions in all clips in all datasets
+        emotions = Counter(emotions) # dict of {'emotion': n_occurences}
+        emotions = {k: v for k, v in reversed(sorted(emotions.items(), key=lambda item: item[1]))} # sort by n_occurences
         with open('emotion_info.txt', "w") as f:
             lines = []
-            lines.append(f';{"emotion":<23}|{"emotion_id":<12}|{"arousal":<10}|{"valence":<10}\n;')
-            for emotion_id, emotion in enumerate(emotions):
-                lines.append(f'{emotion:<24}|{0:<12}|{0.0:<10}|{0.0:<10}')
+            lines.append(f';{"emotion":<23}|{"emotion_id":<12}|{"file_count":<12}|{"arousal":<10}|{"valence":<10}\n;')
+            for emotion_id, (emotion, n_occurences) in enumerate(emotions.items()):
+                lines.append(f'{emotion:<24}|{emotion_id:<12}|{n_occurences:<12}|{0.0:<10}|{0.0:<10}')
             f.write('\n'.join(lines))
         print("blank emotion_info.txt written! Please modify before usage!")
+        del emotions
     
     # Noise level baseline will be 0 for Clean, 1 for Noisy, 2 for Very Noisy.
     # "Clean" vs "Other", and voices like the TF2 Announcer/Administrator will need to be figured out.
@@ -478,7 +525,32 @@ if True:
     # additional option 1: g2p neural network for predicting phonemes from graphemes.
     # additional option 2: force aligner system that uses the audio file and grapheme_transcript to produce the phoneme_transcript.
     use_g2p = False
-    use_forced_aligner = True
+    use_forced_aligner = False
+    
+    print(f'{step_complete:>3}/{step_total:<3} Getting phonetic transcripts...')
+    if use_g2p:
+        from g2p_en import G2p
+        g2p = G2p()
+    else:
+        from CookieTTS.utils.text.ARPA import ARPA
+        arpa = ARPA(DICT_PATH)
+    
+    for dataset in meta.keys():
+        prev_wd = os.getcwd()
+        os.chdir(os.path.join(DATASET_FOLDER, dataset))
+        for i, clip in enumerate(meta[dataset]):
+            grapheme_transcript = meta[dataset][i]['quote']
+            if use_g2p:
+                # TODO: convert g2p arrout into phoneme transcript
+                phoneme_transcript = g2p(grapheme_transcript)
+                #phoneme_transcript = 
+                pass
+            else: # lookup
+                phoneme_transcript = arpa.get(grapheme_transcript)
+            meta[dataset][i]['phoneme_transcript'] = phoneme_transcript
+        os.chdir(prev_wd)
+    print('Done!'); step_complete+=1
+    
     if use_forced_aligner: # MFA has unique needs in that it will need to be ran seperately for each speaker.
         print(f'{step_complete:>3}/{step_total:<3} Getting phonetic transcripts, timing information and missing vocab from Montreal Forced Aligner...')
         from CookieTTS.utils.dataset import MFA
@@ -524,53 +596,10 @@ if True:
                     print(f'"{clip["path"]}" did not align. Skipping.')
                 del data
         # Montreal Force Aligner done.
-    else:
-        print(f'{step_complete:>3}/{step_total:<3} Getting phonetic transcripts...')
-        if use_g2p:
-            from g2p_en import G2p
-            g2p = G2p()
-        else:
-            from CookieTTS.utils.text.ARPA import ARPA
-            arpa = ARPA(DICT_PATH)
-        for dataset in meta.keys():
-            prev_wd = os.getcwd()
-            os.chdir(os.path.join(DATASET_FOLDER, dataset))
-            if use_forced_aligner:
-                MFA.force_align(dataset, DICT_PATH)
-            for i, clip in enumerate(meta[dataset]):
-                grapheme_transcript = meta[dataset][i]['quote']
-                if use_g2p:
-                    # TODO: convert g2p arrout into phoneme transcript
-                    phoneme_transcript = g2p(grapheme_transcript)
-                    #phoneme_transcript =  
-                    pass
-                else: # lookup
-                    phoneme_transcript = arpa.get(grapheme_transcript)
-                meta[dataset][i]['phoneme_transcript'] = phoneme_transcript
-            os.chdir(prev_wd)
     print('Done!'); step_complete+=1
     
     
-    # (if using FastPitch or FastSpeech2) Generate and save pitch information for every clip
-    
-    
-    # (if using FastSpeech2) Generate and save energy information for every clip
-    
-    
-    # (if using torchMoji) Generate and save torchMoji hidden states for every clip
-    print(f'{step_complete:>3}/{step_total:<3} Running TorchMoji on Dataset')
-    from scripts.text_embeddings import write_hidden_states
-    path_quote_pairs = [[y['path'],y['quote']] for z in meta.values() for y in z]
-    print(f'Found {len(path_quote_pairs)} path-quote pairs.')
-    write_hidden_states(path_quote_pairs)
-    del path_quote_pairs
-    print('TorchMoji Done!'); step_complete+=1
-    
-    
-    # (if using SV2TTS) Generate and save speaker embeddings for every clip.
-    # Note - not working on this till I have too many speakers to deal with
-    
-    # Collect "audio_path|grapheme_transcript|phoneme_transcript|speaker_id|sample_rate|emotion_id|noise_level" octuplets for every clip.
+    # Collect "audio_path|grapheme_transcript|phoneme_transcript|speaker_id|emotions|sample_rate|emotion_id|noise_level" octuplets for every clip.
     # Write the data into SEPERATED txt's for every dataset.
     # e.g: if using Clipper and VCTK datasets, there should 4 files;
     #     VCTK/filelist_train.txt
@@ -583,8 +612,38 @@ if True:
         train_path = os.path.join(DATASET_FOLDER, dataset, 'filelist_train.txt')
         val_path = os.path.join(DATASET_FOLDER, dataset, 'filelist_validation.txt')
         with open(train_path, 'w') as ft, open(val_path, 'w') as fv:
-            ft.write(f';audio_path|grapheme_transcript|phoneme_transcript|speaker_id|sample_rate|emotion_id|noise_level\n; dataset: "{os.path.split(dataset)[-1]}"\n;\n')
-            fv.write(f';audio_path|grapheme_transcript|phoneme_transcript|speaker_id|sample_rate|emotion_id|noise_level\n; dataset: "{os.path.split(dataset)[-1]}"\n;\n')
+            ft.write(f';audio_path|grapheme_transcript|phoneme_transcript|speaker_id|emotions|sample_rate|emotion_id|noise_level\n; dataset: "{os.path.split(dataset)[-1]}"\n;\n')
+            fv.write(f';audio_path|grapheme_transcript|phoneme_transcript|speaker_id|emotions|sample_rate|emotion_id|noise_level\n; dataset: "{os.path.split(dataset)[-1]}"\n;\n')
+            train_lines = []
+            val_lines = []
+            for i, clip in enumerate(clips):
+                if speaker_durations[clip['speaker']] < MIN_SPEAKER_DURATION_SECONDS:
+                    continue
+                speaker_id = list(speaker_durations.keys()).index(clip['speaker'])
+                emotions = clip["emotions"]
+                emotion_ids = [emotions.index(x) for x in clip["emotions"]]
+                sample_rate = clip["sample_rate"] if "sample_rate" in clip.keys() else ''
+                phoneme_transcript = clip["phoneme_transcript"] if "phoneme_transcript" in clip.keys() else ''
+                
+                write_line = f'{clip["path"]}|{clip["quote"]}|{phoneme_transcript}|{speaker_id}|{emotions}|{sample_rate}|{emotion_ids}|{clip["noise"]}'
+                if random.Random(i).random() < TRAIN_PERCENT:
+                    train_lines.append(write_line)
+                else:
+                    val_lines.append(write_line)
+                del speaker_id, emotions, emotion_ids, sample_rate, write_line
+            
+            ft.write('\n'.join(train_lines))
+            fv.write('\n'.join(val_lines))
+    print('Done!'); step_complete+=1
+    
+    print(f'{step_complete:>3}/{step_total:<3} Writing all-in-one filelist...')
+    import random
+    train_path = os.path.join(DATASET_FOLDER, 'filelist_train.txt')
+    val_path = os.path.join(DATASET_FOLDER, 'filelist_validation.txt')
+    with open(train_path, 'w') as ft, open(val_path, 'w') as fv:
+        for dataset, clips in meta.items():
+            ft.write(f';audio_path|grapheme_transcript|phoneme_transcript|speaker_id|emotions|sample_rate|emotion_id|noise_level\n; dataset: "{os.path.split(dataset)[-1]}"\n;\n')
+            fv.write(f';audio_path|grapheme_transcript|phoneme_transcript|speaker_id|emotions|sample_rate|emotion_id|noise_level\n; dataset: "{os.path.split(dataset)[-1]}"\n;\n')
             train_lines = []
             val_lines = []
             for i, clip in enumerate(clips):

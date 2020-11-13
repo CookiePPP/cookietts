@@ -8,8 +8,8 @@ import emoji
 from itertools import groupby
 
 import numpy as np
-from torchmoji.tokenizer import RE_MENTION, RE_URL
-from torchmoji.global_variables import SPECIAL_TOKENS
+from CookieTTS.utils.torchmoji.tokenizer import RE_MENTION, RE_URL
+from CookieTTS.utils.torchmoji.global_variables import SPECIAL_TOKENS
 
 try:
     unichr        # Python 2

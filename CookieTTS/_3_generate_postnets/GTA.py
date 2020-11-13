@@ -175,7 +175,7 @@ def GTA_Synthesis(output_directory, checkpoint_path, n_gpus,
             text, *_ = train_set.__getitem__(batch_index)
             len_text_list.append(text.size(0))
         
-        _, input_lengths, _, _, output_lengths, speaker_id, _, _ = batch # output_lengths: original mel length
+        _, input_lengths, _, _, output_lengths, speaker_id, _, *_ = batch # output_lengths: original mel length
         input_lengths_, ids_sorted_decreasing = torch.sort(torch.LongTensor(len_text_list), dim=0, descending=True)
         ids_sorted_decreasing = ids_sorted_decreasing.numpy() # ids_sorted_decreasing, original index
         
@@ -189,7 +189,7 @@ def GTA_Synthesis(output_directory, checkpoint_path, n_gpus,
             speaker_ids.append(orig_speaker_ids[ids_sorted_decreasing[k]])
         
         x, _ = batch_parser(batch)
-        _, mel_outputs_postnet, _, _ = model(x, teacher_force_till=9999, p_teacher_forcing=1.0)
+        _, mel_outputs_postnet, _, *_ = model(x, teacher_force_till=9999, p_teacher_forcing=1.0)
         mel_outputs_postnet = mel_outputs_postnet.data.cpu().numpy()
         
         for k in range(batch_size):

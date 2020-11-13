@@ -8,9 +8,9 @@ from __future__ import print_function, division, unicode_literals
 import numbers
 import numpy as np
 
-from torchmoji.create_vocab import extend_vocab, VocabBuilder
-from torchmoji.word_generator import WordGenerator
-from torchmoji.global_variables import SPECIAL_TOKENS
+from CookieTTS.utils.torchmoji.create_vocab import extend_vocab, VocabBuilder
+from CookieTTS.utils.torchmoji.word_generator import WordGenerator
+from CookieTTS.utils.torchmoji.global_variables import SPECIAL_TOKENS
 
 # import torch
 
@@ -73,7 +73,8 @@ class SentenceTokenizer():
         # Raises:
             ValueError: When maximum length is not set and cannot be inferred.
         """
-
+        assert not all(len(x) == 1 for x in sentences), 'list of chars received instead of list of strs'
+        
         if max_sentences is None and not hasattr(sentences, '__len__'):
             raise ValueError('Either you must provide an array with a length'
                              'attribute (e.g. a list) or specify the maximum '
@@ -111,14 +112,13 @@ class SentenceTokenizer():
             tokens[next_insert,:len(s_tokens)] = s_tokens
             
             infos.append(s_info)
-            next_insert += 1
-
+            next_insert+=1
+        
         # For standard word generators all sentences should be tokenized
         # this is not necessarily the case for custom wordgenerators as they
         # may filter the sentences etc.
         if not self.uses_custom_wordgen and not self.ignore_sentences_with_only_custom:
-            assert len(sentences) == next_insert # I can't figure out what this does
-            #pass
+            assert len(sentences) == next_insert # Checks that all items in batch have tokenised
         else:
             # adjust based on actual tokens received
             tokens = tokens[:next_insert]

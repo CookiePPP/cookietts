@@ -40,15 +40,15 @@ def window_sumsquare(window, n_frames, hop_length=200, win_length=800,
     """
     if win_length is None:
         win_length = n_fft
-
+    
     n = n_fft + hop_length * (n_frames - 1)
     x = np.zeros(n, dtype=dtype)
-
+    
     # Compute the squared window at the desired length
     win_sq = get_window(window, win_length, fftbins=True)
     win_sq = librosa_util.normalize(win_sq, norm=norm)**2
     win_sq = librosa_util.pad_center(win_sq, n_fft)
-
+    
     # Fill the envelope
     for i in range(n_frames):
         sample = i * hop_length
@@ -63,12 +63,12 @@ def griffin_lim(magnitudes, stft_fn, n_iters=30):
     magnitudes: spectrogram magnitudes
     stft_fn: STFT class with transform (STFT) and inverse (ISTFT) methods
     """
-
+    
     angles = np.angle(np.exp(2j * np.pi * np.random.rand(*magnitudes.size())))
     angles = angles.astype(np.float32)
     angles = torch.autograd.Variable(torch.from_numpy(angles))
     signal = stft_fn.inverse(magnitudes, angles).squeeze(1)
-
+    
     for i in range(n_iters):
         _, angles = stft_fn.transform(signal)
         signal = stft_fn.inverse(magnitudes, angles).squeeze(1)
@@ -84,10 +84,12 @@ def dynamic_range_compression(x, C=1, clip_val=1e-5):
     return torch.log(torch.clamp(x, min=clip_val) * C) # get log*C of the magnitudes
 
 
-def dynamic_range_decompression(x, C=1):
+def dynamic_range_decompression(x, C=1, clip_val=1e-5):
     """
     PARAMS
     ------
     C: compression factor used to compress
     """
-    return torch.exp(x) / C
+    x = torch.exp(x) / C
+    x[x<(clip_val+1e-7)] = 0.0
+    return x

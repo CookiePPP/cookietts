@@ -1,4 +1,4 @@
-torch==1.4.1
+torch>=1.4.0
 numpy
 scipy
 librosa
@@ -9,3 +9,7 @@ tqdm
 gdown
 soundfile
 py7zr
+syllables
+pyworld
+pyloudnorm
+emoji

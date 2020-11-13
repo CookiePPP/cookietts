@@ -18,15 +18,29 @@ ipython_config.py
 /CookieTTS/_1_preprocess/datasets/*
 /CookieTTS/_1_preprocess/MFA_tmp/
 /CookieTTS/utils/dataset/_1_preprocess/tests/littlepip_sample/
+/CookieTTS/_2_ttm/tacotron2_tm/global_mean.npy
 
 # Model Checkpoints
 /CookieTTS/_2_ttm/flowtts/outdir/
+/CookieTTS/_2_ttm/untts/outdir/
 /CookieTTS/_2_ttm/tacotron2/outdir/
 /CookieTTS/_4_mtw/waveglow/outdir/
+/CookieTTS/_2_ttm/tacotron2_ssvae/checkpoints/
+/CookieTTS/_2_ttm/tacotron2_ssvae/NewCPs/
+/CookieTTS/_2_ttm/tacotron2_tm/outdir/
+/CookieTTS/_4_mtw/waveglow/checkpoints/
+/CookieTTS/_4_mtw/waveglow/checkpoints/
+/CookieTTS/_4_mtw/hifigan/cp_hifigan/
+/CookieTTS/_4_mtw/hifigan/cp_hifigan_44khz/
+/CookieTTS/_4_mtw/hifigan/cp_hifigan_universal44Khz/
 
 # Model logs
 /CookieTTS/_2_ttm/flowtts/logs/
+/CookieTTS/_2_ttm/untts/logs/
+/CookieTTS/_2_ttm/untts/old_logs/
 /CookieTTS/_2_ttm/tacotron2/logs/
+/CookieTTS/_2_ttm/tacotron2/GTA_flist/
+GPU_?.log
 
 # megatools folders
 megatools-*-git-*-win64/
