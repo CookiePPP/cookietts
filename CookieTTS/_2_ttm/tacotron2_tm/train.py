@@ -537,7 +537,7 @@ def train(args, rank, group_name, hparams):
     
     if len(hparams.unfrozen_modules):
         for layer, params in list(model.named_parameters()):
-            if any(layer.startswith(module) for module in hparams.frozen_modules):
+            if any(layer.startswith(module) for module in hparams.unfrozen_modules):
                 params.requires_grad = True
                 print(f"Layer: {layer} has been unfrozen")
     
