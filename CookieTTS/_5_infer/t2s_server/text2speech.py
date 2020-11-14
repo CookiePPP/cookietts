@@ -142,6 +142,13 @@ def parse_text_into_segments(texts, target_segment_len=120, split_at_quotes=True
                     print(f'[{tmp.lstrip()}]')
                     raise Exception('Found text segment over target length with no punctuation breaks. (no spaces, commas, periods, exclaimation/question points, colons, etc.)')
     texts = texts_out
+    
+    # remove " marks
+    texts = [x.replace('"',"") for x in texts]
+    
+    # remove empty text inputs
+    texts = [x for x in texts if len(x.strip())]
+    
     return texts
 
 
