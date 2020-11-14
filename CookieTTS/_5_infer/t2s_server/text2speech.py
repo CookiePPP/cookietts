@@ -39,8 +39,9 @@ def chunks(lst, n):
 # generator for text splitting.
 def parse_text_into_segments(texts, target_segment_len=120, split_at_quotes=True, split_at_newline=True):
     texts = (texts.strip()
-                 .replace("  "," ")
-                 .replace("_" ," ")
+                 .replace("  "," ")# remove double spaces
+                 .replace("_" ," ")# remove _
+                 .replace("*" , "")# remove *
                  .replace("> --------------------------------------------------------------------------","")
                  .replace("------------------------------------","")
             )
@@ -68,7 +69,7 @@ def parse_text_into_segments(texts, target_segment_len=120, split_at_quotes=True
         text = rev_texts.pop()# pop current segment to text_seg
         end_line = bool(text.endswith('\n'))
         end_paragraph = bool(len(rev_texts) == 0 or (text.endswith('\n') and rev_texts[-1] == '\n'))
-        if len(text.strip()) == 0:
+        if len(text.strip(' \n?!.;:*()[]"\'_@~#$%^&+=-|`')) == 0:# ensure that there is more than just symbols in the text segment.
             continue
         
         if text.startswith('"'):
