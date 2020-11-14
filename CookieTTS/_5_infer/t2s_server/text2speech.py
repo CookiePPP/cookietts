@@ -56,9 +56,9 @@ def parse_text_into_segments(texts, target_segment_len=120, split_at_quotes=True
         texts = [unidecode(texts),]
     
     if split_at_newline:
-        texts = [x.lstrip(',.!? ') for textp in texts for text in sent_tokenize(textp) for x in text.split('\n')]
+        texts = [text.lstrip(',.!? ') for textp in texts for text in textp.splitlines(True)]
     else:
-        texts = [text.lstrip(',.!? ') for textp in texts for text in sent_tokenize(textp)]
+        texts = [text.lstrip(',.!? ') for text in texts]
         assert len(texts)
     
     is_inside_quotes = False
@@ -66,6 +66,8 @@ def parse_text_into_segments(texts, target_segment_len=120, split_at_quotes=True
     rev_texts = list(reversed(texts))
     while len(rev_texts):
         text = rev_texts.pop()# pop current segment to text_seg
+        end_line = bool(text.endswith('\n'))
+        end_paragraph = bool(len(rev_texts) == 0 or (text.endswith('\n') and rev_texts[-1] == '\n'))
         if len(text.strip()) == 0:
             continue
         
@@ -74,14 +76,32 @@ def parse_text_into_segments(texts, target_segment_len=120, split_at_quotes=True
         
         if (len(rev_texts) and
             len(text)+1+len(rev_texts[-1]) <= target_segment_len and
-            ((not split_at_newline) or (' ' not in text)) and
-            ((not split_at_quotes ) or ('"' not in text))
+            ((not split_at_newline) or (not end_line)) and
+            ((not split_at_quotes ) or ('"'  not in text))
            ):
             rev_texts[-1] = f'{text} {rev_texts[-1]}'
             continue
         if len(text) <= target_segment_len:
             texts_out.append(text.strip())
         else:
+            if any(x in text for x in set('.?!')):
+                text_parts = sent_tokenize(text)
+                tmp = ''
+                j = 0
+                for part in text_parts:
+                    if j==0 or len(tmp)+1+len(part) <= target_segment_len:
+                        tmp+=f' {part}'
+                        j+=1
+                    else:
+                        break
+                if len(tmp) <= target_segment_len:
+                    text = ' '.join(text_parts[:j])
+                    if text[-1] not in set(".,?!;:"):
+                        text+='.'
+                    texts_out.append(text.strip())
+                    if len(text_parts[j:]):
+                        rev_texts.append(' '.join(text_parts[j:]))
+                    continue
             if ',' in text:
                 text_parts = text.split(',')
                 tmp = ''
