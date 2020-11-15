@@ -34,19 +34,53 @@ from CookieTTS.utils.torchmoji.global_variables import PRETRAINED_PATH, VOCAB_PA
 import syllables
 
 
+def latest_modified_date(directory):
+    return max(os.stat(root).st_mtime for root,_,_ in os.walk(directory))
+
 def generate_filelist_from_datasets(DATASET_FOLDER,
         DATASET_CONF_FOLDER=None,
-        AUDIO_FILTER=['*.wav'],
-        AUDIO_REJECTS=['*_Noisy_*','*_Very Noisy_*'],
-        MIN_DURATION=0.73,
-        MIN_SPEAKER_DURATION_SECONDS=20, rank=0):
+        AUDIO_FILTER  = ['*.wav'],
+        AUDIO_REJECTS = ['*_Noisy_*','*_Very Noisy_*'],
+        MIN_DURATION  = 0.73,
+        MIN_CHAR_LEN  =   7,
+        MAX_CHAR_LEN  = 160,
+        MIN_SPEAKER_DURATION_SECONDS=10,
+        valid_time = 720000.0,# set to 1hr for debugging # time_after_last_check_before_modifications_invalidate_the_dataset
+        rank=0):
     if DATASET_CONF_FOLDER is None:
         DATASET_CONF_FOLDER = os.path.join(DATASET_FOLDER, 'meta')
-    # define meta dict (this is where all the data is collected)
-    meta = {}
     
-    # list of datasets that will be processed over the next while.
-    datasets = sorted([x for x in os.listdir(DATASET_FOLDER) if os.path.isdir(os.path.join(DATASET_FOLDER, x)) and 'meta' not in x])
+    # define meta dict (this is where all the data is collected)
+    if os.path.exists(os.path.join(DATASET_CONF_FOLDER, 'metadata.pkl')) and os.path.exists(os.path.join(DATASET_CONF_FOLDER, 'metadata_lm_dates.pkl')):
+        dict_    = pickle.load(open(os.path.join(DATASET_CONF_FOLDER, 'metadata.pkl'),          "rb"))
+        meta              = dict_["meta"]
+        speaker_durations = dict_["speaker_durations"]
+        dataset_lookup    = dict_["dataset_lookup"]
+        bad_paths         = dict_["bad_paths"]
+        meta_lm = pickle.load(open(os.path.join(DATASET_CONF_FOLDER, 'metadata_lm_dates.pkl'), "rb"))
+        for dataset, last_dataset_check in meta_lm.items():
+            if os.path.exists(os.path.join(DATASET_FOLDER, dataset)):
+                last_modified = latest_modified_date(os.path.join(DATASET_FOLDER, dataset))
+                if dataset in meta and last_modified > valid_time+last_dataset_check:
+                    print(f"Dataset {dataset} being reloaded.")
+                    del meta[dataset]
+                    del bad_paths[dataset]
+                    for speaker in [x for x in speaker_durations.keys() if dataset_lookup[x] == dataset]:
+                        del speaker_durations[speaker]
+                        del dataset_lookup[speaker]
+            else:
+                del meta[dataset]
+                del bad_paths[dataset]
+                for speaker in [x for x in speaker_durations.keys() if dataset_lookup[x] == dataset]:
+                    del speaker_durations[speaker]
+                    del dataset_lookup[speaker]
+        del dict_
+    else:
+        meta = {}
+        meta_lm = None
+        speaker_durations = {}
+        dataset_lookup    = {}
+        bad_paths         = {}
     
     # check default configs exist (and prompt user for datasets without premade configs)
     defaults_fpath = os.path.join(DATASET_CONF_FOLDER, 'defaults.pkl')
@@ -65,11 +99,31 @@ def generate_filelist_from_datasets(DATASET_FOLDER,
         else:
             defaults = {}
     
+    # list of datasets that will be processed over the next while.
+    datasets = sorted([x for x in os.listdir(DATASET_FOLDER) if os.path.isdir(os.path.join(DATASET_FOLDER, x)) and 'meta' not in x])
+    
+    if meta_lm is None:
+        unchecked_datasets = datasets
+    else:
+        unchecked_datasets = [dataset for dataset in datasets if dataset not in meta]
+    
     print(f'Checking Defaults for Datasets...')
     speaker_default = None
     for dataset in datasets:
         if dataset not in defaults:
             defaults[dataset] = {}
+        
+        # load defaults from .txt files if exists.
+        if 'speaker' not in defaults[dataset] and os.path.exists(os.path.join(DATASET_FOLDER, dataset, 'default_speaker.txt')):
+            defaults[dataset]['speaker'] = open(os.path.join(DATASET_FOLDER, dataset, 'default_speaker.txt'), 'r', encoding='utf8').read()
+        if 'emotion' not in defaults[dataset] and os.path.exists(os.path.join(DATASET_FOLDER, dataset, 'default_emotion.txt')):
+            defaults[dataset]['emotion'] = open(os.path.join(DATASET_FOLDER, dataset, 'default_emotion.txt'), 'r', encoding='utf8').read()
+        if 'noise_level' not in defaults[dataset] and os.path.exists(os.path.join(DATASET_FOLDER, dataset, 'default_noise_level.txt')):
+            defaults[dataset]['noise_level'] = open(os.path.join(DATASET_FOLDER, dataset, 'default_noise_level.txt'), 'r', encoding='utf8').read()
+        if 'source' not in defaults[dataset] and os.path.exists(os.path.join(DATASET_FOLDER, dataset, 'default_source.txt')):
+            defaults[dataset]['source'] = open(os.path.join(DATASET_FOLDER, dataset, 'default_source.txt'), 'r', encoding='utf8').read()
+        if 'source_type' not in defaults[dataset] and os.path.exists(os.path.join(DATASET_FOLDER, dataset, 'default_source_type.txt')):
+            defaults[dataset]['source_type'] = open(os.path.join(DATASET_FOLDER, dataset, 'default_source_type.txt'), 'r', encoding='utf8').read()
         
         if 'speaker' not in defaults[dataset]:
             print(f'default speaker for "{dataset}" dataset is missing.\nPlease enter the name of the default speaker\nExamples: "Nancy", "Littlepip", "Steven"')
@@ -117,7 +171,7 @@ def generate_filelist_from_datasets(DATASET_FOLDER,
                 print("")
             
             if 'source_type' not in defaults[dataset]:
-                print(f'default source type for "{dataset}" dataset is missing.\nPlease enter the default source type\nExamples: "TV Show", "Audiobook", "Audiodrama", "Newspaper Extracts"')
+                print(f'default source type for "{dataset}" dataset is missing.\nPlease enter the default source type\nExamples: "Show", "Audiobook", "Audiodrama", "Game", "Newspaper Extracts"')
                 if source_type_default is not None:
                     print(f'Press Enter with no input to use "{source_type_default}"')
                 usr_inp = input('> ')
@@ -130,11 +184,11 @@ def generate_filelist_from_datasets(DATASET_FOLDER,
     
     with open(defaults_fpath, 'wb') as pickle_file:
         pickle.dump(defaults, pickle_file, pickle.HIGHEST_PROTOCOL)
-    print('Done!')
+    print('Done!\n')
     
     # add paths, transcripts, speaker names, emotions, noise levels to meta object
     print(f'Adding paths, transcripts, speaker names, emotions, noise levels from Datasets to meta...')
-    for dataset in datasets:
+    for dataset in unchecked_datasets:
         default_speaker     = defaults[dataset]['speaker']
         default_emotion     = defaults[dataset]['emotion']
         default_noise_level = defaults[dataset]['noise_level']
@@ -143,63 +197,110 @@ def generate_filelist_from_datasets(DATASET_FOLDER,
         dataset_dir = os.path.join(DATASET_FOLDER, dataset)
         meta_local = get_dataset_meta(dataset_dir, audio_ext=AUDIO_FILTER, audio_rejects=AUDIO_REJECTS, default_speaker=default_speaker, default_emotion=default_emotion, default_noise_level=default_noise_level, default_source=default_source, default_source_type=default_source_type)
         meta[dataset] = meta_local
+        print("\n\n")
         del dataset_dir, default_speaker, default_emotion, default_noise_level, default_source, default_source_type
-    print('Done!')
+    print('Done!\n')
     
     # Assign speaker ids to speaker names
     # Write 'speaker_dataset|speaker_name|speaker_id|speaker_audio_duration' lookup table to txt file
-    print(f'Loading speaker information + durations and assigning IDs...')
-    #print('Ctrl + C to skip, this will remove Duration information from the speaker list')
-    #try:
+    print(f'Loading speaker information + durations, assigning IDs and writing speaker_info.txt to datasets meta/config folder...')
     import soundfile as sf
-    speaker_durations = {}
-    dataset_lookup = {}
-    bad_paths = {}
-    for dataset in tqdm(datasets):
-        bad_paths[dataset] = []
-        prev_wd = os.getcwd()
-        os.chdir(os.path.join(DATASET_FOLDER, dataset))
-        for i, clip in enumerate(meta[dataset]):
-            speaker = clip['speaker']
-            
-            # get duration of file
-            try:
-                audio, sampling_rate = load_wav_to_torch(clip['path'], return_empty_on_exception=True)
-                clip_duration = len(audio)/sampling_rate
-                if clip_duration < MIN_DURATION:
+    speaker_durations = speaker_durations if speaker_durations else {}
+    dataset_lookup    = dataset_lookup    if dataset_lookup    else {}
+    bad_paths         = bad_paths         if bad_paths         else {}
+    
+    def is_file_valid(path, dataset, MIN_DURATION):
+        try:
+            audio, sampling_rate = load_wav_to_torch(clip['path'], return_empty_on_exception=True)
+            clip_duration = len(audio)/sampling_rate
+            if clip_duration < MIN_DURATION:
+                raise Exception('File is too short.')
+        except Exception as ex:
+            return bad_paths[dataset]
+    
+    total_files = sum(len(clips) for clips in [v for k,v in meta.items() if k in unchecked_datasets])
+    with tqdm(total=total_files) as pbar:
+        for dataset in unchecked_datasets:
+            bad_paths[dataset] = []
+            prev_wd = os.getcwd()
+            os.chdir(os.path.join(DATASET_FOLDER, dataset))
+            for i, clip in enumerate(meta[dataset]):
+                speaker = clip['speaker']
+                pbar.update()
+                
+                # get duration of file
+                try:
+                    audio, sampling_rate = load_wav_to_torch(clip['path'], min_sr=22049.0, return_empty_on_exception=True)
+                    clip_duration = len(audio)/sampling_rate
+                    if clip_duration < MIN_DURATION:
+                        bad_paths[dataset].append(clip['path'])
+                        continue
+                except Exception as ex:
+                    print('PATH:', clip['path'],"\nfailed to read.")
                     bad_paths[dataset].append(clip['path'])
                     continue
-            except Exception as ex:
-                print('PATH:', clip['path'],"\nfailed to read.")
-                bad_paths[dataset].append(clip['path'])
-                continue
-                #if input("Delete item? (y/n)\n> ").lower() in ['yes','y','1']:
-                #    os.unlink(clip['path'])
-                #    del meta[dataset][i]
-                #    continue
-                #else:
-                #    raise Exception(ex)
-            if speaker not in speaker_durations.keys():
-                speaker_durations[speaker] = 0
-                dataset_lookup[speaker] = dataset
-            speaker_durations[speaker]+=clip_duration
-        os.chdir(prev_wd)
-    #except KeyboardInterrupt:
-    #    print('Skipping speaker Durations')
+                    #if input("Delete item? (y/n)\n> ").lower() in ['yes','y','1']:
+                    #    os.unlink(clip['path'])
+                    #    del meta[dataset][i]
+                    #    continue
+                    #else:
+                    #    raise Exception(ex)
+                if speaker not in speaker_durations.keys():
+                    speaker_durations[speaker] = 0.
+                    dataset_lookup[speaker] = dataset
+                speaker_durations[speaker]+=clip_duration
+            os.chdir(prev_wd)
+    del total_files
     
+    time.sleep(0.1)
+    
+    total_files = sum(len(clips) for clips in meta.values())
     for key, bad_list in bad_paths.items():
-        meta[key] = [clip for clip in meta[key] if not clip['path'] in bad_list]
+        bad_list_set = set(bad_list)
+        meta[key] = [clip for clip in meta[key] if not clip['path'] in bad_list_set]
+    new_total_files = sum(len(clips) for clips in meta.values())
+    if total_files-new_total_files > 0:
+        print(f"Removed {total_files-new_total_files} Short or Corrupted Audio Files.\n{new_total_files} File Remain.")
     
+    total_files = new_total_files
     for dataset in datasets:
         speaker_set = set(list(speaker_durations.keys()))
         meta[dataset] = [x for x in meta[dataset] if x['speaker'] in speaker_set and speaker_durations[x['speaker']] > MIN_SPEAKER_DURATION_SECONDS]
+    new_total_files = sum(len(clips) for clips in meta.values())
+    if total_files-new_total_files > 0:
+        print(f"Removed {total_files-new_total_files} Files from speakers that have too little data.\n{new_total_files} File Remain.")
     
+    ####################################################
+    ## Save meta so it doesn't have to be regenerated ##
+    ####################################################
+    print("Saving 'metadata.plk' and 'metadata_lm_dates.pkl' to save all the new data")
+    meta_fpath = os.path.join(DATASET_CONF_FOLDER, 'metadata.pkl')
+    with open(meta_fpath, 'wb') as pickle_file:
+        out = {
+                  "meta": meta,
+     "speaker_durations": speaker_durations,
+        "dataset_lookup": dataset_lookup,
+             "bad_paths": bad_paths
+        }
+        pickle.dump(out, pickle_file, pickle.HIGHEST_PROTOCOL)
+    
+    meta_lm = {}
+    for dataset in datasets:
+        meta_lm[dataset] = latest_modified_date(os.path.join(DATASET_FOLDER, dataset))
+    meta_lm_fpath = os.path.join(DATASET_CONF_FOLDER, 'metadata_lm_dates.pkl')
+    with open(meta_lm_fpath, 'wb') as pickle_file:
+        pickle.dump(meta_lm, pickle_file, pickle.HIGHEST_PROTOCOL)
+    print('Done!\n')
+    
+    #################################
+    ## Start dumping meta to files ##
+    #################################
     # Write speaker info to txt file
     fpath = os.path.join(DATASET_CONF_FOLDER, 'speaker_info.txt')
     with open(fpath, "w") as f:
         lines = []
         lines.append(f';{"speaker_id":<9}|{"speaker_name":<32}|{"dataset":<24}|{"source":<24}|{"source_type":<20}|duration_hrs\n;')
-        for speaker_id, (speaker_name, duration) in tqdm(enumerate(speaker_durations.items())):
+        for speaker_id, (speaker_name, duration) in enumerate(speaker_durations.items()):
             dataset = dataset_lookup[speaker_name]
             if duration < MIN_SPEAKER_DURATION_SECONDS:
                 continue
@@ -208,15 +309,15 @@ def generate_filelist_from_datasets(DATASET_FOLDER,
             except StopIteration as ex:
                 print(speaker_name, duration, speaker_id)
                 raise ex
-            source = clip['source'] or "Unknown" # and pick up the source...
-            source_type = clip['source_type'] or "Unknown" # and source type that speaker uses.
+            source      = clip['source'     ].replace('\n','') or "Unknown" # and pick up the source...
+            source_type = clip['source_type'].replace('\n','') or "Unknown" # and source type that speaker uses.
             assert source, 'Recieved no dataset source'
             assert source_type, 'Recieved no dataset source type'
             assert speaker_name, 'Recieved no speaker name.'
             assert duration, f'Recieved speaker "{speaker_name}" with 0 duration.'
             lines.append(f'{speaker_id:<10}|{speaker_name:<32}|{dataset:<24}|{source:<24}|{source_type:<20}|{duration/3600:>8.4f}')
         f.write('\n'.join(lines))
-    print('Done!')
+    print('Done!\n')
     
     # Unpack meta into filelist
     # filelist = [["path","quote","speaker_id"], ["path","quote","speaker_id"], ...]
@@ -227,7 +328,10 @@ def generate_filelist_from_datasets(DATASET_FOLDER,
             audiopath  = clip["path"]
             quote      = clip["quote"]
             speaker_id = speaker_lookup[clip['speaker']]
-            if len(clip["quote"]) < 4:
+            
+            if len(clip["quote"]) < MIN_CHAR_LEN or len(clip["quote"]) > MAX_CHAR_LEN:
+                continue
+            if speaker_durations[clip['speaker']] < MIN_SPEAKER_DURATION_SECONDS:
                 continue
             filelist.append([audiopath, quote, speaker_id])
     
@@ -244,7 +348,7 @@ def generate_filelist_from_datasets(DATASET_FOLDER,
             raise ex
         source = clip['source'] or "Unknown" # and pick up the source...
         source_type = clip['source_type'] or "Unknown" # and source type that speaker uses.
-        speakerlist.append((speaker_name, speaker_id, dataset, source, source_type, duration/3600.))
+        speakerlist.append((dataset, speaker_name, speaker_id, source, source_type, duration/3600.))
     
     outputs = {
         "filelist": filelist,
@@ -369,6 +473,7 @@ class TTSDataset(torch.utils.data.Dataset):
                 self.speaker_ids = {k:k for k in range(hparams.n_speakers)} # map IDs in files directly to internal IDs
             else:
                 self.speaker_ids = self.create_speaker_lookup_table(self.filelist, numeric_sort=hparams.numeric_speaker_ids)
+        assert len(self.speaker_ids.values()) <= hparams.n_speakers, f'More speakers found in dataset(s) than set in hparams.py n_speakers\nFound {len(self.speaker_ids.values())} Speakers, Expected {hparams.n_speakers} or Less.'
         
         ###################
         ## File Checking ##
@@ -447,7 +552,7 @@ class TTSDataset(torch.utils.data.Dataset):
         
         if self.use_TBPTT and self.TBPTT:
             print('Calculating audio lengths of all files...')
-            self.audio_lengths = torch.tensor([self.get_mel(x[0]).shape[1]+self.silence_pad_start+self.silence_pad_end for x in self.filelist]) # get the length of every file (the long way)
+            self.audio_lengths = torch.tensor([self.get_mel_from_audiopath(x[0]).shape[1]+self.silence_pad_start+self.silence_pad_end for x in tqdm(self.filelist)]) # get the length of every file (the long way)
             print('Done.')
         else:
             self.audio_lengths = torch.tensor([self.max_segment_length-1 for x in self.filelist]) # use dummy lengths
@@ -506,12 +611,22 @@ class TTSDataset(torch.utils.data.Dataset):
         music_stuff = True
         start_token = self.start_token
         stop_token = self.stop_token
-        for index, file in enumerate(self.filelist): # index must use seperate iterations from remove
-            if music_stuff and r"Songs/" in file[0]:
-                self.filelist[index][1] = "♫" + self.filelist[index][1] + "♫"
+        #for index, file in enumerate(self.filelist): # index must use seperate iterations from remove
+        #    if music_stuff and r"Songs/" in file[0]:
+        #        self.filelist[index][1] = "♫" + self.filelist[index][1] + "♫"
+        #    for filtered_char in filtered_chars:
+        #        self.filelist[index][1] = self.filelist[index][1].replace(filtered_char,"")
+        #    self.filelist[index][1] = start_token + self.filelist[index][1] + stop_token
+        
+        def filter_multi(inp, filtered_chars):
+            out = inp
             for filtered_char in filtered_chars:
-                self.filelist[index][1] = self.filelist[index][1].replace(filtered_char,"")
-            self.filelist[index][1] = start_token + self.filelist[index][1] + stop_token
+                out = out.replace(filtered_char,"")
+            return out
+        
+        self.filelist = [[line[0],f'♫{line[1]}♫' if r"Songs/" in line[0] else line[1], *line[2:]] for index, line in enumerate(self.filelist)]
+        
+        self.filelist = [[line[0],f'{start_token}{filter_multi(line[1], filtered_chars)}{stop_token}', *line[2:]] for index, line in enumerate(self.filelist)]
         
         print(f"{len([x for x in self.filelist if not os.path.exists(x[0])])} Files missing")
         self.filelist = [x for x in self.filelist if os.path.exists(x[0])]
@@ -536,7 +651,7 @@ class TTSDataset(torch.utils.data.Dataset):
         return d
     
     def get_audio(self, filepath):
-        audio, sampling_rate = load_wav_to_torch(filepath, min_sr=self.mel_fmax*2, target_sr=self.sampling_rate)
+        audio, sampling_rate = load_wav_to_torch(filepath, min_sr=(self.mel_fmax*2.)-1., target_sr=self.sampling_rate)
         return audio, sampling_rate
     
     def trim_audio(self, audio, sr, file_path=''):
@@ -581,6 +696,20 @@ class TTSDataset(torch.utils.data.Dataset):
         assert melspec.size(0) == self.stft.n_mel_channels, (f'Mel dimension mismatch: given {melspec.size(0)}, expected {self.stft.n_mel_channels}')
         return melspec
     
+    def get_mel_from_audiopath(self, audiopath):
+        trimmed_audiopath = f'{os.path.splitext(audiopath)[0]}_trimaudio.pt'
+        if self.trim_enable and self.trim_cache_audio and os.path.exists(trimmed_audiopath):
+            audio, sampling_rate = torch.load(trimmed_audiopath), self.sampling_rate
+        else:
+            audio, sampling_rate = self.get_audio(audiopath)
+            audio_duration = len(audio)/sampling_rate
+            if self.trim_enable:
+                audio = self.trim_audio(audio, sampling_rate, file_path=audiopath)
+                if self.trim_cache_audio:
+                    torch.save(audio, trimmed_audiopath)
+        melspec = self.get_mel_from_audio(audio, sampling_rate)
+        return melspec
+    
     def get_alignment_from_npfile(self, filepath, text_length, spec_length):
         melspec = torch.from_numpy(np.load(filepath)).float()
         assert melspec.shape[0] == spec_length, "Saved Alignment has wrong decoder length"
@@ -615,6 +744,7 @@ class TTSDataset(torch.utils.data.Dataset):
                 audio, sampling_rate = torch.load(trimmed_audiopath), self.sampling_rate
             else:
                 audio, sampling_rate = self.get_audio(audiopath)
+                audio = audio[:int(sampling_rate*16)]
                 audio_duration = len(audio)/sampling_rate
                 if self.trim_enable:
                     audio = self.trim_audio(audio, sampling_rate, file_path=audiopath)
@@ -717,7 +847,8 @@ class TTSDataset(torch.utils.data.Dataset):
                 torchmoji = self.get_torchmoji_hidden_from_file(tm_path)
             else:
                 torchmoji = self.get_torchmoji_hidden_from_text(output['gtext_str'])
-                torch.save(torchmoji, tm_path)
+                if not os.path.exists(tm_path):
+                    torch.save(torchmoji, tm_path)
             output['torchmoji_hdn'] = torchmoji# [Embed]
         
         if any([arg in ('gt_frame_f0','gt_frame_voiced','gt_char_f0','gt_char_voiced') for arg in args]):
@@ -739,6 +870,20 @@ class TTSDataset(torch.utils.data.Dataset):
             if 'gt_char_dur' in args:
                 output['gt_char_dur'] = alignment.sum(0)# [mel_T, txt_T] -> [txt_T]
         
+        if 'diagonality' in args:
+            diagonality_path = f'{os.path.splitext(audiopath)[0]}_diag.pt'
+            if os.path.exists(diagonality_path):
+                output['diagonality'] = torch.load(diagonality_path)
+            else:
+                output['diagonality'] = torch.tensor(1.08)
+        
+        if 'avg_prob' in args:
+            avg_prob_path = f'{os.path.splitext(audiopath)[0]}_avgp.pt'
+            if os.path.exists(avg_prob_path):
+                output['avg_prob'] = torch.load(avg_prob_path)
+            else:
+                output['avg_prob'] = torch.tensor(0.55)
+        
         ########################
         ## Trim into Segments ##
         ########################
@@ -754,7 +899,7 @@ class TTSDataset(torch.utils.data.Dataset):
             output['gt_frame_energy'] = output['gt_frame_energy'][int(mel_offset):int(mel_offset+self.max_segment_length)]
         
         if 'alignment' in output:
-            output['alignment'] = output['alignment'][int(mel_offset):int(mel_offset+self.truncated_length), :]
+            output['alignment'] = output['alignment'][int(mel_offset):int(mel_offset+self.max_segment_length), :]
         
         if 'gt_mel' in output:
             output['gt_mel'] = output['gt_mel'][: , int(mel_offset):int(mel_offset+self.max_segment_length)]
@@ -764,7 +909,6 @@ class TTSDataset(torch.utils.data.Dataset):
         
         if 'dtw_pred_mel' in output:
             output['dtw_pred_mel'] = output['dtw_pred_mel'][: , int(mel_offset):int(mel_offset+self.max_segment_length)]
-        
         return output
     
     def get_torchmoji_hidden_from_file(self, fpath):

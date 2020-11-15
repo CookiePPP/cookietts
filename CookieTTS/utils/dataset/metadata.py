@@ -38,16 +38,24 @@ def identify_transcript_storage(directory, audio_files, audio_ext, audio_basenam
     for txt_file in txt_files:
         if os.stat(txt_file).st_size > 80: # if txt_file has a reasonable size
             text = open(txt_file, "r").read()
-            n_pipes = text.count('|') # get number of pipe symbols
-            n_nl = text.count('\n') # get number of newline symbols
-            if n_pipes > 2 and n_nl > 0: # if the text file has more than 2 pipes and a newline symbol
+            n_pipes = text.count('|')# get number of pipe symbols
+            n_nl = text.count('\n')  # get number of newline symbols
+            if n_pipes > 1 and n_nl > 0: # if the text file has more than 2 pipes and a newline symbol
                 prev_wd_ = os.getcwd()
                 if os.path.split(txt_file)[0]:# move into txt dir (in-case the audio paths are relative)
                     os.chdir(os.path.split(txt_file)[0])
-                paths = [x.split("|")[0] for x in text.split("\n") if len(x.strip())] # get paths
+                paths = [(os.path.splitext(x.split("|")[0])[0].replace('  ',' ').rstrip('.')+os.path.splitext(x.split("|")[0])[-1]) for x in text.split("\n") if len(x.strip())] # get paths
                 #n_exists = sum([os.path.exists(x) for x in paths]) # check how many paths exist
-                n_exists = sum([os.path.splitext(os.path.split(x)[1])[0] in audio_basename_lookup.keys() for x in paths]) # check how many names exist
-                if n_exists/len(paths) > 0.95: # if more than 95% of the paths in the left-most section contain existing files
+                n_exists = sum([os.path.splitext(os.path.split(x)[1])[0].lower() in audio_basename_lookup.keys() for x in paths]) # check how many names exist
+                if False and len(paths)-n_exists > 0:
+                    print(txt_file)
+                    print('#'*70+'\nFailed to Find Below Paths')
+                    #print('\n'.join([str(k) for k in audio_basename_lookup.keys()]))
+                    #print('#'*70)
+                    print('\n'.join([os.path.splitext(os.path.split(x)[1])[0] for x in paths if os.path.splitext(os.path.split(x)[1])[0] not in audio_basename_lookup.keys()]))
+                    print('#'*70)
+                
+                if n_exists > 5 or (len(paths)-n_exists < 1): # if more than 5 audio files were found
                     n_valid_txts += 1 # add it as a valid txt file
                     valid_txts.append(txt_file) # and save the txt files path (relative to the dataset root)
                 os.chdir(prev_wd_)
@@ -59,12 +67,15 @@ def identify_transcript_storage(directory, audio_files, audio_ext, audio_basenam
         return "tacotron", valid_txts
     del n_valid_txts, valid_txts
     
+    # 01_24_01_Classic Coiny_Neutral Happy_Very Noisy_Pen's right, I can hear footsteps right now
+    # 
+    
     # 2.1.3 test if txts use VCTK Style Format
     # for each audio file, check if a text file exists of the same name, but in another directory.
     n_audio_files_with_txt = 0
-    txt_basenames = [os.path.splitext(os.path.split(txt_file)[-1])[0] for txt_file in txt_files]
+    txt_basenames = [os.path.splitext(os.path.split(txt_file)[-1])[0].lower() for txt_file in txt_files]
     for audio_file in audio_files:
-        audio_basename = os.path.splitext(os.path.split(audio_file)[-1])[0]
+        audio_basename = os.path.splitext(os.path.split(audio_file)[-1])[0].lower()
         if audio_basename in txt_basenames:
             n_audio_files_with_txt+=1
     
@@ -76,28 +87,36 @@ def identify_transcript_storage(directory, audio_files, audio_ext, audio_basenam
 
 def filelist_get_transcript(audio_file, filelist, filelist_paths, filelist_names, filelist_basenames):
     """get transcript from central filelists array."""
-    try: # try identify transcript from audiopath
-        path_index = filelist_paths.index(audio_file.replace("\\","/"))
-    except ValueError as ex:
-        try: # try identify transcript from audio filename
-            path_index = filelist_names.index(os.path.split(audio_file)[1])
+    successful = False
+    while not successful:
+        try: # try identify transcript from audiopath
+            path_index = filelist_paths.index(audio_file.replace("\\","/"))
         except ValueError as ex:
-            try: # try identify transcript from audio basename
-                path_index = filelist_basenames.index(  os.path.splitext(os.path.split(audio_file)[1])[0]  )
+            try: # try identify transcript from audio filename
+                path_index = filelist_names.index(os.path.split(audio_file)[1])
             except ValueError as ex:
-                print(f'"{audio_file}" not found in filelists')
-                raise FileNotFoundError(ex)
-    transcript = filelist[path_index][1]
-    return transcript.strip()
+                try: # try identify transcript from audio basename
+                    path_index = filelist_basenames.index(  os.path.splitext(os.path.split(audio_file)[1])[0].lower()  )
+                except ValueError as ex:
+                    print(f'"{audio_file}" not found in filelists')
+                    raise FileNotFoundError(ex)
+        transcript = filelist[path_index][1]
+        if any(x in transcript for x in set('/ʃɫθʊɛ')):
+            _=filelist.pop(path_index)      # remove problem index
+            _=filelist_paths.pop(path_index)# remove problem index
+            _=filelist_names.pop(path_index)# remove problem index
+            continue
+        successful = True
+    
+    return transcript.strip('\n ;')
 
 
 def clipper_get_transcript(audio_file):
     """get transcript by loading the text file with same name as audio file from same dir."""
-    audio_file_directory = os.path.split(audio_file)[0]
-    audio_file_basename = os.path.splitext(os.path.split(audio_file)[-1])[0]
-    text_file = os.path.join(audio_file_directory, audio_file_basename+".txt")
+    text_file = os.path.join(os.path.splitext(audio_file)[0]+".txt")
     if not os.path.exists(text_file):
-        raise FileNotFoundError(f'audio file at "{audio_file}" has no matching txt file.')
+        print(f'audio file at "{audio_file}" has no matching txt file.')
+        raise FileNotFoundError
     try:
         transcript = open(text_file, "r", encoding="utf-8").read()
     except UnicodeDecodeError:
@@ -116,7 +135,7 @@ def vctk_get_transcript(audio_file, txt_lookup):
     RETURNS:
         transcript matching the input audio_file.
     """
-    audio_file_basename = os.path.splitext(os.path.split(audio_file)[-1])[0]
+    audio_file_basename = os.path.splitext(os.path.split(audio_file)[-1])[0].lower()
     text_filename = audio_file_basename+".txt"
     text_path = txt_lookup[text_filename]
     transcript = open(text_path, "r").read()
@@ -173,7 +192,10 @@ def remove_ending_periods(directory):
     files_arr = sorted([os.path.abspath(x) for x in glob(os.path.join(directory,"**/*.*"), recursive=True)])
     assert len(files_arr), f'no audio files found for {directory} dataset.'
     
-    file_dict = {x: (os.path.splitext(x)[0].rstrip('.')+os.path.splitext(x)[-1]) for x in files_arr if x != (os.path.splitext(x)[0].rstrip('.')+os.path.splitext(x)[-1])}
+    assert not '  ' in directory, f'This directory path has double spaces!\n"{directory}"'
+    
+    file_dict = {x: (os.path.splitext(x)[0].replace('  ',' ').rstrip('.')+os.path.splitext(x)[-1]) for x in files_arr}
+    file_dict = {k: v for k, v in file_dict.items() if k != v}
     for src, dst in file_dict.items():
         os.rename(src, dst)
 
@@ -225,7 +247,7 @@ def get_dataset_meta(directory, meta=None, default_speaker=None, default_emotion
     directory = os.path.abspath(directory)
     os.chdir(directory) # and move into dataset directory
     
-    # 0 - fix inconsistent naming in clipper dataset
+    # 0 - fix inconsistent naming in clipper/anons dataset
     remove_ending_periods(os.path.abspath(directory))
     
     # 1 - get audiopaths
@@ -241,8 +263,9 @@ def get_dataset_meta(directory, meta=None, default_speaker=None, default_emotion
     assert len(audio_files), f'no audio files found for "{directory}" dataset.'
     print(f'Found {len(audio_files)} audio files.')
     
-    audio_basename_lookup = {os.path.splitext(os.path.split(x)[1])[0]: os.path.abspath(x) for x in audio_files}
+    audio_basename_lookup = {os.path.splitext(os.path.split(x)[1])[0].lower(): os.path.abspath(x) for x in audio_files}
     txt_files = sorted([os.path.abspath(x) for x in [*glob("**/*.txt", recursive=True), *glob("**/*.csv", recursive=True)] if os.path.exists(x)])
+    txt_files = [x for x in txt_files if not any([y in x for y in ['default_speaker.txt','default_emotion.txt','default_noise_level.txt','default_source.txt','default_source_type.txt',]])]
     assert all([os.path.exists(x) for x in txt_files])
     assert len(txt_files), f'no text files found for "{directory}" dataset.'
     print(f'Found {len(txt_files)} text files.')
@@ -261,11 +284,11 @@ def get_dataset_meta(directory, meta=None, default_speaker=None, default_emotion
         filelist = list()
         for txt in valid_txts:
             text = open(txt, "r").read()
-            text = [x.strip().split("|") for x in text.split("\n") if len(x.strip()) and not '{' in x] # `and not '{' in x` <- ignoring provided ARPAbet.
+            text = [x.strip().split("|") for x in text.split("\n") if len(x.strip()) and not '{' in x.split("|")[1]] # `and not '{' in x` <- ignoring provided ARPAbet.
             filelist.extend(text)
-        filelist_paths = [x[0].replace(".npy",".wav").replace("\\","/") for x in filelist]
+        filelist_paths = [x[0].replace(".npy",".wav").replace("\\","/").replace('  ',' ') for x in filelist]
         filelist_names = [os.path.split(x)[-1] for x in filelist_paths]
-        filelist_basenames = [os.path.splitext(x)[0] for x in filelist_names]
+        filelist_basenames = [os.path.splitext(x)[0].lower() for x in filelist_names]
     
     if dataset_style == "vctk":
         pass
@@ -287,7 +310,7 @@ def get_dataset_meta(directory, meta=None, default_speaker=None, default_emotion
             else:
                 raise NotImplementedError
         except FileNotFoundError as ex:
-            print(ex, f'Skipping file: "{audio_file}"', sep='\n')
+            #print(ex, f'Skipping file: "{audio_file}"', sep='\n')
             files_skipped+=1; continue
         except KeyError as ex:
             print(ex, f'Skipping file: "{audio_file}"', sep='\n')
@@ -304,7 +327,7 @@ def get_dataset_meta(directory, meta=None, default_speaker=None, default_emotion
         source_type = default_source_type # defaults
         
         # If Clipper style dataset
-        if len(audio_basename.split("_")) >= 6: # eg.: "00_00_00_Mrs. Cake_Sad_Noisy_Transcript 3_.wav"
+        if (len(audio_basename.split("_")) >= 6 and all(x.isdigit() for x in audio_basename.split("_")[:2])): # eg.: "00_00_00_Mrs. Cake_Sad_Noisy_Transcript 3_.wav"
             splitted = audio_basename.split("_") # e.g: ["00","00","00","Mrs. Cake","Sad","Noisy","Transcript 3",""]
             
             timestamp = get_timestamp(splitted) # e.g: ["00","00","00",...] -> "00_00_05"

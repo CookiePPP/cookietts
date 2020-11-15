@@ -48,10 +48,10 @@ def create_hparams(hparams_string=None, verbose=False):
         #################################
         ## Batch Size / Segment Length ##
         #################################
-        batch_size=32,    # controls num of files processed in parallel per GPU
+        batch_size    =32,# controls num of files processed in parallel per GPU
         val_batch_size=32,# for more precise comparisons between models, constant batch_size is useful
-        use_TBPTT=False,  # continue processing longer files into the next training iteration
-        max_segment_length=800,# max mel length till a segment is sliced.
+        use_TBPTT  =False,# continue processing longer files into the next training iteration
+        max_segment_length=768,# max mel length till a segment is sliced.
         
         sort_text_len_decending = True,# IMPLEMENTED, NEEDS TO BE TESTED IN THE DISABLED POSITION
                                      # Should allow more flexibility with TBPTT and remove quite a few problems when disabled.
@@ -59,29 +59,33 @@ def create_hparams(hparams_string=None, verbose=False):
         min_avg_max_att       = 0.50 ,# files under this alignment strength are filtered out of the dataset during training.
         max_diagonality       = 1.16 ,# files  over this     diagonality    are filtered out of the dataset during training.
         max_spec_mse          = 1.00 ,# files  over this mean squared error are filtered out of the dataset during training.
-        min_avg_max_att_start = 30000,# when to start filtering out weak alignments.
+        min_avg_max_att_start = 40000,# when to start filtering out weak alignments.
                                       # (normally mis-labelled files or files that are too challenging to learn)
                                       # Only applies to training dataset.
                                       # Only updates at the end of each epoch.
         
-        num_workers=4,# number of threads for dataloading per GPU
+        num_workers    =16,# (train) Number of threads for dataloading per GPU
+        val_num_workers=16,# (eval)  Number of threads for dataloading per GPU
+        prefetch_factor=8,# NOT IMPLEMENTED - Requires Pytorch 1.7 (so not right now)# Number of samples loaded in advance by each worker.
         
         ###################################
         ## Dataset / Filelist Parameters ##
         ###################################
-        data_source = 0,# 0 to use nvidia/tacotron2 filelists, 1 to use automatic dataset processor
+        data_source = 1,# 0 to use nvidia/tacotron2 filelists, 1 to use automatic dataset processor
         
         # if data_source is 0:
-        speakerlist='/media/cookie/Samsung 860 QVO/ClipperDatasetV2/filelists/speaker_ids.txt',
-        training_files='/media/cookie/Samsung 860 QVO/ClipperDatasetV2/filelists/train_taca2.txt',
+        speakerlist     ='/media/cookie/Samsung 860 QVO/ClipperDatasetV2/filelists/speaker_ids.txt',
+        training_files  ='/media/cookie/Samsung 860 QVO/ClipperDatasetV2/filelists/train_taca2.txt',
         validation_files='/media/cookie/Samsung 860 QVO/ClipperDatasetV2/filelists/validation_taca2.txt',
         
         # if data_source is 1:
-        dataset_folder = '/media/cookie/Samsung 860 QVO/ClipperDatasetV2',
-        dataset_audio_filters= ['*.wav',],
-        dataset_audio_rejects= ['*_Noisy_*','*_Very Noisy_*'],
-        dataset_p_val = 0.03,# portion of dataset for Validation
-        dataset_min_duration = 1.4,# minimum duration of audio files to be added
+        dataset_folder = '/media/cookie/MoreStable/HiFiDatasets',
+        dataset_audio_filters= ['*.wav','*.flac',],
+        dataset_audio_rejects= ['*_Very Noisy_*',],
+        dataset_p_val = 0.01,# portion of dataset for Validation
+        dataset_min_duration = 1.1,# minimum duration in seconds for audio files to be added.
+        dataset_min_chars    =   7, # min number of letters/text that a transcript should have to be used.
+        dataset_max_chars    = 160, # min number of letters/text that a transcript should have to be used.
         
         inference_equally_sample_speakers=True,# Will change the 'inference' results to use the same number of files from each speaker.
                                                # This makes sense if the speakers you want to clone aren't the same as the speakers with the most audio data.
@@ -118,7 +122,7 @@ def create_hparams(hparams_string=None, verbose=False):
         ##################################
         ## Audio Parameters             ##
         ##################################
-        sampling_rate=44100,
+        sampling_rate=22050,
         target_lufs= -27.0, # Loudness each file is rescaled to, use None for original file loudness.
         
         trim_enable = False,# set to False to disable trimming completely
@@ -135,10 +139,10 @@ def create_hparams(hparams_string=None, verbose=False):
         ##################################
         ## Spectrogram Parameters       ##
         ##################################
-        filter_length  =  2048,
-        hop_length     =   512,
-        win_length     =  2048,
-        n_mel_channels =    80,
+        filter_length  =  1024,
+        hop_length     =   256,
+        win_length     =  1024,
+        n_mel_channels =   160,
         mel_fmin       =    20.0,
         mel_fmax       = 11025.0,
         stft_clamp_val = 1e-5,# 1e-5 = original
@@ -193,7 +197,7 @@ def create_hparams(hparams_string=None, verbose=False):
         torchMoji_BatchNorm  = True,
         
         # (Speaker) Speaker embedding
-        n_speakers            = 512, # maximum number of speakers the model can support.
+        n_speakers            = 2048,# maximum number of speakers the model can support.
         speaker_embedding_dim = 256, # speaker embedding size # 128 baseline
         
         # (Decoder/Encoder) Bottleneck parameters
@@ -233,7 +237,7 @@ def create_hparams(hparams_string=None, verbose=False):
         # (Decoder) DecoderRNN
         decoder_rnn_dim            = 768,  # 1024 baseline
         DecRNN_hidden_dropout_type = 'dropout',# options ('dropout','zoneout')
-        p_DecRNN_hidden_dropout    = 0.25,  # 0.1 baseline
+        p_DecRNN_hidden_dropout    = 0.10,  # 0.1 baseline
         decoder_residual_connection= False,# residual connections with the AttentionRNN hidden state and Attention/Memory Context
         # Optional Second Decoder
         second_decoder_rnn_dim=768,# 0 baseline # Extra DecoderRNN to learn more complex patterns # set to 0 to disable layer.

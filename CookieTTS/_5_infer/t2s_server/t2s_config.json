@@ -33,7 +33,7 @@
         "TTM": {
             "speaker_ids_file": "/media/cookie/Samsung 860 QVO/ClipperDatasetV2/filelists/speaker_ids.txt",
             "use_speaker_ids_file_override": true,
-            "default_model": "MEL | Tacotron2 TM P3 0.2DFR 0.3DO (best_inf_attsc)",
+            "default_model": "MEL | Tacotron2 TM P3 0.5DFR 0.0DO (best_inf_attsc)",
             "models": {
                 "MEL | Tacotron2 TM P0 V0 (Best Val Model)": {
                     "modelpath": "/media/cookie/Samsung PM961/TwiBot/CookiePPPTTS/CookieTTS/_2_ttm/tacotron2_tm/outdir/best_val_model"

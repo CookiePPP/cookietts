@@ -19,19 +19,20 @@ LossExplosionThreshold = 1e3 # maximum loss value (which will trigger a restart 
 custom_lr = True
 decrease_lr_on_restart = True # Decrease the Learning Rate on a LossExplosionThreshold exception
 
+offset = 50000
 # Learning Rate / Optimization
 decay_start = 99999999
-if   iteration <  10000:
+if   iteration <  10000+offset:
     A_ = 5.000e-4
-elif iteration <  50000:
+elif iteration <  50000+offset:
     A_ = 2.000e-4
-elif iteration <  80000:
+elif iteration <  80000+offset:
     A_ = 1.000e-4
-elif iteration < 110000:
+elif iteration < 110000+offset:
     A_ = 0.500e-4
-elif iteration < 140000:
+elif iteration < 140000+offset:
     A_ = 0.250e-4
-elif iteration < 170000:
+elif iteration < 170000+offset:
     A_ = 0.125e-4
 else:
     A_ = 0.050e-4

@@ -67,13 +67,12 @@ def parse_text_into_segments(texts, target_segment_len=120, split_at_quotes=True
     rev_texts = list(reversed(texts))
     while len(rev_texts):
         text = rev_texts.pop()# pop current segment to text_seg
-        end_line = bool(text.endswith('\n'))
-        end_paragraph = bool(len(rev_texts) == 0 or (text.endswith('\n') and rev_texts[-1] == '\n'))
+        
+        is_inside_quotes = bool(text.startswith('"'))
+        end_line         = bool(text.endswith('\n'))
+        end_paragraph    = bool(len(rev_texts) == 0 or (text.endswith('\n') and rev_texts[-1] == '\n'))
         if len(text.strip(' \n?!.;:*()[]"\'_@~#$%^&+=-|`')) == 0:# ensure that there is more than just symbols in the text segment.
             continue
-        
-        if text.startswith('"'):
-            is_inside_quotes = not is_inside_quotes
         
         if (len(rev_texts) and
             len(text)+1+len(rev_texts[-1]) <= target_segment_len and
@@ -83,7 +82,10 @@ def parse_text_into_segments(texts, target_segment_len=120, split_at_quotes=True
             rev_texts[-1] = f'{text} {rev_texts[-1]}'
             continue
         if len(text) <= target_segment_len:
-            texts_out.append(text.strip())
+            text = text.strip('\n "')
+            if text[-1] not in set(".,?!;:"):
+                text+='.'
+            texts_out.append(text)
         else:
             if any(x in text for x in set('.?!')):
                 text_parts = sent_tokenize(text)
@@ -96,10 +98,10 @@ def parse_text_into_segments(texts, target_segment_len=120, split_at_quotes=True
                     else:
                         break
                 if len(tmp) <= target_segment_len:
-                    text = ' '.join(text_parts[:j])
+                    text = (' '.join(text_parts[:j])).strip('\n "')
                     if text[-1] not in set(".,?!;:"):
                         text+='.'
-                    texts_out.append(text.strip())
+                    texts_out.append(text)
                     if len(text_parts[j:]):
                         rev_texts.append(' '.join(text_parts[j:]))
                     continue
@@ -114,10 +116,10 @@ def parse_text_into_segments(texts, target_segment_len=120, split_at_quotes=True
                     else:
                         break
                 if len(tmp) <= target_segment_len:
-                    text = ','.join(text_parts[:j])
+                    text = (','.join(text_parts[:j])).strip('\n "')
                     if text[-1] not in set(".,?!;:"):
                         text+=','
-                    texts_out.append(text.strip())
+                    texts_out.append(text)
                     if len(text_parts[j:]):
                         rev_texts.append(','.join(text_parts[j:]))
                     continue
@@ -132,10 +134,10 @@ def parse_text_into_segments(texts, target_segment_len=120, split_at_quotes=True
                     else:
                         break
                 if len(tmp) <= target_segment_len:
-                    text = ' '.join(text_parts[:j])
+                    text = (' '.join(text_parts[:j])).strip('\n "')
                     if text[-1] not in set(".,?!;:"):
                         text+=','
-                    texts_out.append(text.strip())
+                    texts_out.append(text)
                     if len(text_parts[j:]):
                         rev_texts.append(' '.join(text_parts[j:]))
                     continue
@@ -377,7 +379,7 @@ class T2S:
         os.makedirs(self.conf["output_directory" ], exist_ok=True)
         
         # time to gen
-        audio_len = 0
+        audio_len = 0.
         start_time = time.time()
         
         # Score Metric
@@ -671,7 +673,7 @@ class T2S:
                 write(save_path, self.ttm_hparams.sampling_rate, audio)
                 
                 counter+=1
-                audio_len+=audio_end
+                audio_len+=audio_end.item()
                 
                 # ------ merge clips of 300 ------ #
                 last_item = (j == audio_bs-1)
@@ -732,7 +734,7 @@ class T2S:
                 print(f"{text_index}/{total_len}, {eta_finish:.2f}mins remaining.")
                 del time_per_clip, eta_finish, remaining_files, time_elapsed
             
-            audio_seconds_generated = round(audio_len.item()/self.ttm_hparams.sampling_rate,3)
+            audio_seconds_generated = round(audio_len/self.ttm_hparams.sampling_rate,3)
             time_to_gen = round(time.time()-start_time,3)
             if show_time_to_gen:
                 print(f"Generated {audio_seconds_generated}s of audio in {time_to_gen}s wall time - so far. (best of {tries.sum().astype('int')} tries this pass) ({audio_seconds_generated/time_to_gen:.2f}xRT) ({sum([x<0.6 for x in all_best_scores])/len(all_best_scores):.1%}Failure Rate)")

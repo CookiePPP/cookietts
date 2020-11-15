@@ -109,7 +109,9 @@ def get_filelist(hparams, val=False):
         filelist = generate_filelist_from_datasets(hparams.dataset_folder,
                                 AUDIO_FILTER =hparams.dataset_audio_filters,
                                 AUDIO_REJECTS=hparams.dataset_audio_rejects,
-                                MIN_DURATION =hparams.dataset_min_duration)
+                                MIN_DURATION =hparams.dataset_min_duration,
+                                MIN_CHAR_LEN =hparams.dataset_min_chars,
+                                MAX_CHAR_LEN =hparams.dataset_max_chars,)
     elif hparams.data_source == 0:# else filelist is a ".txt" file, load the easy way
         if val:
             filelist = load_filepaths_and_text(hparams.validation_files)
@@ -131,17 +133,35 @@ def prepare_dataloaders(hparams, dataloader_args, args, speaker_ids, audio_offse
             if args.rank > 0:
                 fl_dict = pickle.load(open('fl_dict.pkl', "rb"))
         
+        speakerlist = fl_dict['speakerlist']
+        
         filelist    = fl_dict['filelist']
         speaker_ids = fl_dict['speaker_ids']
         random.Random(0).shuffle(filelist)
         training_filelist   = filelist[ int(len(filelist)*hparams.dataset_p_val):]
         validation_filelist = filelist[:int(len(filelist)*hparams.dataset_p_val) ]
+
         
         if args.n_gpus > 1:
             torch.distributed.barrier()# wait till all graphics cards reach this point.
             if args.rank == 0 and os.path.exists('fl_dict.pkl'):
                 os.remove('fl_dict.pkl')
     else:
+        # get speaker names to ID
+        if os.path.exists(hparams.speakerlist):
+            # expects speakerlist to look like below
+            # |Nancy|0
+            # |Bob|1
+            # |Phil|2
+            #
+            # every line must have at least 2 pipe symbols
+            speakerlist = load_filepaths_and_text(hparams.speakerlist)
+            speaker_name_lookup = {x[1]: speaker_id_lookup[x[2]] for x in speakerlist if x[2] in speaker_id_lookup.keys()}
+        else:
+            print("'speakerlist' in hparams.py not found! Speaker names will be IDs instead.")
+            speakerlist = [['Dataset',i,i,'Source','Source Type'] for i in range(speaker_id_lookup.keys())]
+            speaker_name_lookup = speaker_id_lookup# if there is no speaker
+        
         training_filelist   = get_filelist(hparams, val=False)
         validation_filelist = get_filelist(hparams, val=True)
         speaker_ids = speaker_ids if hparams.use_saved_speakers else None
@@ -161,11 +181,11 @@ def prepare_dataloaders(hparams, dataloader_args, args, speaker_ids, audio_offse
         train_sampler = None
         shuffle = use_shuffle
     
-    train_loader = DataLoader(trainset, num_workers=hparams.num_workers, shuffle=shuffle,
-                              sampler=train_sampler,
+    train_loader = DataLoader(trainset, shuffle=shuffle, sampler=train_sampler,
+                              num_workers=hparams.num_workers,# prefetch_factor=hparams.prefetch_factor,
                               batch_size=hparams.batch_size, pin_memory=False,
                               drop_last=True, collate_fn=collate_fn)
-    return train_loader, valset, collate_fn, train_sampler, trainset
+    return train_loader, valset, collate_fn, train_sampler, trainset, speakerlist
 
 
 def prepare_directories_and_logger(hparams, args):
@@ -252,24 +272,13 @@ def load_checkpoint(checkpoint_path, model, optimizer, best_val_loss_dict, best_
     return model, optimizer, learning_rate, iteration, best_validation_loss, best_inf_attsc, saved_lookup, best_val_loss_dict, best_loss_dict
 
 
-def save_checkpoint(model, optimizer, learning_rate, iteration, hparams, best_validation_loss, best_inf_attsc, average_loss, best_val_loss_dict, best_loss_dict, speaker_id_lookup, filepath):
+def save_checkpoint(model, optimizer, learning_rate, iteration, hparams, best_validation_loss, best_inf_attsc, average_loss,
+                    best_val_loss_dict, best_loss_dict, speaker_id_lookup, speakerlist, filepath):
     from CookieTTS.utils.dataset.utils import load_filepaths_and_text
     tqdm.write("Saving model and optimizer state at iteration {} to {}".format(
         iteration, filepath))
-
-    # get speaker names to ID
-    if os.path.exists(hparams.speakerlist):
-        # expects speakerlist to look like below
-        # |Nancy|0
-        # |Bob|1
-        # |Phil|2
-        #
-        # every line must have at least 2 pipe symbols
-        speakerlist = load_filepaths_and_text(hparams.speakerlist)
-        speaker_name_lookup = {x[1]: speaker_id_lookup[x[2]] for x in speakerlist if x[2] in speaker_id_lookup.keys()}
-    else:
-        print("'speakerlist' in hparams.py not found! Speaker names will be IDs instead.")
-        speaker_name_lookup = speaker_id_lookup# if there is no speaker
+    
+    speaker_name_lookup = {x[1]: x[2] for x in speakerlist}
     
     save_dict = {'iteration'           : iteration,
                  'state_dict'          : model.state_dict(),
@@ -278,6 +287,7 @@ def save_checkpoint(model, optimizer, learning_rate, iteration, hparams, best_va
                  'hparams'             : hparams,
                  'speaker_id_lookup'   : speaker_id_lookup,
                  'speaker_name_lookup' : speaker_name_lookup,
+                 'speakerlist'         : speakerlist,
                  'best_validation_loss': best_validation_loss,
                  'best_inf_attsc'      : best_inf_attsc,
                  'best_val_loss_dict'  : best_val_loss_dict,
@@ -330,11 +340,11 @@ def write_dict_to_file(file_losses, fpath, n_gpus, rank, deliminator='","', ends
     
     return file_losses
 
-def get_mse_sampled_filelist(original_filelist, file_losses, exp_factor, seed=None):
+def get_mse_sampled_filelist(original_filelist, file_losses, exp_factor, seed=None, max_weighting=8.0):
     # collect losses of each file for each speaker into lists
     speaker_losses = {}
     for loss_dict in file_losses.values():
-        speaker_id = str(loss_dict['speaker_id_ext'])
+        speaker_id = int(loss_dict['speaker_id_ext'])
         if speaker_id not in speaker_losses:
             speaker_losses[speaker_id] = {k:[v,] for k,v in list(loss_dict.items())[2:] if v is not None}
         else:
@@ -343,21 +353,21 @@ def get_mse_sampled_filelist(original_filelist, file_losses, exp_factor, seed=No
                     speaker_losses[speaker_id][loss_name] = [loss_value,]
                 elif loss_value is not None:
                     speaker_losses[speaker_id][loss_name].append(loss_value)
+    assert len(speaker_losses.keys())
     
     # then average the loss list for each speaker
     speaker_avg_losses = speaker_losses
     for speaker in speaker_avg_losses.keys():
         for loss_name in speaker_avg_losses[speaker].keys():
-            if loss_name in speaker_avg_losses[speaker].keys() and speaker_avg_losses[speaker][loss_name] is not None:
-                speaker_avg_losses[speaker][loss_name] = sum([x for x in speaker_avg_losses[speaker][loss_name] if x is not None])/len(speaker_avg_losses[speaker][loss_name])
+            #if loss_name in speaker_avg_losses[speaker].keys() and speaker_avg_losses[speaker][loss_name] is not None:
+            speaker_avg_losses[speaker][loss_name] = sum([x for x in speaker_avg_losses[speaker][loss_name] if x is not None])/len(speaker_avg_losses[speaker][loss_name])
+    assert len(speaker_avg_losses.keys())
     
     # generate speaker filelists
-    spkr_filelist = {}
+    spkr_filelist = {int(spkr_id): [] for spkr_id in set([x[2] for x in original_filelist])}
     for path, quote, speaker_id, *_ in original_filelist:
-        if speaker_id not in spkr_filelist:
-            spkr_filelist[speaker_id] = [[path, quote, speaker_id, *_],]
-        else:
-            spkr_filelist[speaker_id].append([path, quote, speaker_id, *_])
+        spkr_filelist[int(speaker_id)].append([path, quote, speaker_id, *_])
+    assert len(spkr_filelist.keys()) and any(len(x) for x in spkr_filelist.values())
     
     # shuffle speaker filelists
     for k in spkr_filelist.keys():
@@ -368,15 +378,17 @@ def get_mse_sampled_filelist(original_filelist, file_losses, exp_factor, seed=No
     new_filelist = []
     spec_MSE_total = sum([loss_dict['spec_MSE']**exp_factor for loss_dict in speaker_avg_losses.values()])
     for speaker_id, loss_dict in speaker_avg_losses.items():
-        if speaker_id in spkr_filelist:
+        if int(speaker_id) in spkr_filelist.keys():
             sample_chance = (loss_dict['spec_MSE']**exp_factor)/spec_MSE_total# chance to sample this speaker
+            assert sample_chance > 0.0
             n_files = round(sample_chance * dataset_len)
-            spkr_files = spkr_filelist[speaker_id]
+            spkr_files = spkr_filelist[int(speaker_id)]
             if (n_files == 0) or ( len(spkr_files) == 0 ):
                 continue
             if len(spkr_files) < n_files:
-                spkr_files = spkr_files * ceil(n_files/len(spkr_files))# repeat filelist if needed
+                spkr_files = spkr_files * min(ceil(n_files/len(spkr_files)), max_weighting)# repeat filelist if needed
             new_filelist.extend(spkr_files[:n_files])
+    assert len(new_filelist)
     
     return new_filelist
 
@@ -406,7 +418,8 @@ def validate(hparams, args, file_losses, model, criterion, valset, best_val_loss
             valset.update_filelist(get_mse_sampled_filelist(orig_filelist, file_losses, 0.0, seed=1234))
             assert len(valset.filelist), '0 files in valset! If your dataset has single speaker, you can change "inference_equally_sample_speakers" to False in hparams.py'
         val_sampler = DistributedSampler(valset) if hparams.distributed_run else None
-        val_loader = DataLoader(valset, sampler=val_sampler, num_workers=hparams.num_workers,
+        val_loader = DataLoader(valset, sampler=val_sampler,
+                                num_workers=hparams.val_num_workers,# prefetch_factor=hparams.prefetch_factor,
                                 shuffle=False, batch_size=hparams.batch_size,
                                 pin_memory=False, drop_last=True, collate_fn=collate_fn)
         
@@ -537,7 +550,7 @@ def train(args, rank, group_name, hparams):
     
     if len(hparams.unfrozen_modules):
         for layer, params in list(model.named_parameters()):
-            if any(layer.startswith(module) for module in hparams.frozen_modules):
+            if any(layer.startswith(module) for module in hparams.unfrozen_modules):
                 params.requires_grad = True
                 print(f"Layer: {layer} has been unfrozen")
     
@@ -612,7 +625,7 @@ def train(args, rank, group_name, hparams):
     dataloader_args = [*get_args(criterion.forward), *model_args]
     if rank == 0:
         dataloader_args.extend(get_args(logger.log_training))
-    train_loader, valset, collate_fn, train_sampler, trainset = prepare_dataloaders(hparams, dataloader_args, args, saved_lookup)
+    train_loader, valset, collate_fn, train_sampler, trainset, speakerlist = prepare_dataloaders(hparams, dataloader_args, args, saved_lookup)
     epoch_offset = max(0, int(iteration / len(train_loader)))
     speaker_lookup = trainset.speaker_ids
     
@@ -630,13 +643,6 @@ def train(args, rank, group_name, hparams):
         scheduler = ReduceLROnPlateau(optimizer, factor=0.1**(1/5), patience=10)
     
     model.train()
-    is_overflow = False
-    validate_then_terminate = 0
-    if validate_then_terminate:
-        val_loss = validate(model, criterion, valset, iteration,
-            hparams.batch_size, args.n_gpus, collate_fn, logger,
-            hparams.distributed_run, rank)
-        raise Exception("Finished Validation")
     
     for param_group in optimizer.param_groups:
         param_group['lr'] = learning_rate
@@ -779,7 +785,7 @@ def train(args, rank, group_name, hparams):
                         # save model checkpoint like normal
                         if rank == 0:
                             checkpoint_path = os.path.join(args.output_directory, "checkpoint_{}".format(iteration))
-                            save_checkpoint(model, optimizer, learning_rate, iteration, hparams, best_validation_loss, best_inf_attsc, average_loss, best_val_loss_dict, best_loss_dict, speaker_lookup, checkpoint_path)
+                            save_checkpoint(model, optimizer, learning_rate, iteration, hparams, best_validation_loss, best_inf_attsc, average_loss, best_val_loss_dict, best_loss_dict, speaker_lookup, speakerlist, checkpoint_path)
                     
                     if iteration%dump_filelosses_interval==0:
                         print("Updating File_losses dict!")
@@ -800,14 +806,14 @@ def train(args, rank, group_name, hparams):
                                 checkpoint_path = os.path.join(args.output_directory, "best_val_model")
                                 save_checkpoint(
                                     model, optimizer, learning_rate, iteration, hparams, best_validation_loss, max(best_inf_attsc, val_loss),
-                                    average_loss, best_val_loss_dict, best_loss_dict, speaker_lookup, checkpoint_path)
+                                    average_loss, best_val_loss_dict, best_loss_dict, speaker_lookup, speakerlist, checkpoint_path)
                         if (valatt_loss > best_inf_attsc):
                             best_inf_attsc = valatt_loss
                             if rank == 0 and hparams.save_best_inf_attsc:
                                 checkpoint_path = os.path.join(args.output_directory, "best_inf_attsc")
                                 save_checkpoint(
                                     model, optimizer, learning_rate, iteration, hparams, best_validation_loss, best_inf_attsc,
-                                    average_loss, best_val_loss_dict, best_loss_dict, speaker_lookup, checkpoint_path)
+                                    average_loss, best_val_loss_dict, best_loss_dict, speaker_lookup, speakerlist, checkpoint_path)
                         just_did_val = True
                     
                     iteration += 1
@@ -865,6 +871,7 @@ def train(args, rank, group_name, hparams):
             n_restarts += 1
         except KeyboardInterrupt as ex:
             print(ex)
+            training = False
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()

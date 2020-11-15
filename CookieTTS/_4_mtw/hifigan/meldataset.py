@@ -21,7 +21,7 @@ def check_file_lengths(sampling_rate, segment_size, training_files_old):
     segment_size_s = segment_size/sampling_rate
     training_files_new = []
     for file in tqdm(training_files_old):
-        audio, native_sr = load_wav_to_torch(file, target_sr=None, return_empty_on_exception=True)
+        audio, native_sr = load_wav_to_torch(file, min_sr=sampling_rate*0.9, target_sr=None, return_empty_on_exception=True)
         audio_s = len(audio) / native_sr
         if audio_s > segment_size_s:
             training_files_new.append(file)
