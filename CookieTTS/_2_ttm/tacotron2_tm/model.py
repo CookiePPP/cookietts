@@ -326,6 +326,8 @@ class MemoryBottleneck(nn.Module):
         super(MemoryBottleneck, self).__init__()
         self.mem_output_dim = hparams.memory_bottleneck_dim
         self.mem_input_dim = hparams.encoder_LSTM_dim + hparams.speaker_embedding_dim + hparams.torchMoji_crushedDim + 1
+        if getattr(hparams, 'use_res_enc', False):
+            self.mem_input_dim += getattr(hparams, 'res_enc_embed_dim', 128)
         self.bottleneck = LinearNorm(self.mem_input_dim, self.mem_output_dim, bias=hparams.memory_bottleneck_bias, w_init_gain='tanh')
     
     def forward(self, memory):
@@ -1012,7 +1014,7 @@ class Tacotron2(nn.Module):
         
         # (Residual Encoder) gt_mel -> res_embed
         if hasattr(self, 'res_enc'):
-            res_embed, zr, r_mu, r_logvar = self.res_enc(gt_mel, mel_lengths)# -> [B, embed]
+            res_embed, zr, r_mu, r_logvar, r_mu_logvar = self.res_enc(gt_mel, mel_lengths)# -> [B, embed]
             res_embed = res_embed[:, None].repeat(1, encoder_outputs.size(1), 1)# -> [B, txt_T, embed]
             memory.append(res_embed)
         
@@ -1035,6 +1037,7 @@ class Tacotron2(nn.Module):
                  "alignments": alignments,         # [B, mel_T, txt_T]
         "hidden_att_contexts": hidden_att_contexts,# [B, hdn_dim, mel_T]
             "encoder_outputs": encoder_outputs,    # [B, txt_T, enc_dim]
+                "res_enc_pkg": [r_mu, r_logvar, r_mu_logvar,] if hasattr(self, 'res_enc') else None,# [B, n_tokens], [B, n_tokens], [B, 2*n_tokens]
         }
         return outputs
     
@@ -1097,3 +1100,69 @@ class Tacotron2(nn.Module):
                  "pred_sylps": pred_sylps,      # [B]
         }
         return outputs
+
+class ResBlock1d(nn.Module):
+    def __init__(self, input_dim, output_dim, n_layers, n_dim, kernel_w, bias=True, act_func=nn.LeakyReLU(negative_slope=0.1, inplace=True), dropout=0.0, res=False):
+        super(ResBlock1d, self).__init__()
+        self.layers = nn.ModuleList()
+        for i in range(n_layers):
+            in_dim = input_dim if i == 0 else n_dim
+            out_dim = output_dim if i+1 == n_layers else n_dim
+            pad = (kernel_w - 1)//2
+            conv = nn.Conv1d(in_dim, out_dim, kernel_w, padding=pad, bias=bias)
+            self.layers.append(conv)
+        self.act_func = act_func
+        self.dropout = dropout
+        self.res = res
+        if self.res:
+            assert input_dim == output_dim, 'residual connection requires input_dim and output_dim to match.'
+    
+    def forward(self, x): # [B, in_dim, T]
+        if len(x.shape) == 2:
+            x = x.unsqueeze(-1)
+        skip = x
+        
+        for i, layer in enumerate(self.layers):
+            is_last_layer = bool( i+1 == len(self.layers) )
+            x = layer(x)
+            if not is_last_layer:
+                x = self.act_func(x)
+            if self.dropout > 0.0 and self.training:
+                x = F.dropout(x, p=self.dropout, training=self.training, inplace=True)
+        if self.res:
+            x += skip
+        return x # [B, out_dim, T]
+
+
+class ResGAN(nn.Module):
+    def __init__(self, hparams):
+        super(ResGAN, self).__init__()
+        self.optimizer     = None
+        self.discriminator = ResBlock1d(hparams.res_enc_n_tokens*2, hparams.n_speakers+hparams.n_symbols,
+                                        hparams.res_enc_n_layers,   hparams.res_enc_dis_dim, kernel_w=1)
+        self.res_enc_dMSE_weight = 0.0
+        self.gt_speakers = None
+        self.gt_sym_durs = None
+        self.fp16_run    = hparams.fp16_run
+    
+    def forward(self, pred, reduced_loss_dict, loss_dict, loss_scalars):
+        assert self.res_enc_dMSE_weight > 0.0
+        assert self.optimizer is not None
+        self.optimizer.zero_grad()
+        
+        _, _, mulogvar = pred['res_enc_pkg']
+        pred_sym_durs, pred_speakers = self.discriminator(mulogvar.detach())
+        
+        loss_dict['res_enc_dMSE'] = nn.MSELoss()(pred_sym_durs, self.gt_sym_durs) + nn.MSELoss()(pred_speakers, self.gt_speakers)
+        loss_dict['res_enc_dMSE'] *= loss_scalars['res_enc_dMSE_weight']
+        reduced_loss_dict['res_enc_dMSE'] = loss.item()
+        
+        if self.fp16_run:
+            with amp.scale_loss(loss_dict['res_enc_dMSE'], optimizer) as scaled_loss:
+                scaled_loss.backward()
+        else:
+            loss_dict['res_enc_dMSE'].backward()
+        
+        self.optimizer.step()
+        
+

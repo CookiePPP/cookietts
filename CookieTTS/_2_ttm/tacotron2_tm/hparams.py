@@ -189,8 +189,19 @@ def create_hparams(hparams_string=None, verbose=False):
         # (SylpsNet) Predicts speaking speed
         sylpsnet_layer_dims = [32, 32],# width of each layer, LeakyReLU() is used between hiddens
         
-        # (EmotionNet) Semi-supervised VAE/Classifier
+        # NOT IN USE (EmotionNet) Semi-supervised VAE/Classifier
         emotion_classes = ['neutral','anxious','happy','annoyed','sad','confused','smug','angry','whispering','shouting','sarcastic','amused','surprised','singing','fear','serious'],
+        
+        # (Residual Encoder) Learns information related to anything that isn't related to Text or Speakers. (e.g: background noise)
+        # https://openreview.net/pdf?id=Bkg9ZeBB37
+        use_res_enc=True,
+        res_enc_filters   = [32, 32, 64, 64, 128, 128],
+        res_enc_gru_dim   = 128,
+        res_enc_n_tokens  =   5,
+        res_enc_embed_dim = 256,
+        
+        res_enc_dis_dim  = 128,
+        res_enc_n_layers =   3,
         
         # (AuxEmotionNet) TorchMoji
         torchMoji_attDim     = 2304,# published model uses 2304
@@ -309,6 +320,9 @@ def create_hparams(hparams_string=None, verbose=False):
         postnet_MSE_weight  = 0.0,# MSE  Spectrogram Loss After Postnet
         postnet_MFSE_weight = 1.0,# MFSE Spectrogram Loss After Postnet
         gate_loss_weight    = 1.0,# Gate Loss
+        
+        res_enc_kld_weight  = 0.002,
+        res_enc_gMSE_weight = 0.1,
         
         sylps_kld_weight = 0.0020, # SylNet KDL Weight
         sylps_MSE_weight = 0.01,# Encoder Pred Sylps MSE weight

@@ -15,7 +15,7 @@ from torch.utils.data.distributed import DistributedSampler
 from torch.utils.data import DataLoader
 from torch.optim.lr_scheduler import ReduceLROnPlateau
 
-from model import Tacotron2, load_model
+from model import Tacotron2, ResGAN, load_model
 from CookieTTS.utils.dataset.data_utils import TTSDataset, Collate, generate_filelist_from_datasets
 from CookieTTS.utils import get_args, force
 
@@ -416,7 +416,7 @@ def validate(hparams, args, file_losses, model, criterion, valset, best_val_loss
         if hparams.inference_equally_sample_speakers and teacher_force == 2:# if inference, sample from each speaker equally. So speakers with smaller datasets get the same weighting onto the val loss.
             orig_filelist = valset.filelist
             valset.update_filelist(get_mse_sampled_filelist(orig_filelist, file_losses, 0.0, seed=1234))
-            assert len(valset.filelist), '0 files in valset! If your dataset has single speaker, you can change "inference_equally_sample_speakers" to False in hparams.py'
+        assert len(valset.filelist) < hparams.batch_size, 'too few files in validation set! If your dataset has single speaker, you can change "inference_equally_sample_speakers" to False in hparams.py which *may* fix the issue.\nIf you have a small amount of data, increase `dataset_p_val` or decrease `val_batch_size`'
         val_sampler = DistributedSampler(valset) if hparams.distributed_run else None
         val_loader = DataLoader(valset, sampler=val_sampler,
                                 num_workers=hparams.val_num_workers,# prefetch_factor=hparams.prefetch_factor,
@@ -557,6 +557,17 @@ def train(args, rank, group_name, hparams):
     # define optimizer (any params without requires_grad are ignored)
     #optimizer = torch.optim.Adam(filter(lambda p: p.requires_grad, model.parameters()), lr=learning_rate, weight_decay=hparams.weight_decay)
     optimizer = apexopt.FusedAdam(filter(lambda p: p.requires_grad, model.parameters()), lr=learning_rate, weight_decay=hparams.weight_decay)
+    
+    if hparams.use_res_enc:
+        resGAN = ResGAN(hparams).cuda()
+        resGAN.optimizer = apexopt.FusedAdam(filter(lambda p: p.requires_grad, resGAN.discriminator.parameters()), lr=learning_rate, weight_decay=hparams.weight_decay)
+        if hparams.fp16_run:
+            _ = amp.initialize(model, resGAN.optimizer, opt_level=f'O{hparams.fp16_run_optlvl}')
+            resGAN.optimizer = _[1]
+            resGAN.discriminator = _[0]
+        if hparams.distributed_run:
+            _ = apply_gradient_allreduce(resGAN.discriminator)
+            resGAN.discriminator = _
     
     if True and rank == 0:
         pytorch_total_params = sum(p.numel() for p in model.parameters())
@@ -715,9 +726,12 @@ def train(args, rank, group_name, hparams):
                         "sylps_kld_weight": sylps_kld_weight,
                         "sylps_MSE_weight": sylps_MSE_weight,
                         "sylps_MAE_weight": sylps_MAE_weight,
+                     "res_enc_gMSE_weight": res_enc_gMSE_weight,
+                     "res_enc_dMSE_weight": res_enc_dMSE_weight,
+                      "res_enc_kld_weight": res_enc_kld_weight,
                          "diag_att_weight": diag_att_weight,
                     }
-                    loss_dict, file_losses_batch = criterion(y_pred, y, loss_scalars)
+                    loss_dict, file_losses_batch = criterion(y_pred, y, loss_scalars, resGAN if hparams.use_res_enc else None)
                     
                     file_losses = update_smoothed_dict(file_losses, file_losses_batch, file_losses_smoothness)
                     loss = loss_dict['loss']
@@ -747,6 +761,10 @@ def train(args, rank, group_name, hparams):
                         grad_norm = 0.0
                     
                     optimizer.step()
+                    
+                    # (Optional) Discriminator Forward+Backward Pass
+                    if hparams.use_res_enc:
+                        resGAN(y_pred, reduced_loss_dict, loss_dict, loss_scalars)
                     
                     # get current Loss Scale of first optimizer
                     loss_scale = amp._amp_state.loss_scalers[0]._loss_scale if hparams.fp16_run else 32768.

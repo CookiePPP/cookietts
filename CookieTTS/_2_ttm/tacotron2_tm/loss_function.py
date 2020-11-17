@@ -94,9 +94,29 @@ def NormalLLLoss(mu, logvar, target):
         pass
     return loss
 
+# https://discuss.pytorch.org/t/fastest-way-of-converting-a-real-number-to-a-one-hot-vector-representing-a-bin/21578/2
+def indexes_to_one_hot(indexes, num_classes=None):
+    """Converts a vector of indexes to a batch of one-hot vectors. """
+    orig_shape = indexes.shape
+    indexes = indexes.type(torch.int64).view(-1, 1)
+    num_classes = num_classes if num_classes is not None else int(torch.max(indexes)) + 1
+    one_hots = torch.zeros(indexes.size()[0], num_classes, device=indexes.device).scatter_(1, indexes, 1)
+    one_hots = one_hots.view(*orig_shape, -1)
+    return one_hots
+
+def get_class_durations(text, alignment, n_symbols):
+    # get duration of each symbol. zero for symbols that don't exist in this transcript.
+    durations = alignment.sum(1)# [B, mel_T, txt_T] -> [B, txt_T]
+    sym_text_onehot = indexes_to_one_hot(text, num_classes=n_symbols)# -> [B, txt_T, n_symbols]
+    char_durs = durations.unsqueeze(1) @ sym_text_onehot# [B, 1, txt_T] @ [B, txt_T, n_symbols] -> [B, 1, n_symbols]
+    char_durs = char_durs.squeeze(1)# [B, 1, n_symbols] -> [B, n_symbols]
+    return char_durs
+
 class Tacotron2Loss(nn.Module):
     def __init__(self, hparams):
         super(Tacotron2Loss, self).__init__()
+        self.n_symbols = hparams.n_symbols
+        self.n_speakers = hparams.n_speakers
         
         # Gate Loss
         self.pos_weight = torch.tensor(hparams.gate_positive_weight)
@@ -107,28 +127,11 @@ class Tacotron2Loss(nn.Module):
         self.postnet_MFSE_weight = hparams.postnet_MFSE_weight
         self.masked_select = hparams.masked_select
         
-        self.gate_loss_weight = hparams.gate_loss_weight
+        self.use_res_enc         = hparams.use_res_enc
+        self.res_enc_kld_weight  = hparams.res_enc_kld_weight
+        self.res_enc_gMSE_weight = hparams.res_enc_gMSE_weight
         
-        # KL Scheduler Params
-        if False:
-            self.anneal_function = 'logistic'
-            self.lag = ''
-            self.k = 0.00025
-            self.x0 = 1000
-            self.upper = 0.005
-        elif False:
-            self.anneal_function = 'constant'
-            self.lag = None
-            self.k = None
-            self.x0 = None
-            self.upper = 0.5 # weight
-        else:
-            self.anneal_function = 'cycle'
-            self.lag = 50#     dead_steps
-            self.k = 7950#   warmup_steps
-            self.x0 = 10000#  cycle_steps
-            self.upper = 1.0 # aux weight
-            assert (self.lag+self.k) <= self.x0
+        self.gate_loss_weight = hparams.gate_loss_weight
         
         self.sylps_kld_weight = hparams.sylps_kld_weight # SylNet KDL Weight
         self.sylps_MSE_weight = hparams.sylps_MSE_weight
@@ -165,7 +168,7 @@ class Tacotron2Loss(nn.Module):
         
         return 
     
-    def forward(self, pred, gt, loss_scalars):
+    def forward(self, pred, gt, loss_scalars, resGAN=None):
         
         loss_dict = {}
         file_losses = {}# dict of {"audiofile": {"spec_MSE": spec_MSE, "avg_prob": avg_prob, ...}, ...}
@@ -242,8 +245,30 @@ class Tacotron2Loss(nn.Module):
                                                 output_lengths[pres_prev_state==0.0])
             del alignments, text_lengths, output_lengths
         
-        if True:# Residual Encoder KL Divergence Loss
-            zembed, zr, zmu, zlogvar = pred['']
+        if self.use_res_enc and resGAN is not None:# Residual Encoder KL Divergence Loss
+            mu, logvar, mulogvar = pred['res_enc_pkg']
+            
+            kl_loss = -0.5 * torch.sum(1 + logvar - mu.pow(2) - logvar.exp())
+            loss_dict['res_enc_kld'] = kl_loss
+            
+            # discriminator attempts to predict the letters and speakers using the residual latent space,
+            #  the generator attempts to increase the discriminators loss so the latent space will lose speaker and dur info
+            #   making it more likely the latent contains information relating to background noise conditions and
+            #    other features more relavent to human interests.
+            with torch.no_grad():
+                gt_speakers   = gt['speaker_id_onehot']                             # [B, n_speakers]
+                gt_sym_durs   = get_class_durations(gt['text'], pred['alignments'], self.n_symbols)*0.01# [B, n_symbols ]
+            out = resGAN.discriminator(mulogvar)# learns to predict the speaker and
+            pred_sym_durs, pred_speakers = out.squeeze(-1).split([self.n_symbols, self.n_speakers], dim=1) # amount of 'a','b','c','.', etc sounds that are in the audio.
+                                                                      # if there isn't a 'd' sound in the transcript, then d will be 0.0
+                                                                      # if there are multiple 'a' sounds, their durations are summed.
+            print(pred_sym_durs.shape, gt_sym_durs.shape, pred_speakers.shape, gt_speakers.shape, sep='\n')
+            loss_dict['res_enc_gMSE'] = -(nn.MSELoss()(pred_sym_durs, gt_sym_durs) + nn.MSELoss()(pred_speakers, gt_speakers))
+            
+            resGAN.gt_speakers = gt_speakers
+            resGAN.gt_sym_durs = gt_sym_durs
+            
+            del mu, logvar, kl_loss, gt_speakers, gt_sym_durs, pred_sym_durs, pred_speakers
         
         #################################################################
         ## Colate / Merge the Losses into a single tensor with scalars ##
@@ -261,7 +286,7 @@ class Tacotron2Loss(nn.Module):
             for i in range(B):
                 audiopath = gt['audiopath'][i]
                 file_losses[audiopath]['avg_max_attention'] =      avg_prob[i].cpu().item()
-                file_losses[audiopath]['att_diagonality'  ] =  diagonalitys[i].cpu().item()
+                file_losses[audiopath]['att_diagonality']   =  diagonalitys[i].cpu().item()
                 file_losses[audiopath]['p_missing_enc']     = p_missing_enc[i].cpu().item()
                 file_losses[audiopath]['char_max_dur']      =  char_max_dur[i].cpu().item()
                 file_losses[audiopath]['char_min_dur']      =  char_min_dur[i].cpu().item()
