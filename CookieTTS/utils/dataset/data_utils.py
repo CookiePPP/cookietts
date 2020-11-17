@@ -300,7 +300,8 @@ def generate_filelist_from_datasets(DATASET_FOLDER,
     with open(fpath, "w") as f:
         lines = []
         lines.append(f';{"dataset":<23}|{"speaker_name":<32}|{"speaker_id":<10}|{"source":<24}|{"source_type":<20}|duration_hrs\n;')
-        for speaker_id, (speaker_name, duration) in enumerate(speaker_durations.items()):
+        for speaker_id, speaker_name in enumerate(sorted(speaker_durations.keys())):
+            duration = speaker_durations[speaker_name]
             dataset = dataset_lookup[speaker_name]
             if duration < MIN_SPEAKER_DURATION_SECONDS:
                 continue
@@ -321,9 +322,9 @@ def generate_filelist_from_datasets(DATASET_FOLDER,
     
     # Unpack meta into filelist
     # filelist = [["path","quote","speaker_id"], ["path","quote","speaker_id"], ...]
+    speaker_lookup = {speaker: index for index, speaker in enumerate(sorted(speaker_durations.keys()))}
     filelist = []
     for dataset, clips in meta.items():
-        speaker_lookup = {speaker: index for index, speaker in enumerate(list(speaker_durations.keys()))}
         for i, clip in enumerate(clips):
             audiopath  = clip["path"]
             quote      = clip["quote"]
@@ -337,7 +338,8 @@ def generate_filelist_from_datasets(DATASET_FOLDER,
     
     # speakerlist = [["name","id","dataset","source","source_type","duration"], ...]
     speakerlist = []
-    for speaker_id, (speaker_name, duration) in enumerate(speaker_durations.items()):
+    for speaker_id, speaker_name in enumerate(sorted(speaker_durations.keys())):
+        duration = speaker_durations[speaker_name]
         dataset = dataset_lookup[speaker_name]
         if duration < MIN_SPEAKER_DURATION_SECONDS:
             continue

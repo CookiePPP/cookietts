@@ -31,28 +31,29 @@
         "output_maxsize_gb": 0.01,
         "dict_path": "/media/cookie/Samsung PM961/TwiBot/tacotron2/filelists/merged.dict_.txt",
         "TTM": {
-            "use_speaker_ids_file_override": true,
             "default_model": "MEL160C | Tacotron2 TM U0 V0 (Best Val Model)",
             "models": {
                 "MEL160C | Tacotron2 TM U0 V0 (Best Val Model)": {
                     "modelpath": "/media/cookie/Samsung PM961/TwiBot/CookiePPPTTS/CookieTTS/_2_ttm/tacotron2_tm/outdir_u0_0.1DFR_0.0DO/best_val_model",
-                    "speaker_ids_file": "/media/cookie/MoreStable/HiFiDatasets/meta/speaker_info.txt"
+                    "speaker_ids_file": "/media/cookie/WD6TB/TTS/HiFiDatasets/meta/speaker_info.txt",
+                    "use_speaker_ids_file_override": true
                 },
                 "MEL80C | Tacotron2 TM P3 0.5DFR 0.0DO (best_inf_attsc)": {
                     "modelpath": "/media/cookie/Samsung PM961/TwiBot/CookiePPPTTS/CookieTTS/_2_ttm/tacotron2_tm/outdir_p3_2_0.5DFR_0.0Dropout/best_inf_attsc",
-                    "speaker_ids_file": "/media/cookie/Samsung 860 QVO/ClipperDatasetV2/filelists/speaker_ids.txt"
+                    "speaker_ids_file": "/media/cookie/Samsung 860 QVO/ClipperDatasetV2/filelists/speaker_ids.txt",
+                    "use_speaker_ids_file_override": true
                 }
 
             }
         },
         "MTW": {
-            "default_model": "MEL80C | HiFi-GAN V1.3 44Khz FT",
+            "default_model": "MEL160C | HiFi-GAN V1.3 44Khz GT",
             "models": {
                 "MEL80C | HiFi-GAN V1.3 44Khz FT": {
                     "modelpath": "../../_4_mtw/hifigan/cp_hifigan_universal44Khz_3/g_00247750"
                 },
                 "MEL160C | HiFi-GAN V1.3 44Khz GT": {
-                    "modelpath": "../../_4_mtw/hifigan/cp_hifigan_universal44Khz_3/g_00247750"
+                    "modelpath": "../../_4_mtw/hifigan/cp_hifigan_935universal44Khz_0/g_00020500"
                 }
             }
         }

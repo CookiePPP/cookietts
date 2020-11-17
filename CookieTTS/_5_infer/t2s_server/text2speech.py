@@ -181,7 +181,7 @@ class T2S:
         # override since my checkpoints are still missing speaker names
         if self.conf['TTM']["models"][self.ttm_current]['use_speaker_ids_file_override']:
             speaker_ids_fpath = self.conf['TTM']["models"][self.ttm_current]['speaker_ids_file']
-            self.ttm_sp_name_lookup = {name: self.ttm_sp_id_lookup[int(ext_id)] for _, name, ext_id, *_ in load_filepaths_and_text(speaker_ids_fpath)}
+            self.ttm_sp_name_lookup = {name.strip(): self.ttm_sp_id_lookup[int(ext_id.strip())] for _, name, ext_id, *_ in load_filepaths_and_text(speaker_ids_fpath)}
         
         # load HiFi-GAN
         self.MTW_current = self.conf['MTW']['default_model']
@@ -327,8 +327,8 @@ class T2S:
         self.tacotron, self.ttm_hparams, self.ttm_sp_name_lookup, self.ttm_sp_id_lookup = self.load_tacotron2(self.conf['TTM']['models'][tacotron_name]['modelpath'])
         self.ttm_current = tacotron_name
         
-        if self.conf['TTM']['use_speaker_ids_file_override']:# (optional) override
-            self.ttm_sp_name_lookup = {name: self.ttm_sp_id_lookup[int(ext_id)] for _, name, ext_id in load_filepaths_and_text(self.conf['TTM']['speaker_ids_file'])}
+        if self.conf['TTM']['models'][tacotron_name]['use_speaker_ids_file_override']:# (optional) override
+            self.ttm_sp_name_lookup = {name: self.ttm_sp_id_lookup[int(ext_id)] for _, name, ext_id in load_filepaths_and_text(self.conf['TTM']['models'][tacotron_name]['speaker_ids_file'])}
     
     
     def get_closest_names(self, names):

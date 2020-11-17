@@ -30,7 +30,10 @@ try:
     
     time.sleep(10.0)# grace period (in case the processes are ending due to finishing the training run)
     for p in workers:# if the some of the subprocesses are still alive, kill the remaining processes.
-        os.killpg(os.getpgid(p.pid), signal.SIGTERM)
+        try:
+            os.killpg(os.getpgid(p.pid), signal.SIGTERM)
+        except Exception:
+            pass
 except KeyboardInterrupt:
     # if the user does a KeyboardInterrupt (Ctrl+C), forward the KeyboardInterrupt to every GPU.
     print("Got KeyboardInterrupt. Killing Subprocesses!\n")    
@@ -43,7 +46,10 @@ except KeyboardInterrupt:
         for i in range(num_interrupt_attemps):
             for p in workers:
                 if p.poll() is None:
-                    os.killpg(os.getpgid(p.pid), signal.SIGINT)
+                    try:
+                        os.killpg(os.getpgid(p.pid), signal.SIGINT)
+                    except Exception:
+                        pass
             if not all(p.poll() is not None for p in workers):
                 time.sleep(0.2)
         
@@ -58,4 +64,7 @@ except KeyboardInterrupt:
         if not all_stopped:
             for p in workers:# kill the remaining processes if they don't stop via KeyboardInterrupt in the time_limit.
                 if p.poll() is None:
-                    os.killpg(os.getpgid(p.pid), signal.SIGTERM)
+                    try:
+                        os.killpg(os.getpgid(p.pid), signal.SIGTERM)
+                    except Exception:
+                        pass

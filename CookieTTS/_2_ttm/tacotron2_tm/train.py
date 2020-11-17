@@ -199,9 +199,13 @@ def prepare_directories_and_logger(hparams, args):
     return logger
 
 
-def warm_start_force_model(checkpoint_path, model):
+def warm_start_force_model(checkpoint_path, model, resGAN):
     assert os.path.isfile(checkpoint_path)
     print(f"Warm starting model from checkpoint '{checkpoint_path}'")
+    
+    if resGAN is not None and os.path.exists(checkpoint_path+'_resdis'):
+        resGAN.load_state_dict_from_file(checkpoint_path+'_resdis')
+    
     checkpoint_dict = torch.load(checkpoint_path, map_location='cpu')
     pretrained_dict = checkpoint_dict['state_dict']
     model_dict = model.state_dict()
@@ -221,9 +225,13 @@ def warm_start_force_model(checkpoint_path, model):
     return model, iteration, saved_lookup
 
 
-def warm_start_model(checkpoint_path, model, ignore_layers):
+def warm_start_model(checkpoint_path, model, resGAN, ignore_layers):
     assert os.path.isfile(checkpoint_path)
     print("Warm starting model from checkpoint '{}'".format(checkpoint_path))
+    
+    if resGAN is not None and os.path.exists(checkpoint_path+'_resdis'):
+        resGAN.load_state_dict_from_file(checkpoint_path+'_resdis')
+    
     checkpoint_dict = torch.load(checkpoint_path, map_location='cpu')
     model_dict = checkpoint_dict['state_dict']
     if len(ignore_layers) > 0:
@@ -239,9 +247,13 @@ def warm_start_model(checkpoint_path, model, ignore_layers):
     return model, iteration, saved_lookup
 
 
-def load_checkpoint(checkpoint_path, model, optimizer, best_val_loss_dict, best_loss_dict, best_validation_loss=1e3, best_inf_attsc=-99.):
+def load_checkpoint(checkpoint_path, model, optimizer, resGAN, best_val_loss_dict, best_loss_dict, best_validation_loss=1e3, best_inf_attsc=-99.):
     assert os.path.isfile(args.checkpoint_path)
     print("Loading checkpoint '{}'".format(args.checkpoint_path))
+    
+    if resGAN is not None and os.path.exists(checkpoint_path+'_resdis'):
+        resGAN.load_state_dict_from_file(checkpoint_path+'_resdis')
+    
     checkpoint_dict = torch.load(args.checkpoint_path, map_location='cpu')
     
     model.load_state_dict(checkpoint_dict['state_dict'])# load model weights
@@ -272,11 +284,14 @@ def load_checkpoint(checkpoint_path, model, optimizer, best_val_loss_dict, best_
     return model, optimizer, learning_rate, iteration, best_validation_loss, best_inf_attsc, saved_lookup, best_val_loss_dict, best_loss_dict
 
 
-def save_checkpoint(model, optimizer, learning_rate, iteration, hparams, best_validation_loss, best_inf_attsc, average_loss,
+def save_checkpoint(model, optimizer, resGAN, learning_rate, iteration, hparams, best_validation_loss, best_inf_attsc, average_loss,
                     best_val_loss_dict, best_loss_dict, speaker_id_lookup, speakerlist, filepath):
     from CookieTTS.utils.dataset.utils import load_filepaths_and_text
     tqdm.write("Saving model and optimizer state at iteration {} to {}".format(
         iteration, filepath))
+    
+    if resGAN is not None:
+        resGAN.save_state_dict(filepath+'_resdis')
     
     speaker_name_lookup = {x[1]: x[2] for x in speakerlist}
     
@@ -560,12 +575,13 @@ def train(args, rank, group_name, hparams):
     
     if hparams.use_res_enc:
         resGAN = ResGAN(hparams).cuda()
+        resGAN.amp = amp
         resGAN.optimizer =  torch.optim.Adam(filter(lambda p: p.requires_grad, resGAN.discriminator.parameters()), lr=learning_rate, weight_decay=hparams.weight_decay)
         #resGAN.optimizer = apexopt.FusedAdam(filter(lambda p: p.requires_grad, resGAN.discriminator.parameters()), lr=learning_rate, weight_decay=hparams.weight_decay)
         if hparams.fp16_run:
-            _ = amp.initialize(model, resGAN.optimizer, opt_level=f'O{hparams.fp16_run_optlvl}')
-            resGAN.optimizer = _[1]
+            _ = amp.initialize(resGAN.discriminator, resGAN.optimizer, opt_level=f'O{hparams.fp16_run_optlvl}')
             resGAN.discriminator = _[0]
+            resGAN.optimizer     = _[1]
         if hparams.distributed_run:
             _ = apply_gradient_allreduce(resGAN.discriminator)
             resGAN.discriminator = _
@@ -621,12 +637,12 @@ def train(args, rank, group_name, hparams):
     if args.checkpoint_path is not None:
         if args.warm_start:
             model, iteration, saved_lookup = warm_start_model(
-                args.checkpoint_path, model, hparams.ignore_layers)
+                args.checkpoint_path, model, resGAN, hparams.ignore_layers)
         elif args.warm_start_force:
             model, iteration, saved_lookup = warm_start_force_model(
-                args.checkpoint_path, model)
+                args.checkpoint_path, model, resGAN)
         else:
-            _ = load_checkpoint(args.checkpoint_path, model, optimizer, best_val_loss_dict, best_loss_dict)
+            _ = load_checkpoint(args.checkpoint_path, model, optimizer, resGAN, best_val_loss_dict, best_loss_dict)
             model, optimizer, _learning_rate, iteration, best_validation_loss, best_inf_attsc, saved_lookup, best_val_loss_dict, best_loss_dict = _
             if hparams.use_saved_learning_rate:
                 learning_rate = _learning_rate
@@ -805,7 +821,7 @@ def train(args, rank, group_name, hparams):
                         # save model checkpoint like normal
                         if rank == 0:
                             checkpoint_path = os.path.join(args.output_directory, "checkpoint_{}".format(iteration))
-                            save_checkpoint(model, optimizer, learning_rate, iteration, hparams, best_validation_loss, best_inf_attsc, average_loss, best_val_loss_dict, best_loss_dict, speaker_lookup, speakerlist, checkpoint_path)
+                            save_checkpoint(model, optimizer, resGAN, learning_rate, iteration, hparams, best_validation_loss, best_inf_attsc, average_loss, best_val_loss_dict, best_loss_dict, speaker_lookup, speakerlist, checkpoint_path)
                     
                     if iteration%dump_filelosses_interval==0:
                         print("Updating File_losses dict!")
@@ -825,14 +841,14 @@ def train(args, rank, group_name, hparams):
                             if rank == 0 and hparams.save_best_val_model:
                                 checkpoint_path = os.path.join(args.output_directory, "best_val_model")
                                 save_checkpoint(
-                                    model, optimizer, learning_rate, iteration, hparams, best_validation_loss, max(best_inf_attsc, val_loss),
+                                    model, optimizer, resGAN, learning_rate, iteration, hparams, best_validation_loss, max(best_inf_attsc, val_loss),
                                     average_loss, best_val_loss_dict, best_loss_dict, speaker_lookup, speakerlist, checkpoint_path)
                         if (valatt_loss > best_inf_attsc):
                             best_inf_attsc = valatt_loss
                             if rank == 0 and hparams.save_best_inf_attsc:
                                 checkpoint_path = os.path.join(args.output_directory, "best_inf_attsc")
                                 save_checkpoint(
-                                    model, optimizer, learning_rate, iteration, hparams, best_validation_loss, best_inf_attsc,
+                                    model, optimizer, resGAN, learning_rate, iteration, hparams, best_validation_loss, best_inf_attsc,
                                     average_loss, best_val_loss_dict, best_loss_dict, speaker_lookup, speakerlist, checkpoint_path)
                         just_did_val = True
                     

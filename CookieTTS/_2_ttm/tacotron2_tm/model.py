@@ -1055,7 +1055,7 @@ class Tacotron2(nn.Module):
                 outputs[key] = input
         return outputs
     
-    def inference(self, text_seq, text_lengths, speaker_id, torchmoji_hdn, gt_sylps=None, return_hidden_state=False):# [B, enc_T], [B], [B], [B], [B, tm_dim]
+    def inference(self, text_seq, text_lengths, speaker_id, torchmoji_hdn, gt_sylps=None, gt_mel=None, return_hidden_state=False):# [B, enc_T], [B], [B], [B], [B, tm_dim]
         
         memory = []
         
@@ -1082,7 +1082,10 @@ class Tacotron2(nn.Module):
         
         # (Residual Encoder) gt_mel -> res_embed
         if hasattr(self, 'res_enc'):
-            res_embed, zr, r_mu, r_logvar = self.res_enc(gt_mel, rand_sampling=False)# -> [B, embed]
+            if gt_mel is not None:
+                res_embed, zr, r_mu, r_logvar = self.res_enc(gt_mel, rand_sampling=False)# -> [B, embed]
+            else:
+                res_embed = self.res_enc.prior(encoder_outputs, std=0.0)# -> [B, embed]
             res_embed = res_embed[:, None].repeat(1, encoder_outputs.size(1), 1)# -> [B, txt_T, embed]
             memory.append(res_embed)
         
@@ -1145,20 +1148,57 @@ class ResGAN(nn.Module):
         self.fp16_run    = hparams.fp16_run
         self.n_symbols, self.n_speakers = hparams.n_symbols, hparams.n_speakers
     
+    def state_dict(self):
+        dict_ = {
+        "discriminator_state_dict": self.discriminator.state_dict(),
+            "optimzier_state_dict": self.optimizer.state_dict(),
+                     "gt_speakers": self.gt_speakers,
+                     "gt_sym_durs": self.gt_sym_durs,
+                        "fp16_run": self.fp16_run,
+                       "n_symbols": self.n_symbols,
+                      "n_speakers": self.n_speakers,
+        }
+        return dict_
+    
+    def save_state_dict(self, path):
+        torch.save(self.state_dict(), path)
+    
+    def load_state_dict_from_file(self, path):
+        self.load_state_dict(torch.load(path, map_location='cpu'))
+    
+    def load_state_dict(self, dict_):
+        local_dict = self.discriminator.state_dict()
+        new_dict   = dict_['discriminator_state_dict']
+        local_dict.update({k: v for k,v in new_dict.items() if k in local_dict and local_dict[k].shape == new_dict[k].shape})
+        n_missing_keys = len([k for k,v in new_dict.items() if not (k in local_dict and local_dict[k].shape == new_dict[k].shape)])
+        self.discriminator.load_state_dict(local_dict)
+        del local_dict, new_dict
+        
+        if n_missing_keys == 0:
+            self.optimizer.load_state_dict(dict_['optimzier_state_dict'])
+        
+        if False:
+            self.gt_speakers = dict_["gt_speakers"]
+            self.gt_sym_durs = dict_["gt_sym_durs"]
+            self.fp16_run    = dict_["fp16_run"]
+            self.n_symbols   = dict_["n_symbols"]
+            self.n_speakers  = dict_["n_speakers"]
+    
     def forward(self, pred, reduced_loss_dict, loss_dict, loss_scalars):
         assert self.optimizer is not None
         self.optimizer.zero_grad()
         
         _, _, mulogvar = pred['res_enc_pkg']
         out = self.discriminator(mulogvar.detach())
+        B = out.shape[0]
         pred_sym_durs, pred_speakers = out.squeeze(-1).split([self.n_symbols, self.n_speakers], dim=1)
-        
-        loss_dict['res_enc_dMSE'] = nn.MSELoss(reduction='sum')(pred_sym_durs, self.gt_sym_durs) + nn.MSELoss(reduction='sum')(pred_speakers, self.gt_speakers)
+        pred_speakers = torch.nn.functional.softmax(pred_speakers, dim=1)
+        loss_dict['res_enc_dMSE'] = (nn.L1Loss(reduction='sum')(pred_sym_durs, self.gt_sym_durs)*0.01 + nn.MSELoss(reduction='sum')(pred_speakers, self.gt_speakers))/B
         loss = loss_dict['res_enc_dMSE'] * loss_scalars['res_enc_dMSE_weight']
         reduced_loss_dict['res_enc_dMSE'] = loss_dict['res_enc_dMSE'].item()
         
         if self.fp16_run:
-            with amp.scale_loss(loss, optimizer) as scaled_loss:
+            with self.amp.scale_loss(loss, self.optimizer) as scaled_loss:
                 scaled_loss.backward()
         else:
             loss.backward()
