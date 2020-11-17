@@ -1154,14 +1154,14 @@ class ResGAN(nn.Module):
         pred_sym_durs, pred_speakers = out.squeeze(-1).split([self.n_symbols, self.n_speakers], dim=1)
         
         loss_dict['res_enc_dMSE'] = nn.MSELoss(reduction='sum')(pred_sym_durs, self.gt_sym_durs) + nn.MSELoss(reduction='sum')(pred_speakers, self.gt_speakers)
-        loss_dict['res_enc_dMSE'] *= loss_scalars['res_enc_dMSE_weight']
+        loss = loss_dict['res_enc_dMSE'] * loss_scalars['res_enc_dMSE_weight']
         reduced_loss_dict['res_enc_dMSE'] = loss_dict['res_enc_dMSE'].item()
         
         if self.fp16_run:
-            with amp.scale_loss(loss_dict['res_enc_dMSE'], optimizer) as scaled_loss:
+            with amp.scale_loss(loss, optimizer) as scaled_loss:
                 scaled_loss.backward()
         else:
-            loss_dict['res_enc_dMSE'].backward()
+            loss.backward()
         
         self.optimizer.step()
         

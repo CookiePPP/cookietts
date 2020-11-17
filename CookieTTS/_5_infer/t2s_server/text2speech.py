@@ -646,7 +646,7 @@ class T2S:
             audio_bs = len(audio_batch)
             for j, audio in enumerate(audio_batch):
                 # remove Vocoder padding
-                audio_end = output_lengths[j] * self.ttm_hparams.hop_length
+                audio_end = output_lengths[j] * self.MTW_conf['sampling_rate']
                 audio = audio[:,:audio_end]
                 
                 # remove Tacotron2 padding
@@ -660,7 +660,7 @@ class T2S:
                 
                 # add silence to clips (ignore last clip)
                 if cat_silence_s:
-                    cat_silence_samples = int(cat_silence_s*self.ttm_hparams.sampling_rate)
+                    cat_silence_samples = int(cat_silence_s*self.MTW_conf['sampling_rate'])
                     audio = torch.nn.functional.pad(audio, (0, cat_silence_samples))
                 
                 # scale audio for int16 output
@@ -735,7 +735,7 @@ class T2S:
                 print(f"{text_index}/{total_len}, {eta_finish:.2f}mins remaining.")
                 del time_per_clip, eta_finish, remaining_files, time_elapsed
             
-            audio_seconds_generated = round(audio_len/self.ttm_hparams.sampling_rate,3)
+            audio_seconds_generated = round(audio_len/self.MTW_conf['sampling_rate'],3)
             time_to_gen = round(time.time()-start_time,3)
             if show_time_to_gen:
                 print(f"Generated {audio_seconds_generated}s of audio in {time_to_gen}s wall time - so far. (best of {tries.sum().astype('int')} tries this pass) ({audio_seconds_generated/time_to_gen:.2f}xRT) ({sum([x<0.6 for x in all_best_scores])/len(all_best_scores):.1%}Failure Rate)")
