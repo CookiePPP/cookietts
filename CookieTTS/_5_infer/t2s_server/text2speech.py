@@ -646,7 +646,7 @@ class T2S:
             audio_bs = len(audio_batch)
             for j, audio in enumerate(audio_batch):
                 # remove Vocoder padding
-                audio_end = output_lengths[j] * self.MTW_conf['sampling_rate']
+                audio_end = output_lengths[j] * self.MTW_conf['hop_size']
                 audio = audio[:,:audio_end]
                 
                 # remove Tacotron2 padding
