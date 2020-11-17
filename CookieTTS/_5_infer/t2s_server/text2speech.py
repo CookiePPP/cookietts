@@ -178,6 +178,11 @@ class T2S:
         tacotron_path = self.conf['TTM']['models'][self.ttm_current]['modelpath'] # get first available Tacotron
         self.tacotron, self.ttm_hparams, self.ttm_sp_name_lookup, self.ttm_sp_id_lookup = self.load_tacotron2(tacotron_path)
         
+        # override since my checkpoints are still missing speaker names
+        if self.conf['TTM']["models"][self.ttm_current]['use_speaker_ids_file_override']:
+            speaker_ids_fpath = self.conf['TTM']["models"][self.ttm_current]['speaker_ids_file']
+            self.ttm_sp_name_lookup = {name: self.ttm_sp_id_lookup[int(ext_id)] for _, name, ext_id, *_ in load_filepaths_and_text(speaker_ids_fpath)}
+        
         # load HiFi-GAN
         self.MTW_current = self.conf['MTW']['default_model']
         assert self.MTW_current in self.conf['MTW']['models'].keys(), "HiFi-GAN default model not found in config models"
@@ -186,11 +191,6 @@ class T2S:
         
         # load torchMoji
         self.tm_sentence_tokenizer, self.tm_torchmoji = self.load_torchmoji()
-        
-        # override since my checkpoints are still missing speaker names
-        if self.conf['TTM']['use_speaker_ids_file_override']:
-            speaker_ids_fpath = self.conf['TTM']['speaker_ids_file']
-            self.ttm_sp_name_lookup = {name: self.ttm_sp_id_lookup[int(ext_id)] for _, name, ext_id in load_filepaths_and_text(speaker_ids_fpath)}
         
         # load arpabet/pronounciation dictionary
         dict_path = self.conf['dict_path']
@@ -318,6 +318,7 @@ class T2S:
         
         tacotron_speaker_name_lookup = checkpoint['speaker_name_lookup'] # save speaker name lookup
         tacotron_speaker_id_lookup = checkpoint['speaker_id_lookup'] # save speaker_id lookup
+        
         print(f"This Tacotron model has been trained for {checkpoint['iteration']} Iterations.")
         return model, checkpoint_hparams, tacotron_speaker_name_lookup, tacotron_speaker_id_lookup
     

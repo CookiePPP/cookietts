@@ -47,10 +47,13 @@ def train(rank, a, h):
     steps = 0
     if cp_g is not None:
         state_dict_g = load_checkpoint(cp_g, device)
-        generator.load_state_dict(state_dict_g['generator'])
-        del state_dict_g
+        gsd = generator.state_dict()
+        gsd.update({k: v for k,v in state_dict_g['generator'].items() if k in gsd and state_dict_g['generator'][k].shape == gsd[k].shape})
+        missing_keys = {k: v for k,v in state_dict_g['generator'].items() if not (k in gsd and state_dict_g['generator'][k].shape == gsd[k].shape)}.keys()
+        generator.load_state_dict(gsd)
+        del gsd, state_dict_g
     
-    if cp_do is None:
+    if cp_do is None or len(missing_keys):
         state_dict_do = None
         last_epoch = -1
     else:
@@ -95,6 +98,7 @@ def train(rank, a, h):
                               batch_size=h.batch_size,
                               pin_memory=True,
                               drop_last=True)
+    assert len(train_loader), 'No audio files in dataset!'
     
     if rank == 0:
         validset = MelDataset(validation_filelist, h.segment_size, h.n_fft, h.num_mels,
@@ -203,7 +207,7 @@ def train(rank, a, h):
                     generator.eval()
                     torch.cuda.empty_cache()
                     val_err_tot = 0
-                    for j, batch in tqdm(enumerate(validation_loader)):
+                    for j, batch in tqdm(enumerate(validation_loader), total=len(validation_loader)):
                         x, y, _, y_mel = batch
                         y_g_hat = generator(x.to(device))
                         y_hat_spec = STFT.get_mel(y_g_hat.squeeze(1))

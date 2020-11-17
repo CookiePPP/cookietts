@@ -34,24 +34,25 @@ def create_hparams(hparams_string=None, verbose=False):
         ## Freezing/Reseting Modules   ##
         #################################
         print_layer_names_during_startup = False,# will print every modules key to be used below.
-        ignore_layers    = ["layers_here"],# for `warm_start`-ing
+        ignore_layers    = ["layers_here"],# for `--warm_start`-ing
         frozen_modules   = ["layers_here"],# only the module names are required e.g: "encoder." will freeze all parameters INSIDE the encoder recursively
         unfrozen_modules = ["layers_here"],# modules that are unfrozen
         
         #################################
         ## Logging / Verbosity         ##
         #################################
-        n_tensorboard_outputs=5,# number of items from validation so show in Tensorboard
+        n_tensorboard_outputs=8,# number of items from validation so show in Tensorboard
         n_tensorboard_outputs_highloss=5, # NOT IMPLEMENTED # top X tacotron outputs with worst validation loss.
         n_tensorboard_outputs_badavgatt=5,# NOT IMPLEMENTED # top X tacotron outputs with weakest average attention.
         
         #################################
         ## Batch Size / Segment Length ##
         #################################
-        batch_size    =32,# controls num of files processed in parallel per GPU
-        val_batch_size=32,# for more precise comparisons between models, constant batch_size is useful
+        batch_size    =40,# controls num of files processed in parallel per GPU
+        val_batch_size=40,# for more precise comparisons between models, constant batch_size is useful
         use_TBPTT  =False,# continue processing longer files into the next training iteration
         max_segment_length=768,# max mel length till a segment is sliced.
+        max_chars_length  =192,# max text input till text is sliced. I use segment_length/4.
         
         sort_text_len_decending = True,# IMPLEMENTED, NEEDS TO BE TESTED IN THE DISABLED POSITION
                                      # Should allow more flexibility with TBPTT and remove quite a few problems when disabled.
@@ -64,8 +65,8 @@ def create_hparams(hparams_string=None, verbose=False):
                                       # Only applies to training dataset.
                                       # Only updates at the end of each epoch.
         
-        num_workers    =16,# (train) Number of threads for dataloading per GPU
-        val_num_workers=16,# (eval)  Number of threads for dataloading per GPU
+        num_workers    =8,# (train) Number of threads for dataloading per GPU
+        val_num_workers=2,# (eval)  Number of threads for dataloading per GPU
         prefetch_factor=8,# NOT IMPLEMENTED - Requires Pytorch 1.7 (so not right now)# Number of samples loaded in advance by each worker.
         
         ###################################
@@ -79,13 +80,13 @@ def create_hparams(hparams_string=None, verbose=False):
         validation_files='/media/cookie/Samsung 860 QVO/ClipperDatasetV2/filelists/validation_taca2.txt',
         
         # if data_source is 1:
-        dataset_folder = '/media/cookie/MoreStable/HiFiDatasets',
+        dataset_folder = '/media/cookie/WD6TB/TTS/HiFiDatasets',
         dataset_audio_filters= ['*.wav','*.flac',],
         dataset_audio_rejects= ['*_Very Noisy_*',],
         dataset_p_val = 0.01,# portion of dataset for Validation
         dataset_min_duration = 1.1,# minimum duration in seconds for audio files to be added.
-        dataset_min_chars    =   7, # min number of letters/text that a transcript should have to be used.
-        dataset_max_chars    = 160, # min number of letters/text that a transcript should have to be used.
+        dataset_min_chars    =   7, # min number of letters/text that a transcript should have to be added to the audiofiles list.
+        dataset_max_chars    = 240, # min number of letters/text that a transcript should have to be added to the audiofiles list.
         
         inference_equally_sample_speakers=True,# Will change the 'inference' results to use the same number of files from each speaker.
                                                # This makes sense if the speakers you want to clone aren't the same as the speakers with the most audio data.
@@ -123,18 +124,18 @@ def create_hparams(hparams_string=None, verbose=False):
         ## Audio Parameters             ##
         ##################################
         sampling_rate=22050,
-        target_lufs= -27.0, # Loudness each file is rescaled to, use None for original file loudness.
+        target_lufs  =-27.0,# Loudness each file is rescaled to, use None for original file loudness.
         
-        trim_enable = False,# set to False to disable trimming completely
+        trim_enable = True,# set to False to disable trimming completely
         trim_cache_audio = False,# save trimmed audio to disk to load later. Saves CPU usage, uses more disk space.
                                  # modifications to params below do not apply to already cached files.
-        trim_margin_left  = [0.0125]*5,
-        trim_margin_right = [0.0125]*5,
-        trim_top_db       = [50  ,46  ,46  ,46  ,46  ],
-        trim_window_length= [8192,4096,2048,1024,512 ],
-        trim_hop_length   = [1024,512 ,256 ,128 ,128 ],
-        trim_ref          = ['amax']*5,
-        trim_emphasis_str = [0.0 ,0.0 ,0.0 ,0.0 ,0.0 ],
+        trim_margin_left  = [0.0125]*3,
+        trim_margin_right = [0.0125]*3,
+        trim_ref          = ['amax']*3,
+        trim_top_db       = [50  ,46  ,46  ],
+        trim_window_length= [8192,2048,1024],
+        trim_hop_length   = [1024,256 ,128 ],
+        trim_emphasis_str = [0.0 ,0.0 ,0.0 ],
         
         ##################################
         ## Spectrogram Parameters       ##
@@ -216,14 +217,14 @@ def create_hparams(hparams_string=None, verbose=False):
         context_frames=1,   # TODO TODO TODO TODO TODO
         
         # (Decoder) Prenet
-        prenet_dim=256,        # 256 baseline
-        prenet_layers=2,       # 2 baseline
+        prenet_dim   =256,     # 256 baseline
+        prenet_layers=  2,     # 2 baseline
         prenet_batchnorm=False,# False baseline
         prenet_bn_momentum=0.5,# Inverse smoothing factor, 0.1 = high smoothing, 0.9 = Almost no smoothing
         p_prenet_dropout  =0.5,# 0.5 baseline
         
         prenet_speaker_embed_dim=0,# speaker_embedding before encoder
-        prenet_noise   =0.00,# Add Gaussian Noise to Prenet inputs. std defined here.
+        prenet_noise   =0.05,# Add Gaussian Noise to Prenet inputs. std defined here.
         prenet_blur_min=0.00,# Apply random vertical blur between prenet_blur_min
         prenet_blur_max=0.00,#                                and prenet_blur_max
                              # Set max to False or Zero to disable

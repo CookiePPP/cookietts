@@ -7,8 +7,8 @@ import numpy as np
 from librosa.util import normalize
 from scipy.io.wavfile import read
 from librosa.filters import mel as librosa_mel_fn
-from CookieTTS._4_mtw.hifigan.nvSTFT import load_wav_to_torch
 from CookieTTS._4_mtw.hifigan.nvSTFT import STFT as STFT_Class
+from CookieTTS.utils.dataset.utils import load_wav_to_torch
 from CookieTTS.utils.dataset.data_utils import DTW
 from glob import glob
 from tqdm import tqdm

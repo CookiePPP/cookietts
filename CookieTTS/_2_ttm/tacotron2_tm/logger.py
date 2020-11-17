@@ -69,20 +69,20 @@ class Tacotron2Logger(SummaryWriter):
         
         for idx in range(n_items):# plot target spectrogram of longest audio file(s)
             self.add_image(
-                f"{prepend}_alignment/{idx}",
+                f"{prepend}_{idx}/alignment",
                 plot_alignment_to_numpy(y_pred['alignments'][idx].data.cpu().numpy().T),
                 iteration, dataformats='HWC')
             self.add_image(
-                f"{prepend}_mel_pred/{idx}",
+                f"{prepend}_{idx}/mel_pred",
                 plot_spectrogram_to_numpy(y_pred['pred_mel_postnet'][idx].data.cpu().numpy()),
                 iteration, dataformats='HWC')
             self.add_image(
-                f"{prepend}_mel_SE/{idx}",
+                f"{prepend}_{idx}/mel_SE",
                 plot_spectrogram_to_numpy(mel_L1_map[idx].data.cpu().numpy()),
                 iteration, dataformats='HWC')
             if self.plotted_targets_val < 2:
                 self.add_image(
-                    f"{prepend}_mel_gt/{idx}",
+                    f"{prepend}_{idx}/mel_gt",
                     plot_spectrogram_to_numpy(y['gt_mel'][idx].data.cpu().numpy()),
                     iteration, dataformats='HWC')
         self.plotted_targets_val +=1 # target spect doesn't change so only needs to be plotted once.
@@ -99,16 +99,16 @@ class Tacotron2Logger(SummaryWriter):
         
         for idx in range(n_items):# plot target spectrogram of longest audio file(s)
             self.add_image(
-                f"{prepend}_alignment/{idx}",
+                f"{prepend}_{idx}/alignment",
                 plot_alignment_to_numpy(y_pred['alignments'][idx].data.cpu().numpy().T),
                 iteration, dataformats='HWC')
             self.add_image(
-                f"{prepend}_mel_pred/{idx}",
+                f"{prepend}_{idx}/mel_pred",
                 plot_spectrogram_to_numpy(y_pred['pred_mel_postnet'][idx].data.cpu().numpy()),
                 iteration, dataformats='HWC')
             if self.plotted_targets_inf < 2:
                 self.add_image(
-                    f"{prepend}_mel_gt/{idx}",
+                    f"{prepend}_{idx}/mel_gt",
                     plot_spectrogram_to_numpy(y['gt_mel'][idx].data.cpu().numpy()),
                     iteration, dataformats='HWC')
         self.plotted_targets_inf +=1 # target spect doesn't change so only needs to be plotted ~~once~~ a couple times.

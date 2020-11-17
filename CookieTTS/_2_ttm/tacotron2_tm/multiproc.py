@@ -26,32 +26,36 @@ try:
     while all_running:
         if any(p.poll() is not None for p in workers):# if any one of the graphics cards is not running...
             all_running = False#                        set all_running to False
-        time.sleep(1.0)# and time between polls
+        time.sleep(0.5)# and time between polls
     
     time.sleep(10.0)# grace period (in case the processes are ending due to finishing the training run)
-    for p in workers:# if the loop exited unexpectedly, kill the remaining processes.
-        if p.poll() is None:
-            p.terminate()
+    for p in workers:# if the some of the subprocesses are still alive, kill the remaining processes.
+        os.killpg(os.getpgid(p.pid), signal.SIGTERM)
 except KeyboardInterrupt:
     # if the user does a KeyboardInterrupt (Ctrl+C), forward the KeyboardInterrupt to every GPU.
-    print("Got KeyboardInterrupt. Killing Subprocesses!\n")
-    num_interrupt_attemps = 3
-    for i in range(num_interrupt_attemps):
-        for p in workers:
-            if p.poll() is None:
-                p.send_signal(signal.SIGINT)
-        if not all(p.poll() is not None for p in workers):
-            time.sleep(0.2)
-    
-    all_stopped = False
-    start_time = time.time()
-    time_limit = 5.0
-    while (not all_stopped) and (time.time()-start_time) < time_limit:
-        if all(p.poll() is not None for p in workers):
-            all_stopped = True
-        time.sleep(0.2)# and time between polls
-    
-    if not all_stopped:
+    print("Got KeyboardInterrupt. Killing Subprocesses!\n")    
+    if True:
         for p in workers:# kill the remaining processes if they don't stop via KeyboardInterrupt in the time_limit.
             if p.poll() is None:
-                p.terminate()
+                os.killpg(os.getpgid(p.pid), signal.SIGTERM)
+    else:
+        num_interrupt_attemps = 3
+        for i in range(num_interrupt_attemps):
+            for p in workers:
+                if p.poll() is None:
+                    os.killpg(os.getpgid(p.pid), signal.SIGINT)
+            if not all(p.poll() is not None for p in workers):
+                time.sleep(0.2)
+        
+        all_stopped = False
+        start_time = time.time()
+        time_limit = 5.0
+        while (not all_stopped) and (time.time()-start_time) < time_limit:
+            if all(p.poll() is not None for p in workers):
+                all_stopped = True
+            time.sleep(0.2)# and time between polls
+        
+        if not all_stopped:
+            for p in workers:# kill the remaining processes if they don't stop via KeyboardInterrupt in the time_limit.
+                if p.poll() is None:
+                    os.killpg(os.getpgid(p.pid), signal.SIGTERM)

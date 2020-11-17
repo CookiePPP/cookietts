@@ -1,4 +1,5 @@
 import time
+import os
 
 import torch
 import torch.nn as nn
@@ -241,6 +242,9 @@ class Tacotron2Loss(nn.Module):
                                                 output_lengths[pres_prev_state==0.0])
             del alignments, text_lengths, output_lengths
         
+        if True:# Residual Encoder KL Divergence Loss
+            zembed, zr, zmu, zlogvar = pred['']
+        
         #################################################################
         ## Colate / Merge the Losses into a single tensor with scalars ##
         #################################################################
@@ -262,10 +266,13 @@ class Tacotron2Loss(nn.Module):
                 file_losses[audiopath]['char_max_dur']      =  char_max_dur[i].cpu().item()
                 file_losses[audiopath]['char_min_dur']      =  char_min_dur[i].cpu().item()
                 file_losses[audiopath]['char_avg_dur']      =  char_avg_dur[i].cpu().item()
-                diagonality_path = f'{os.path.splitext(audiopath)[0]}_diag.pt'
-                torch.save(diagonalitys[i].cpu().clone(), diagonality_path)
-                avg_prob_path = f'{os.path.splitext(audiopath)[0]}_avgp.pt'
-                torch.save(avg_prob[i].cpu().clone(), avg_prob)
+                
+                if 0:
+                    diagonality_path = f'{os.path.splitext(audiopath)[0]}_diag.pt'
+                    torch.save(diagonalitys[i].detach().clone().cpu(), diagonality_path)
+                    
+                    avg_prob_path = f'{os.path.splitext(audiopath)[0]}_avgp.pt'
+                    torch.save(    avg_prob[i].detach().clone().cpu(), avg_prob_path   )
             
             pred_gate = pred['pred_gate_logits'].sigmoid()
             pred_gate[:, :5] = 0.0

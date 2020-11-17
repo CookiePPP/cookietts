@@ -15,6 +15,7 @@ from CookieTTS.utils.model.GPU import to_gpu
 from CookieTTS.utils.model.utils import get_mask_from_lengths, dropout_frame
 
 from CookieTTS._2_ttm.tacotron2_ssvae.nets.SylpsNet import SylpsNet
+from CookieTTS._2_ttm.tacotron2_tm.modules_vae import ReferenceEncoder
 from CookieTTS._2_ttm.untts.model import MaskedBatchNorm1d, LnBatchNorm1d
 
 drop_rate = 0.5
@@ -293,7 +294,7 @@ class Encoder(nn.Module):
         if self.encoder_speaker_embed_dim and self.encoder_concat_speaker_embed == 'before_lstm':
             text = torch.cat((text, speaker_embedding), dim=1) # [B, embed, sequence]
         
-        text = text.transpose(1, 2)
+        text = text.transpose(1, 2)# [B, txt_T, C]
         
         if text_lengths is not None:
             # pytorch tensor are not reversible, hence the conversion
@@ -940,21 +941,23 @@ class Tacotron2(nn.Module):
         
         self.speaker_embedding_dim = hparams.speaker_embedding_dim
         if self.speaker_embedding_dim:
-            self.speaker_embedding = nn.Embedding(
-                hparams.n_speakers, self.speaker_embedding_dim)
+            self.speaker_embedding = nn.Embedding(hparams.n_speakers, self.speaker_embedding_dim)
         
         self.encoder = Encoder(hparams)
-        self.decoder = Decoder(hparams)
-        if not hasattr(hparams, 'use_postnet') or hparams.use_postnet:
-            self.postnet = Postnet(hparams)
         self.sylps_net = SylpsNet(hparams)
+        
         self.tm_linear = nn.Linear(hparams.torchMoji_attDim, hparams.torchMoji_crushedDim)
         if hparams.torchMoji_BatchNorm:
             self.tm_bn = MaskedBatchNorm1d(hparams.torchMoji_attDim, eval_only_momentum=False, momentum=0.05)
         
-        if hparams.use_postnet_generator_and_discriminator if hasattr(hparams, "use_postnet_generator_and_discriminator") else False:
-            self.postnet_grad_propagation_scalar = hparams.adv_postnet_grad_propagation
-            self.adversarial_postnet = GANPostnet(hparams)
+        if not hasattr(hparams, 'res_enc_n_tokens'):
+            hparams.res_enc_n_tokens = 0
+        if hasattr(hparams, 'use_res_enc') and hparams.use_res_enc:
+            self.res_enc = ReferenceEncoder(hparams)
+        
+        self.decoder = Decoder(hparams)
+        if not hasattr(hparams, 'use_postnet') or hparams.use_postnet:
+            self.postnet = Postnet(hparams)
     
     def parse_batch(self, batch, device='cuda'):
         batch = {k: v.to(device) if type(v) == torch.Tensor else v for k,v in batch.items()}
@@ -969,7 +972,7 @@ class Tacotron2(nn.Module):
             outputs[0].data.masked_fill_(mask, 0.0)
             if outputs[1] is not None:
                 outputs[1].data.masked_fill_(mask, 0.0)
-            outputs[2].data.masked_fill_(mask[:, 0, :], 1e3)  # gate energies
+            outputs[2].data.masked_fill_(mask[:, 0, :], 1e3)# gate energies
         
         return outputs
     
@@ -992,18 +995,26 @@ class Tacotron2(nn.Module):
         memory.append(encoder_outputs)
         
         # (Speaker) speaker_id -> speaker_embed
-        speaker_embed = self.speaker_embedding(speaker_id)
-        memory.append( speaker_embed[:, None].repeat(1, encoder_outputs.size(1), 1) )
+        if hasattr(self, "speaker_embedding"):
+            speaker_embed = self.speaker_embedding(speaker_id)
+            memory.append( speaker_embed[:, None].repeat(1, encoder_outputs.size(1), 1) )
         
         # (SylpsNet) Sylps -> sylzu, mu, logvar
         sylzu, syl_mu, syl_logvar = self.sylps_net(gt_sylps)
         memory.append( sylzu[:, None].repeat(1, encoder_outputs.size(1), 1) )
         
         # (TorchMoji)
-        torchmoji_hdn = self.tm_bn(torchmoji_hdn).to(sylzu)# [B, hdn_dim]
+        if hasattr(self, 'tm_bn'):
+            torchmoji_hdn = self.tm_bn(torchmoji_hdn).to(sylzu)# [B, hdn_dim]
         torchmoji_hdn = self.tm_linear(torchmoji_hdn)#       [B, hdn_dim] -> [B, crushed_dim]
         torchmoji_hdn = torchmoji_hdn[:, None].repeat(1, encoder_outputs.size(1), 1)# [B, C] -> [B, txt_T, C]
         memory.append(torchmoji_hdn)
+        
+        # (Residual Encoder) gt_mel -> res_embed
+        if hasattr(self, 'res_enc'):
+            res_embed, zr, r_mu, r_logvar = self.res_enc(gt_mel, mel_lengths)# -> [B, embed]
+            res_embed = res_embed[:, None].repeat(1, encoder_outputs.size(1), 1)# -> [B, txt_T, embed]
+            memory.append(res_embed)
         
         # (Decoder/Attention) memory -> pred_mel
         memory = torch.cat(memory, dim=2)# concat along Embed dim # [B, txt_T, dim]
@@ -1051,18 +1062,26 @@ class Tacotron2(nn.Module):
         memory.append(encoder_outputs)
         
         # (Speaker) speaker_id -> speaker_embed
-        speaker_embed = self.speaker_embedding(speaker_id)
-        memory.append( speaker_embed[:, None].repeat(1, encoder_outputs.size(1), 1) )
+        if hasattr(self, "speaker_embedding"):
+            speaker_embed = self.speaker_embedding(speaker_id)
+            memory.append( speaker_embed[:, None].repeat(1, encoder_outputs.size(1), 1) )
         
         # (SylpsNet) Sylps -> sylzu, mu, logvar
         sylzu = self.sylps_net.infer_auto(gt_sylps or pred_sylps, rand_sampling=False)
         memory.append( sylzu[:, None].repeat(1, encoder_outputs.size(1), 1) )
         
         # (TorchMoji)
-        torchmoji_hdn = self.tm_bn(torchmoji_hdn).to(sylzu)# [B, hdn_dim]
+        if hasattr(self, 'tm_bn'):
+            torchmoji_hdn = self.tm_bn(torchmoji_hdn).to(sylzu)# [B, hdn_dim]
         torchmoji_hdn = self.tm_linear(torchmoji_hdn)#       [B, hdn_dim] -> [B, crushed_dim]
         torchmoji_hdn = torchmoji_hdn[:, None].repeat(1, encoder_outputs.size(1), 1)# [B, C] -> [B, txt_T, C]
         memory.append(torchmoji_hdn)
+        
+        # (Residual Encoder) gt_mel -> res_embed
+        if hasattr(self, 'res_enc'):
+            res_embed, zr, r_mu, r_logvar = self.res_enc(gt_mel, rand_sampling=False)# -> [B, embed]
+            res_embed = res_embed[:, None].repeat(1, encoder_outputs.size(1), 1)# -> [B, txt_T, embed]
+            memory.append(res_embed)
         
         # (Decoder/Attention) memory -> pred_mel
         memory = torch.cat(memory, dim=2)# concat along Embed dim # [B, txt_T, dim]

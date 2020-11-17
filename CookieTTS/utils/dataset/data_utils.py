@@ -45,7 +45,7 @@ def generate_filelist_from_datasets(DATASET_FOLDER,
         MIN_CHAR_LEN  =   7,
         MAX_CHAR_LEN  = 160,
         MIN_SPEAKER_DURATION_SECONDS=10,
-        valid_time = 720000.0,# set to 1hr for debugging # time_after_last_check_before_modifications_invalidate_the_dataset
+        valid_time = 7200.0,# set to 2hr for debugging # time_after_last_check_before_modifications_invalidate_the_dataset
         rank=0):
     if DATASET_CONF_FOLDER is None:
         DATASET_CONF_FOLDER = os.path.join(DATASET_FOLDER, 'meta')
@@ -403,8 +403,8 @@ def tryattr(obj, attr, default=None):
     for attr_ in attr:
         val = val or getattr(obj, attr_, '')
     if default is None:
-        assert val is not '', f'attr {attr} not found in obj'
-    elif val is '':
+        assert val != '', f'attr {attr} not found in obj'
+    elif val == '':
         return default
     return val
 
@@ -543,6 +543,7 @@ class TTSDataset(torch.utils.data.Dataset):
         self.rank       = hparams.rank
         self.total_batch_size   = hparams.batch_size * hparams.n_gpus # number of audio files being processed together
         self.max_segment_length = hparams.max_segment_length # frames
+        self.max_chars_length   = hparams.max_chars_length   # chars # doesn't get used unless TBPTT and random segments are disabled.
         
         self.update_filelist(self.filelist)
         
@@ -628,12 +629,13 @@ class TTSDataset(torch.utils.data.Dataset):
         
         self.filelist = [[line[0],f'{start_token}{filter_multi(line[1], filtered_chars)}{stop_token}', *line[2:]] for index, line in enumerate(self.filelist)]
         
-        print(f"{len([x for x in self.filelist if not os.path.exists(x[0])])} Files missing")
+        len_data = len(self.filelist)
         self.filelist = [x for x in self.filelist if os.path.exists(x[0])]
+        print(f"{len_data-len(self.filelist)} Files not found and being ignored.")
         
-        print("Done")
+        print("Done checking files!")
         print(audiopaths_length, "items in metadata file")
-        print(len(self.filelist), "validated and being used.")
+        print(len(self.filelist), "validated and being used for training.")
     
     def create_speaker_lookup_table(self, filelist, numeric_sort=True):
         """
@@ -744,7 +746,7 @@ class TTSDataset(torch.utils.data.Dataset):
                 audio, sampling_rate = torch.load(trimmed_audiopath), self.sampling_rate
             else:
                 audio, sampling_rate = self.get_audio(audiopath)
-                audio = audio[:int(sampling_rate*16)]
+                audio = audio[:int(sampling_rate*10.)]
                 audio_duration = len(audio)/sampling_rate
                 if self.trim_enable:
                     audio = self.trim_audio(audio, sampling_rate, file_path=audiopath)
@@ -830,6 +832,8 @@ class TTSDataset(torch.utils.data.Dataset):
             output['text_str'] = output['ptext_str'] if use_phones else output['gtext_str']
             if 'text' in args:
                 output['text'] = output['ptext_str'] if use_phones else output['gtext_str']# (randomly) convert to phonemes
+                if self.random_segments is False and (self.use_TBPTT and self.TBPTT) is False:# if not using TBPTT or Random Segments:
+                    output['text'] = output['text'][:self.max_chars_length]                   #   cut of the excess text that 99% won't be used in the first segment of audio.
                 output['text'] = self.get_text(output['text'])# convert text into tensor representation
         
         if any(arg in ('speaker_id','speaker_id_ext') for arg in args):
@@ -882,12 +886,12 @@ class TTSDataset(torch.utils.data.Dataset):
             if os.path.exists(avg_prob_path):
                 output['avg_prob'] = torch.load(avg_prob_path)
             else:
-                output['avg_prob'] = torch.tensor(0.55)
+                output['avg_prob'] = torch.tensor(0.6)
         
         ########################
         ## Trim into Segments ##
         ########################
-        if self.random_segments:
+        if self.random_segments is True:
             max_start = mel.shape[-1] - self.max_segment_length
             mel_offset = random.randint(0, max_start) if max_start > 0 else 0
         
@@ -1034,8 +1038,14 @@ class TTSDataset(torch.utils.data.Dataset):
         if self.force_load:
             while output is None:
                 try:
+                    start_time = time.time()
                     audiopath, text, speaker_id_ext, *_ = self.filelist[index]
                     output = self.get_item_from_fileline(index, audiopath, text, speaker_id_ext)
+                    elapsed_time = time.time()-start_time
+                    
+                    warning_load_time = 12.0 # if file takes longer than 12 seconds to load, print the audiopath for the user to inspect.
+                    if elapsed_time > warning_load_time:
+                        print(f"File took {elapsed_time:.1f}s to load!\n'{audiopath}'")
                 except Exception as ex:
                     print(f"Failed to load '{audiopath}'")
                     print(ex)
@@ -1176,6 +1186,9 @@ class Collate():
         out['alignments']        = self.collatea(batch, 'alignments',        ids_sorted, dtype=torch.float)# [B, mel_T, txt_T]
         
         out['gt_sylps']          = self.collatek(batch, 'gt_sylps',          ids_sorted, dtype=torch.float)# [B]
+        out['diagonality']       = self.collatek(batch, 'diagonality',       ids_sorted, dtype=torch.float)# [B]
+        out['avg_prob']          = self.collatek(batch, 'avg_prob',          ids_sorted, dtype=torch.float)# [B]
+        
         out['torchmoji_hdn']     = self.collatek(batch, 'torchmoji_hdn',     ids_sorted, dtype=torch.float)# [B, C]
         
         out['speaker_id']        = self.collatek(batch, 'speaker_id',        ids_sorted, dtype=torch.long )# [B]

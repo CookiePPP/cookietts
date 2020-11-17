@@ -333,10 +333,6 @@ class LSTMCellWithZoneout(RNNCellBase):
             forgetgate = forgetgate.sigmoid()
             cellgate   = cellgate.tanh()
             outgate    = outgate.sigmoid()
-            #ingate     = ingate.sigmoid_()
-            #forgetgate = forgetgate.sigmoid_()
-            #cellgate   = cellgate.tanh_()
-            #outgate    = outgate.sigmoid_()
             
             cy = (forgetgate * cx).add_(ingate * cellgate)
             hy = outgate * torch.tanh(cy)
@@ -359,10 +355,6 @@ class LSTMCellWithZoneout(RNNCellBase):
             forgetgate = forgetgate.sigmoid()
             cellgate   = cellgate.tanh()
             outgate    = outgate.sigmoid()
-            #ingate     = ingate.sigmoid_()
-            #forgetgate = forgetgate.sigmoid_()
-            #cellgate   = cellgate.tanh_()
-            #outgate    = outgate.sigmoid_()
             
             cy = (forgetgate * cx).add_(ingate * cellgate)
             hy = outgate * torch.tanh(cy)
