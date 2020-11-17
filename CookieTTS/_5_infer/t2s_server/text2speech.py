@@ -671,7 +671,7 @@ class T2S:
                     print(f"File already found at [{save_path}], overwriting.")
                     os.remove(save_path)
                 
-                write(save_path, self.ttm_hparams.sampling_rate, audio)
+                write(save_path, self.MTW_conf['sampling_rate'], audio)
                 
                 counter+=1
                 audio_len+=audio_end.item()

@@ -416,7 +416,7 @@ def validate(hparams, args, file_losses, model, criterion, valset, best_val_loss
         if hparams.inference_equally_sample_speakers and teacher_force == 2:# if inference, sample from each speaker equally. So speakers with smaller datasets get the same weighting onto the val loss.
             orig_filelist = valset.filelist
             valset.update_filelist(get_mse_sampled_filelist(orig_filelist, file_losses, 0.0, seed=1234))
-        assert len(valset.filelist) < hparams.batch_size, 'too few files in validation set! If your dataset has single speaker, you can change "inference_equally_sample_speakers" to False in hparams.py which *may* fix the issue.\nIf you have a small amount of data, increase `dataset_p_val` or decrease `val_batch_size`'
+        assert len(valset.filelist) >= hparams.batch_size, f'too few files in validation set! Found {len(valset.filelist)}, expected {hparams.batch_size} or more. If your dataset has single speaker, you can change "inference_equally_sample_speakers" to False in hparams.py which *may* fix the issue.\nIf you have a small amount of data, increase `dataset_p_val` or decrease `val_batch_size`'
         val_sampler = DistributedSampler(valset) if hparams.distributed_run else None
         val_loader = DataLoader(valset, sampler=val_sampler,
                                 num_workers=hparams.val_num_workers,# prefetch_factor=hparams.prefetch_factor,
@@ -555,12 +555,13 @@ def train(args, rank, group_name, hparams):
                 print(f"Layer: {layer} has been unfrozen")
     
     # define optimizer (any params without requires_grad are ignored)
-    #optimizer = torch.optim.Adam(filter(lambda p: p.requires_grad, model.parameters()), lr=learning_rate, weight_decay=hparams.weight_decay)
-    optimizer = apexopt.FusedAdam(filter(lambda p: p.requires_grad, model.parameters()), lr=learning_rate, weight_decay=hparams.weight_decay)
+    optimizer =  torch.optim.Adam(filter(lambda p: p.requires_grad, model.parameters()), lr=learning_rate, weight_decay=hparams.weight_decay)
+    #optimizer = apexopt.FusedAdam(filter(lambda p: p.requires_grad, model.parameters()), lr=learning_rate, weight_decay=hparams.weight_decay)
     
     if hparams.use_res_enc:
         resGAN = ResGAN(hparams).cuda()
-        resGAN.optimizer = apexopt.FusedAdam(filter(lambda p: p.requires_grad, resGAN.discriminator.parameters()), lr=learning_rate, weight_decay=hparams.weight_decay)
+        resGAN.optimizer =  torch.optim.Adam(filter(lambda p: p.requires_grad, resGAN.discriminator.parameters()), lr=learning_rate, weight_decay=hparams.weight_decay)
+        #resGAN.optimizer = apexopt.FusedAdam(filter(lambda p: p.requires_grad, resGAN.discriminator.parameters()), lr=learning_rate, weight_decay=hparams.weight_decay)
         if hparams.fp16_run:
             _ = amp.initialize(model, resGAN.optimizer, opt_level=f'O{hparams.fp16_run_optlvl}')
             resGAN.optimizer = _[1]
@@ -593,6 +594,7 @@ def train(args, rank, group_name, hparams):
     best_validation_loss = 1e3# used to see when "best_val_model" should be saved
     best_inf_attsc       = -99# used to see when "best_inf_attsc" should be saved
     
+    is_overflow = False
     average_loss = 9e9
     n_restarts = 0
     checkpoint_iter = 0

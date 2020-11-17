@@ -59,8 +59,8 @@ gate_loss_weight    = 1.0000
 sylps_kld_weight    = 0.0036# try to hold sylps_kld between 0.5 and 2.0
 sylps_MSE_weight    = 0.0100
 sylps_MAE_weight    = 0.0010
-res_enc_gMSE_weight = 0.1000# negative classification/regression weight for discriminator.
-res_enc_dMSE_weight = 0.1000# positive classification/regression weight for discriminator.
+res_enc_gMSE_weight = 0.0001# negative classification/regression weight for discriminator.
+res_enc_dMSE_weight = 0.0020# positive classification/regression weight for discriminator.
 res_enc_kld_weight  = 0.0020
 diag_att_weight     = 0.0500# you only want to use this very shortly as it masks attention problems later into training.
 if iteration >  5000:

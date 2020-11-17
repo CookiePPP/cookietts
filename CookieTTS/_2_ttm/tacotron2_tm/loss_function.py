@@ -256,14 +256,14 @@ class Tacotron2Loss(nn.Module):
             #   making it more likely the latent contains information relating to background noise conditions and
             #    other features more relavent to human interests.
             with torch.no_grad():
-                gt_speakers   = gt['speaker_id_onehot']                             # [B, n_speakers]
+                gt_speakers   = gt['speaker_id_onehot'].float() # [B, n_speakers]
                 gt_sym_durs   = get_class_durations(gt['text'], pred['alignments'], self.n_symbols)*0.01# [B, n_symbols ]
             out = resGAN.discriminator(mulogvar)# learns to predict the speaker and
             pred_sym_durs, pred_speakers = out.squeeze(-1).split([self.n_symbols, self.n_speakers], dim=1) # amount of 'a','b','c','.', etc sounds that are in the audio.
                                                                       # if there isn't a 'd' sound in the transcript, then d will be 0.0
                                                                       # if there are multiple 'a' sounds, their durations are summed.
-            print(pred_sym_durs.shape, gt_sym_durs.shape, pred_speakers.shape, gt_speakers.shape, sep='\n')
-            loss_dict['res_enc_gMSE'] = -(nn.MSELoss()(pred_sym_durs, gt_sym_durs) + nn.MSELoss()(pred_speakers, gt_speakers))
+            
+            loss_dict['res_enc_gMSE'] = -(nn.MSELoss(reduction='sum')(pred_sym_durs, gt_sym_durs) + nn.MSELoss(reduction='sum')(pred_speakers, gt_speakers))
             
             resGAN.gt_speakers = gt_speakers
             resGAN.gt_sym_durs = gt_sym_durs

@@ -1140,22 +1140,22 @@ class ResGAN(nn.Module):
         self.optimizer     = None
         self.discriminator = ResBlock1d(hparams.res_enc_n_tokens*2, hparams.n_speakers+hparams.n_symbols,
                                         hparams.res_enc_n_layers,   hparams.res_enc_dis_dim, kernel_w=1)
-        self.res_enc_dMSE_weight = 0.0
         self.gt_speakers = None
         self.gt_sym_durs = None
         self.fp16_run    = hparams.fp16_run
+        self.n_symbols, self.n_speakers = hparams.n_symbols, hparams.n_speakers
     
     def forward(self, pred, reduced_loss_dict, loss_dict, loss_scalars):
-        assert self.res_enc_dMSE_weight > 0.0
         assert self.optimizer is not None
         self.optimizer.zero_grad()
         
         _, _, mulogvar = pred['res_enc_pkg']
-        pred_sym_durs, pred_speakers = self.discriminator(mulogvar.detach())
+        out = self.discriminator(mulogvar.detach())
+        pred_sym_durs, pred_speakers = out.squeeze(-1).split([self.n_symbols, self.n_speakers], dim=1)
         
-        loss_dict['res_enc_dMSE'] = nn.MSELoss()(pred_sym_durs, self.gt_sym_durs) + nn.MSELoss()(pred_speakers, self.gt_speakers)
+        loss_dict['res_enc_dMSE'] = nn.MSELoss(reduction='sum')(pred_sym_durs, self.gt_sym_durs) + nn.MSELoss(reduction='sum')(pred_speakers, self.gt_speakers)
         loss_dict['res_enc_dMSE'] *= loss_scalars['res_enc_dMSE_weight']
-        reduced_loss_dict['res_enc_dMSE'] = loss.item()
+        reduced_loss_dict['res_enc_dMSE'] = loss_dict['res_enc_dMSE'].item()
         
         if self.fp16_run:
             with amp.scale_loss(loss_dict['res_enc_dMSE'], optimizer) as scaled_loss:

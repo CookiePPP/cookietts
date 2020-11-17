@@ -299,7 +299,7 @@ def generate_filelist_from_datasets(DATASET_FOLDER,
     fpath = os.path.join(DATASET_CONF_FOLDER, 'speaker_info.txt')
     with open(fpath, "w") as f:
         lines = []
-        lines.append(f';{"speaker_id":<9}|{"speaker_name":<32}|{"dataset":<24}|{"source":<24}|{"source_type":<20}|duration_hrs\n;')
+        lines.append(f';{"dataset":<23}|{"speaker_name":<32}|{"speaker_id":<10}|{"source":<24}|{"source_type":<20}|duration_hrs\n;')
         for speaker_id, (speaker_name, duration) in enumerate(speaker_durations.items()):
             dataset = dataset_lookup[speaker_name]
             if duration < MIN_SPEAKER_DURATION_SECONDS:
@@ -315,7 +315,7 @@ def generate_filelist_from_datasets(DATASET_FOLDER,
             assert source_type, 'Recieved no dataset source type'
             assert speaker_name, 'Recieved no speaker name.'
             assert duration, f'Recieved speaker "{speaker_name}" with 0 duration.'
-            lines.append(f'{speaker_id:<10}|{speaker_name:<32}|{dataset:<24}|{source:<24}|{source_type:<20}|{duration/3600:>8.4f}')
+            lines.append(f'{dataset:<24}|{speaker_name:<32}|{speaker_id:<10}|{source:<24}|{source_type:<20}|{duration/3600:>8.4f}')
         f.write('\n'.join(lines))
     print('Done!\n')
     
