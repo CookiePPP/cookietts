@@ -664,6 +664,7 @@ def train(args, rank, group_name, hparams):
         if rank != 0: # if global_mean not yet calcuated, wait for main thread to do it
             while not os.path.exists(hparams.global_mean_npy): time.sleep(1)
         global_mean = calculate_global_mean(train_loader, hparams.global_mean_npy, hparams)
+        assert hparams.n_mel_channels == global_mean.squeeze().shape[0], f'{hparams.global_mean_npy} has {global_mean.squeeze().shape[0]} channels, expected {hparams.n_mel_channels}.\nDelete the file if unsure.'
         hparams.global_mean = global_mean
         model.global_mean = global_mean
     
