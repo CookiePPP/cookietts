@@ -348,9 +348,9 @@ def generate_filelist_from_datasets(DATASET_FOLDER,
         except StopIteration as ex:
             print(speaker_name, duration, speaker_id)
             raise ex
-        source = clip['source'] or "Unknown" # and pick up the source...
+        source      = clip['source'] or "Unknown" # and pick up the source...
         source_type = clip['source_type'] or "Unknown" # and source type that speaker uses.
-        speakerlist.append((dataset, speaker_name, speaker_id, source, source_type, duration/3600.))
+        speakerlist.append((dataset, str(speaker_name), speaker_id, source, source_type, duration/3600.))
     
     outputs = {
         "filelist": filelist,
@@ -757,7 +757,6 @@ class TTSDataset(torch.utils.data.Dataset):
                 audio, sampling_rate = torch.load(trimmed_audiopath), self.sampling_rate
             else:
                 audio, sampling_rate = self.get_audio(audiopath)
-                audio = audio[:int(sampling_rate*10.)]
                 audio_duration = len(audio)/sampling_rate
                 if self.trim_enable:
                     audio = self.trim_audio(audio, sampling_rate, file_path=audiopath)

@@ -94,7 +94,7 @@ def GTA_Synthesis(hparams, args, extra_info='', audio_offset=0):
     print('Done')
     
     # define datasets/dataloaders
-    train_loader, valset, collate_fn, train_sampler, trainset = prepare_dataloaders(hparams, model_args, args, None, audio_offset=audio_offset)
+    train_loader, valset, collate_fn, train_sampler, trainset, *_ = prepare_dataloaders(hparams, model_args, args, None, audio_offset=audio_offset)
     
     # load and/or generate global_mean
     if args.use_training_mode and hparams.drop_frame_rate > 0.:

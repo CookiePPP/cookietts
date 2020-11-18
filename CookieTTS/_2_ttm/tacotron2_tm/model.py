@@ -1193,7 +1193,7 @@ class ResGAN(nn.Module):
         B = out.shape[0]
         pred_sym_durs, pred_speakers = out.squeeze(-1).split([self.n_symbols, self.n_speakers], dim=1)
         pred_speakers = torch.nn.functional.softmax(pred_speakers, dim=1)
-        loss_dict['res_enc_dMSE'] = (nn.L1Loss(reduction='sum')(pred_sym_durs, self.gt_sym_durs)*0.01 + nn.MSELoss(reduction='sum')(pred_speakers, self.gt_speakers))/B
+        loss_dict['res_enc_dMSE'] = (nn.MSELoss(reduction='sum')(pred_sym_durs, self.gt_sym_durs)*0.0001 + nn.MSELoss(reduction='sum')(pred_speakers, self.gt_speakers))/B
         loss = loss_dict['res_enc_dMSE'] * loss_scalars['res_enc_dMSE_weight']
         reduced_loss_dict['res_enc_dMSE'] = loss_dict['res_enc_dMSE'].item()
         

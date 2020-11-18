@@ -82,7 +82,7 @@ def create_hparams(hparams_string=None, verbose=False):
         # if data_source is 1:
         dataset_folder = '/media/cookie/WD6TB/TTS/HiFiDatasets',
         dataset_audio_filters= ['*.wav','*.flac',],
-        dataset_audio_rejects= ['*_Very Noisy_*',],
+        dataset_audio_rejects= ['*_Noisy_*','*_Very Noisy_*',],
         dataset_p_val = 0.01,# portion of dataset for Validation
         dataset_min_duration = 1.1,# minimum duration in seconds for audio files to be added.
         dataset_min_chars    =   7, # min number of letters/text that a transcript should have to be added to the audiofiles list.
@@ -132,7 +132,7 @@ def create_hparams(hparams_string=None, verbose=False):
         trim_margin_left  = [0.0125]*3,
         trim_margin_right = [0.0125]*3,
         trim_ref          = ['amax']*3,
-        trim_top_db       = [50  ,46  ,46  ],
+        trim_top_db       = [48  ,46  ,46  ],
         trim_window_length= [8192,2048,1024],
         trim_hop_length   = [1024,256 ,128 ],
         trim_emphasis_str = [0.0 ,0.0 ,0.0 ],
@@ -194,7 +194,8 @@ def create_hparams(hparams_string=None, verbose=False):
         
         # (Residual Encoder) Learns information related to anything that isn't related to Text or Speakers. (e.g: background noise)
         # https://openreview.net/pdf?id=Bkg9ZeBB37
-        use_res_enc=True,
+        # THIS IS NOT WORKING CORRECTLY RIGHT NOW AND MAY BE REMOVED AT ANY TIME.
+        use_res_enc=False,
         res_enc_filters   = [32, 32, 64, 64, 128, 128],
         res_enc_gru_dim   = 128,
         res_enc_n_tokens  =   5,

@@ -257,14 +257,14 @@ class Tacotron2Loss(nn.Module):
             #    other features more relavent to human interests.
             with torch.no_grad():
                 gt_speakers   = gt['speaker_id_onehot'].float() # [B, n_speakers]
-                gt_sym_durs   = get_class_durations(gt['text'], pred['alignments'], self.n_symbols)# [B, n_symbols ]
+                gt_sym_durs   = get_class_durations(gt['text'], pred['alignments'].detach(), self.n_symbols)# [B, n_symbols]
             out = resGAN.discriminator(mulogvar)# learns to predict the speaker and
             B = out.shape[0]
             pred_sym_durs, pred_speakers = out.squeeze(-1).split([self.n_symbols, self.n_speakers], dim=1) # amount of 'a','b','c','.', etc sounds that are in the audio.
                                                                       # if there isn't a 'd' sound in the transcript, then d will be 0.0
                                                                       # if there are multiple 'a' sounds, their durations are summed.
             pred_speakers = torch.nn.functional.softmax(pred_speakers, dim=1)
-            loss_dict['res_enc_gMSE'] = -(nn.L1Loss(reduction='sum')(pred_sym_durs, gt_sym_durs)*0.01 + nn.MSELoss(reduction='sum')(pred_speakers, gt_speakers))/B
+            loss_dict['res_enc_gMSE'] = (nn.MSELoss(reduction='sum')(pred_sym_durs, gt_sym_durs.mean(dim=1, keepdim=True))*0.0001 + nn.MSELoss(reduction='sum')(pred_speakers, gt_speakers.mean(dim=1, keepdim=True)))/B
             
             resGAN.gt_speakers = gt_speakers
             resGAN.gt_sym_durs = gt_sym_durs

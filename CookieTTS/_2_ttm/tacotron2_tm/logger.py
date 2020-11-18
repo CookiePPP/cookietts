@@ -106,7 +106,7 @@ class Tacotron2Logger(SummaryWriter):
                 f"{prepend}_{idx}/mel_pred",
                 plot_spectrogram_to_numpy(y_pred['pred_mel_postnet'][idx].data.cpu().numpy()),
                 iteration, dataformats='HWC')
-            if self.plotted_targets_inf < 2:
+            if self.plotted_targets_inf < 10:
                 self.add_image(
                     f"{prepend}_{idx}/mel_gt",
                     plot_spectrogram_to_numpy(y['gt_mel'][idx].data.cpu().numpy()),

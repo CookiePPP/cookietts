@@ -48,7 +48,7 @@ warmup_end   = warmup_start + (A_-warmup_start_lr)*1e5 # warmup will linearly in
 best_model_margin = 0.01 # training loss margin
 
 validation_interval = 125 if iteration < 2000 else (250 if iteration < 8000 else 500)
-checkpoint_interval = 1000#validation_interval
+checkpoint_interval = 1000
 
 # Loss Scalars (set to None to load from hparams.py)
 spec_MSE_weight     = 0.0000
@@ -59,21 +59,20 @@ gate_loss_weight    = 1.0000
 sylps_kld_weight    = 0.0036# try to hold sylps_kld between 0.5 and 2.0
 sylps_MSE_weight    = 0.0100
 sylps_MAE_weight    = 0.0010
-res_enc_gMSE_weight = 0.0100# negative classification/regression weight for discriminator.
-res_enc_dMSE_weight = 0.0100# positive classification/regression weight for discriminator.
-res_enc_kld_weight  = 0.0002
-if iteration > 5000:
-    res_enc_kld_weight *= 2.0
 diag_att_weight     = 0.0500# you only want to use this very shortly as it masks attention problems later into training.
 if iteration >  5000:
     diag_att_weight *= 0.1
 if iteration > 25000:
     diag_att_weight *= 0.5
 
+res_enc_gMSE_weight = 0.0200# negative classification/regression weight for discriminator.
+res_enc_dMSE_weight = 0.0200# positive classification/regression weight for discriminator.
+res_enc_kld_weight  = 0.00005# try to hold res_enc_kld between 0.5 and something something.
+
 # Drop Frame Rate
 dfr_warmup_start = 0
 dfr_warmup_iters = 10
-dfr_max_value    = 0.05
+dfr_max_value    = 0.10
 drop_frame_rate = dfr_max_value if dfr_max_value < 0.01 else min(max(current_iteration-dfr_warmup_start,0)/(dfr_warmup_iters*dfr_max_value), dfr_max_value) # linearly increase DFR from 0.0 to 0.2 from iteration 1 to 10001.
 
 # Teacher-forcing Config

@@ -317,7 +317,7 @@ class T2S:
         #print("Done")
         
         tacotron_speaker_name_lookup = checkpoint['speaker_name_lookup'] # save speaker name lookup
-        tacotron_speaker_id_lookup = checkpoint['speaker_id_lookup'] # save speaker_id lookup
+        tacotron_speaker_id_lookup   = checkpoint['speaker_id_lookup']   # save speaker_id lookup
         
         print(f"This Tacotron model has been trained for {checkpoint['iteration']} Iterations.")
         return model, checkpoint_hparams, tacotron_speaker_name_lookup, tacotron_speaker_id_lookup
@@ -328,7 +328,7 @@ class T2S:
         self.ttm_current = tacotron_name
         
         if self.conf['TTM']['models'][tacotron_name]['use_speaker_ids_file_override']:# (optional) override
-            self.ttm_sp_name_lookup = {name: self.ttm_sp_id_lookup[int(ext_id)] for _, name, ext_id in load_filepaths_and_text(self.conf['TTM']['models'][tacotron_name]['speaker_ids_file'])}
+            self.ttm_sp_name_lookup = {name.strip(): self.ttm_sp_id_lookup[int(ext_id.strip())] for _, name, ext_id, *_ in load_filepaths_and_text(self.conf['TTM']['models'][tacotron_name]['speaker_ids_file'])}
     
     
     def get_closest_names(self, names):
@@ -388,9 +388,9 @@ class T2S:
         
         # Score Parameters
         diagonality_weighting = 0.5 # 'pacing factor', a penalty for clips where the model pace changes often/rapidly. # this thing does NOT work well for Rarity.
-        max_focus_weighting = 1.0   # 'stuck factor', a penalty for clips that spend execisve time on the same letter.
-        min_focus_weighting = 0.5   # 'miniskip factor', a penalty for skipping/ignoring single letters in the input text.
-        avg_focus_weighting = 1.0   # 'skip factor', a penalty for skipping very large parts of the input text
+        max_focus_weighting   = 1.0 # 'stuck factor', a penalty for clips that spend execisve time on the same letter.
+        min_focus_weighting   = 0.5 # 'miniskip factor', a penalty for skipping/ignoring single letters in the input text.
+        avg_focus_weighting   = 1.0 # 'skip factor', a penalty for skipping very large parts of the input text
         
         # add a filename prefix to keep multiple requests seperate
         if not filename_prefix:

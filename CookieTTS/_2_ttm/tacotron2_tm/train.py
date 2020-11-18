@@ -293,7 +293,8 @@ def save_checkpoint(model, optimizer, resGAN, learning_rate, iteration, hparams,
     if resGAN is not None:
         resGAN.save_state_dict(filepath+'_resdis')
     
-    speaker_name_lookup = {x[1]: x[2] for x in speakerlist}
+    assert all(str(line[2]).isdigit() for line in speakerlist), 'speakerlist got str in speaker_id section!'
+    speaker_name_lookup = {x[1].strip(): x[2] for x in speakerlist}
     
     save_dict = {'iteration'           : iteration,
                  'state_dict'          : model.state_dict(),
@@ -371,11 +372,10 @@ def get_mse_sampled_filelist(original_filelist, file_losses, exp_factor, seed=No
     assert len(speaker_losses.keys())
     
     # then average the loss list for each speaker
-    speaker_avg_losses = speaker_losses
+    speaker_avg_losses = {k: {} for k in sorted(speaker_losses.keys())}
     for speaker in speaker_avg_losses.keys():
-        for loss_name in speaker_avg_losses[speaker].keys():
-            #if loss_name in speaker_avg_losses[speaker].keys() and speaker_avg_losses[speaker][loss_name] is not None:
-            speaker_avg_losses[speaker][loss_name] = sum([x for x in speaker_avg_losses[speaker][loss_name] if x is not None])/len(speaker_avg_losses[speaker][loss_name])
+        for loss_name in speaker_losses[speaker].keys():
+            speaker_avg_losses[speaker][loss_name] = sum([x for x in speaker_losses[speaker][loss_name] if x is not None])/len(speaker_losses[speaker][loss_name])
     assert len(speaker_avg_losses.keys())
     
     # generate speaker filelists
@@ -573,6 +573,7 @@ def train(args, rank, group_name, hparams):
     optimizer =  torch.optim.Adam(filter(lambda p: p.requires_grad, model.parameters()), lr=learning_rate, weight_decay=hparams.weight_decay)
     #optimizer = apexopt.FusedAdam(filter(lambda p: p.requires_grad, model.parameters()), lr=learning_rate, weight_decay=hparams.weight_decay)
     
+    resGAN = None
     if hparams.use_res_enc:
         resGAN = ResGAN(hparams).cuda()
         resGAN.amp = amp
