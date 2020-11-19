@@ -185,10 +185,18 @@ class Tacotron2Loss(nn.Module):
             pred_mel_postnet = pred['pred_mel_postnet']
             pred_mel         = pred['pred_mel']
             gt_mel           =   gt['gt_mel']
-            
+            mel_lengths      =   gt['mel_lengths']
             B, n_mel, mel_T = gt_mel.shape
             
-            mask = get_mask_from_lengths(gt['mel_lengths'])
+            teacher_force_till = loss_scalars.get('teacher_force_till', 9e9)
+            p_teacher_forcing  = loss_scalars.get('p_teacher_forcing' , 1.0)
+            if p_teacher_forcing == 0.0 and teacher_force_till > 1:
+                gt_mel           = gt_mel[:, :, :teacher_force_till]
+                pred_mel         = pred_mel[:, :, :teacher_force_till]
+                pred_mel_postnet = pred_mel_postnet[:, :, :teacher_force_till]
+                mel_lengths      = mel_lengths.clamp(max=teacher_force_till)
+            
+            mask = get_mask_from_lengths(mel_lengths)
             mask = mask.expand(gt_mel.size(1), *mask.shape).permute(1, 0, 2)
             
             # spectrogram / decoder loss
@@ -199,7 +207,7 @@ class Tacotron2Loss(nn.Module):
             spec_SE = nn.MSELoss(reduction='none')(pred_mel, gt_mel)
             loss_dict['spec_MSE'] = spec_SE.mean()
             
-            losses = spec_SE.split([x*n_mel for x in gt['mel_lengths'].cpu()])
+            losses = spec_SE.split([x*n_mel for x in mel_lengths.cpu()])
             for i in range(B):
                 audiopath = gt['audiopath'][i]
                 file_losses[audiopath]['spec_MSE'] = losses[i].mean().item()
@@ -210,14 +218,14 @@ class Tacotron2Loss(nn.Module):
             loss_dict['postnet_MSE'] = nn.MSELoss()(pred_mel_postnet, gt_mel)
             
             # squared by frame, mean postnet
-            mask = get_mask_from_lengths(gt['mel_lengths']).unsqueeze(-1)# -> [B, mel_T] -> [B, mel_T, 1]
+            mask = get_mask_from_lengths(mel_lengths).unsqueeze(-1)# -> [B, mel_T] -> [B, mel_T, 1]
             
             spec_AE = nn.L1Loss(reduction='none')(pred['pred_mel'], gt['gt_mel']).transpose(1, 2)# -> [B, mel_T, n_mel]
-            spec_AE = spec_AE.masked_select(mask).view(gt['mel_lengths'].sum(), n_mel)# -> [B*mel_T, n_mel]
+            spec_AE = spec_AE.masked_select(mask).view(mel_lengths.sum(), n_mel)# -> [B*mel_T, n_mel]
             loss_dict['spec_MFSE'] = (spec_AE * spec_AE.mean(dim=1, keepdim=True)).mean()# multiply by frame means (similar to square op from MSE) and get the mean of the losses
             
             post_AE = nn.L1Loss(reduction='none')(pred['pred_mel_postnet'], gt['gt_mel']).transpose(1, 2)# -> [B, mel_T, n_mel]
-            post_AE = post_AE.masked_select(mask).view(gt['mel_lengths'].sum(), n_mel)# -> [B*mel_T, n_mel]
+            post_AE = post_AE.masked_select(mask).view(mel_lengths.sum(), n_mel)# -> [B*mel_T, n_mel]
             loss_dict['postnet_MFSE'] = (post_AE * post_AE.mean(dim=1, keepdim=True)).mean()# multiply by frame means (similar to square op from MSE) and get the mean of the losses
         
         if True: # gate/stop loss

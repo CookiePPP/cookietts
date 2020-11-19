@@ -20,12 +20,10 @@ LossExplosionThreshold = 1e3 # maximum loss value (which will trigger a restart 
 custom_lr = True
 decrease_lr_on_restart = True # Decrease the Learning Rate on a LossExplosionThreshold exception
 
-offset = 5000
+offset = 0
 # Learning Rate / Optimization
 decay_start = 99999999
-if   iteration <  10000+offset:
-    A_ = 4.000e-4
-elif iteration <  50000+offset:
+if iteration <  50000+offset:
     A_ = 2.000e-4
 elif iteration <  80000+offset:
     A_ = 1.000e-4
@@ -40,7 +38,7 @@ else:
 B_ = 40000
 C_ = 0e-5
 min_learning_rate = 1e-6
-grad_clip_thresh = 1.0 if iteration > 25000 else 4.0
+grad_clip_thresh = 1.0
 
 warmup_start_lr = 0.1e-4
 warmup_start = checkpoint_iter
@@ -80,7 +78,7 @@ dfr_max_value    = 0.10
 drop_frame_rate = dfr_max_value if dfr_max_value < 0.01 else min(max(iteration-dfr_warmup_start,0)/(dfr_warmup_iters*dfr_max_value), dfr_max_value) # linearly increase DFR from 0.0 to 0.2 from iteration 1 to 10001.
 
 # Teacher-forcing Config
-p_teacher_forcing  = 1.00
+p_teacher_forcing  = 0.00
 teacher_force_till = 768# slowly decay this value when InfGAN is implemented and used.
 val_p_teacher_forcing  = 1.00
 val_teacher_force_till = 0
