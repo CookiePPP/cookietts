@@ -31,10 +31,10 @@
         "output_maxsize_gb": 0.01,
         "dict_path": "/media/cookie/Samsung PM961/TwiBot/tacotron2/filelists/merged.dict_.txt",
         "TTM": {
-            "default_model": "MEL160C | Tacotron2 TM U0 V0 (Best Val Model)",
+            "default_model": "MEL160C | Tacotron2 TM U3 V0 (Best Inference Attention Score)",
             "models": {
-                "MEL160C | Tacotron2 TM U0 V0 (Best Val Model)": {
-                    "modelpath": "/media/cookie/Samsung PM961/TwiBot/CookiePPPTTS/CookieTTS/_2_ttm/tacotron2_tm/outdir_u0_0.1DFR_0.0DO/best_val_model",
+                "MEL160C | Tacotron2 TM U3 V0 (Best Inference Attention Score)": {
+                    "modelpath": "/media/cookie/Samsung PM961/TwiBot/CookiePPPTTS/CookieTTS/_2_ttm/tacotron2_tm/outdir_u3_debluraGAN/best_inf_attsc",
                     "speaker_ids_file": "/media/cookie/WD6TB/TTS/HiFiDatasets/meta/speaker_info.txt",
                     "use_speaker_ids_file_override": true
                 },

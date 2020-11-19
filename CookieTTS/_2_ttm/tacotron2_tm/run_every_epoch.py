@@ -1,4 +1,5 @@
 current_iteration = iteration
+# checkpoint_iter # this is the iteration of the loaded checkpoint. If starting from sratch this value will be zero.
 ######################################################################################
 ##                                                                                  ##
 ## ████████╗ █████╗  ██████╗ ██████╗ ████████╗██████╗  ██████╗ ███╗   ██╗  ██████╗  ##
@@ -42,7 +43,7 @@ min_learning_rate = 1e-6
 grad_clip_thresh = 1.0 if iteration > 25000 else 4.0
 
 warmup_start_lr = 0.1e-4
-warmup_start = checkpoint_iter + 0
+warmup_start = checkpoint_iter
 warmup_end   = warmup_start + (A_-warmup_start_lr)*1e5 # warmup will linearly increase LR by 1e-5 each iter till LR hits A_
 
 best_model_margin = 0.01 # training loss margin
@@ -65,8 +66,8 @@ if iteration >  5000:
 if iteration > 25000:
     diag_att_weight *= 0.5
 
-dbGAN_gLoss_weight = 0.2500 if iteration > 100 else 0.001
-dbGAN_dLoss_weight = 0.2500 if iteration > 100 else 0.001
+dbGAN_gLoss_weight = 0.2500 if iteration > 100 else 0.001# De-Blur-GAN Generator Loss
+dbGAN_dLoss_weight = 0.2500 if iteration > 100 else 0.001# De-Blur-GAN Discriminator Loss
 
 res_enc_gMSE_weight = 0.0200# negative classification/regression weight for discriminator.
 res_enc_dMSE_weight = 0.0200# positive classification/regression weight for discriminator.
@@ -76,11 +77,11 @@ res_enc_kld_weight  = 0.00005# try to hold res_enc_kld between 0.5 and something
 dfr_warmup_start = 0
 dfr_warmup_iters = 10
 dfr_max_value    = 0.10
-drop_frame_rate = dfr_max_value if dfr_max_value < 0.01 else min(max(current_iteration-dfr_warmup_start,0)/(dfr_warmup_iters*dfr_max_value), dfr_max_value) # linearly increase DFR from 0.0 to 0.2 from iteration 1 to 10001.
+drop_frame_rate = dfr_max_value if dfr_max_value < 0.01 else min(max(iteration-dfr_warmup_start,0)/(dfr_warmup_iters*dfr_max_value), dfr_max_value) # linearly increase DFR from 0.0 to 0.2 from iteration 1 to 10001.
 
 # Teacher-forcing Config
-p_teacher_forcing  = 0.95
-teacher_force_till = 0
+p_teacher_forcing  = 1.00
+teacher_force_till = 768# slowly decay this value when InfGAN is implemented and used.
 val_p_teacher_forcing  = 1.00
 val_teacher_force_till = 0
 

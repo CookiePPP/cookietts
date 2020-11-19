@@ -207,8 +207,8 @@ def create_hparams(hparams_string=None, verbose=False):
         # (DebluraGAN) GAN Spectrogram Loss
         # *Should* reduce the blur for generated spectrograms.
         use_dbGAN      =True,
-        use_DecoderRNG =True,# add random number generator, HIGHLY RECOMMENDED WHEN USING dBGAN.
-        DecoderRNG_dim =  96,
+        use_DecoderRNG =True,# highly recommended when using dbGAN!
+        DecoderRNG_dim =  96,# highly recommended when using dbGAN!
         dbGAN_dis_dim  = 128,
         dbGAN_kernel_h =   3,
         dbGAN_kernel_w =   3,
@@ -266,7 +266,7 @@ def create_hparams(hparams_string=None, verbose=False):
         # (Decoder) DecoderRNN
         decoder_rnn_dim            = 768,  # 1024 baseline
         DecRNN_hidden_dropout_type = 'dropout',# options ('dropout','zoneout')
-        p_DecRNN_hidden_dropout    = 0.10,  # 0.1 baseline
+        p_DecRNN_hidden_dropout    = 0.5, # 0.1 baseline
         decoder_residual_connection= False,# residual connections with the AttentionRNN hidden state and Attention/Memory Context
         # Optional Second Decoder
         second_decoder_rnn_dim=768,# 0 baseline # Extra DecoderRNN to learn more complex patterns # set to 0 to disable layer.
