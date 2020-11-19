@@ -386,12 +386,17 @@ class Decoder(nn.Module):
         self.max_decoder_steps = hparams.max_decoder_steps
         self.gate_threshold = hparams.gate_threshold# Float
         self.AttRNN_extra_decoder_input = hparams.AttRNN_extra_decoder_input
+        self.use_DecoderRNG             = getattr(hparams, 'use_DecoderRNG', False)
+        self.DecoderRNG_dim             = getattr(hparams, 'DecoderRNG_dim', 0)
+        
         self.AttRNN_hidden_dropout_type = hparams.AttRNN_hidden_dropout_type
-        self.p_AttRNN_hidden_dropout = hparams.p_AttRNN_hidden_dropout
+        self.p_AttRNN_hidden_dropout    = hparams.p_AttRNN_hidden_dropout
         self.DecRNN_hidden_dropout_type = hparams.DecRNN_hidden_dropout_type
-        self.p_DecRNN_hidden_dropout = hparams.p_DecRNN_hidden_dropout
+        self.p_DecRNN_hidden_dropout    = hparams.p_DecRNN_hidden_dropout
+        
         self.p_teacher_forcing = hparams.p_teacher_forcing
         self.teacher_force_till = hparams.teacher_force_till
+        
         self.num_att_mixtures = hparams.num_att_mixtures
         self.normalize_attention_input = hparams.normalize_attention_input
         self.normalize_AttRNN_output = hparams.normalize_AttRNN_output
@@ -442,6 +447,8 @@ class Decoder(nn.Module):
         AttRNN_Dimensions = hparams.prenet_dim + self.memory_dim
         if self.AttRNN_extra_decoder_input:
             AttRNN_Dimensions += hparams.decoder_rnn_dim
+        if self.use_DecoderRNG:
+            AttRNN_Dimensions += self.DecoderRNG_dim
         
         self.attention_rnn = LSTMCellWithZoneout(
             AttRNN_Dimensions, hparams.attention_rnn_dim, bias=True,
@@ -707,10 +714,12 @@ class Decoder(nn.Module):
         mask = self.mask
         assert mask is not None
         
+        cell_input = [decoder_input, attention_context]
         if self.AttRNN_extra_decoder_input:
-            cell_input = torch.cat((decoder_input, attention_context, decoder_hidden), -1)# [Processed Previous Spect Frame, Last input Taken from Text/Att, Previous Decoder state used to produce frame]
-        else:
-            cell_input = torch.cat((decoder_input, attention_context), -1)# [Processed Previous Spect Frame, Last input Taken from Text/Att]
+            cell_input.append(decoder_hidden)
+        if self.use_DecoderRNG:
+            cell_input.append(torch.randn(decoder_input.shape[0], self.DecoderRNG_dim, device=decoder_input.device, dtype=decoder_input.dtype))
+        cell_input = torch.cat(cell_input, -1)# [Processed Previous Spect Frame, Last input Taken from Text/Att]
         
         if self.normalize_AttRNN_output and self.attention_type == 1:
             cell_input = cell_input.tanh()
@@ -1135,6 +1144,117 @@ class ResBlock1d(nn.Module):
         if self.res:
             x += skip
         return x # [B, out_dim, T]
+
+
+class ResBlock2d(nn.Module):
+    def __init__(self, input_dim, output_dim, n_layers, n_dim, kernel_h, kernel_w, stride=1, bias=True, act_func=nn.LeakyReLU(negative_slope=0.1, inplace=True), dropout=0.0, res=False):
+        super(ResBlock2d, self).__init__()
+        self.layers = nn.ModuleList()
+        for i in range(n_layers):
+            in_dim = input_dim if i == 0 else n_dim
+            out_dim = output_dim if i+1 == n_layers else n_dim
+            pad_h = (kernel_h - 1)//2
+            pad_w = (kernel_w - 1)//2
+            conv = nn.Conv2d(in_dim, out_dim, [kernel_h, kernel_w], padding=[pad_h, pad_w], stride=stride, bias=bias)
+            self.layers.append(conv)
+        self.act_func = act_func
+        self.dropout = dropout
+        self.res = res
+        if self.res:
+            assert input_dim == output_dim, 'residual connection requires input_dim and output_dim to match.'
+    
+    def forward(self, x): # [B, in_dim, n_mel_channels, T]
+        if len(x.shape) == 3:# [B, in_dim, n_mel_channels] -> [B, in_dim, n_mel_channels, T]
+            x = x.unsqueeze(-1)
+        skip = x
+        
+        for i, layer in enumerate(self.layers):
+            is_last_layer = bool( i+1 == len(self.layers) )
+            x = layer(x)
+            if not is_last_layer:
+                x = self.act_func(x)
+            if self.dropout > 0.0 and self.training:
+                x = F.dropout(x, p=self.dropout, training=self.training, inplace=True)
+        if self.res:
+            x += skip
+        return x # [B, out_dim, n_mel_channels, T]
+
+
+def reduce_tensor(tensor, n_gpus):
+    rt = tensor.clone()
+    torch.distributed.all_reduce(rt, op=torch.distributed.ReduceOp.SUM)
+    rt /= n_gpus
+    return rt
+
+
+class DebluraGAN(nn.Module):# GAN loss on spectrogram to reduce blur from predicted outputs
+    def __init__(self, hparams):
+        super(DebluraGAN, self).__init__()
+        self.optimizer     = None
+        self.discriminator = []
+        assert len(hparams.dbGAN_stride) == hparams.dbGAN_n_blocks
+        for i in range(hparams.dbGAN_n_blocks):
+            is_first_block = bool(i   == 0)
+            is_last_block  = bool(i+1 == hparams.dbGAN_n_blocks)
+            self.discriminator.append(ResBlock2d(1 if is_first_block else hparams.dbGAN_dis_dim, 1 if is_last_block else hparams.dbGAN_dis_dim,
+                                                 hparams.dbGAN_n_layers, hparams.dbGAN_dis_dim,
+                                                 kernel_h=hparams.dbGAN_kernel_h, kernel_w=hparams.dbGAN_kernel_w, stride=hparams.dbGAN_stride[i]))
+        self.discriminator = nn.Sequential(*self.discriminator)
+        self.fp16_run    = hparams.fp16_run
+        self.n_gpus      = hparams.n_gpus
+    
+    def state_dict(self):
+        dict_ = {
+        "discriminator_state_dict": self.discriminator.state_dict(),
+            "optimzier_state_dict": self.optimizer.state_dict(),
+        }
+        return dict_
+    
+    def save_state_dict(self, path):
+        torch.save(self.state_dict(), path)
+    
+    def load_state_dict_from_file(self, path):
+        self.load_state_dict(torch.load(path, map_location='cpu'))
+    
+    def load_state_dict(self, dict_):
+        local_dict = self.discriminator.state_dict()
+        new_dict   = dict_['discriminator_state_dict']
+        local_dict.update({k: v for k,v in new_dict.items() if k in local_dict and local_dict[k].shape == new_dict[k].shape})
+        n_missing_keys = len([k for k,v in new_dict.items() if not (k in local_dict and local_dict[k].shape == new_dict[k].shape)])
+        self.discriminator.load_state_dict(local_dict)
+        del local_dict, new_dict
+        
+        if n_missing_keys == 0:
+            self.optimizer.load_state_dict(dict_['optimzier_state_dict'])
+    
+    def forward(self, pred, gt, reduced_loss_dict, loss_dict, loss_scalars):
+        assert self.optimizer is not None
+        self.optimizer.zero_grad()
+        
+        pred_mel         = pred['pred_mel_postnet'].unsqueeze(1)# [B, 1, n_mel, mel_T]
+        pred_mel_postnet = pred['pred_mel'].unsqueeze(1)        # [B, 1, n_mel, mel_T]
+        gt_mel           =   gt['gt_mel'].unsqueeze(1)          # [B, 1, n_mel, mel_T]
+        B, _, n_mel, mel_T = gt_mel.shape
+        mels = torch.cat((gt_mel, pred_mel, pred_mel_postnet), dim=0)# [3*B, 1, n_mel, mel_T]
+        pred_fakeness = self.discriminator(mels.detach()).squeeze(1)# -> [B, C, mel_T]
+        pred_fakeness = pred_fakeness.mean(dim=1)# -> [B, mel_T]
+        pred_fakeness = pred_fakeness.mean(dim=1)# -> [B]
+        gt_fakeness, pred_fakeness, postnet_fakeness = pred_fakeness.chunk(3, dim=0)
+        fake_label = torch.ones(B, device=gt_mel.device, dtype=gt_mel.dtype)     # [B]
+        real_label = torch.ones(B, device=gt_mel.device, dtype=gt_mel.dtype)*-1.0# [B]
+        
+        loss_dict['dbGAN_dLoss'] = F.mse_loss(real_label, gt_fakeness)*2 + F.mse_loss(fake_label, pred_fakeness) + F.mse_loss(fake_label, postnet_fakeness)
+        loss = loss_dict['dbGAN_dLoss'] * loss_scalars['dbGAN_dLoss_weight']
+        
+        reduced_loss_dict['dbGAN_dLoss'] = reduce_tensor(loss_dict['dbGAN_dLoss'].data, self.n_gpus).item() if self.n_gpus > 1 else loss_dict['dbGAN_dLoss'].item()
+        
+        if self.fp16_run:
+            with self.amp.scale_loss(loss, self.optimizer) as scaled_loss:
+                scaled_loss.backward()
+        else:
+            loss.backward()
+        
+        self.optimizer.step()
 
 
 class ResGAN(nn.Module):

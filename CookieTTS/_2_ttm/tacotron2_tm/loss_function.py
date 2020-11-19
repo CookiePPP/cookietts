@@ -131,6 +131,8 @@ class Tacotron2Loss(nn.Module):
         self.res_enc_kld_weight  = hparams.res_enc_kld_weight
         self.res_enc_gMSE_weight = hparams.res_enc_gMSE_weight
         
+        self.use_dbGAN = hparams.use_dbGAN
+        
         self.gate_loss_weight = hparams.gate_loss_weight
         
         self.sylps_kld_weight = hparams.sylps_kld_weight # SylNet KDL Weight
@@ -168,7 +170,7 @@ class Tacotron2Loss(nn.Module):
         
         return 
     
-    def forward(self, pred, gt, loss_scalars, resGAN=None):
+    def forward(self, pred, gt, loss_scalars, resGAN=None, dbGAN=None):
         
         loss_dict = {}
         file_losses = {}# dict of {"audiofile": {"spec_MSE": spec_MSE, "avg_prob": avg_prob, ...}, ...}
@@ -190,6 +192,8 @@ class Tacotron2Loss(nn.Module):
             mask = mask.expand(gt_mel.size(1), *mask.shape).permute(1, 0, 2)
             
             # spectrogram / decoder loss
+            pred_mel.masked_fill_(~mask, 0.0)
+            gt_mel.masked_fill_(~mask, 0.0)
             pred_mel = torch.masked_select(pred_mel, mask)
             gt_mel   = torch.masked_select(gt_mel, mask)
             spec_SE = nn.MSELoss(reduction='none')(pred_mel, gt_mel)
@@ -270,6 +274,20 @@ class Tacotron2Loss(nn.Module):
             resGAN.gt_sym_durs = gt_sym_durs
             
             del mu, logvar, kl_loss, gt_speakers, gt_sym_durs, pred_sym_durs, pred_speakers
+        
+        if self.use_dbGAN and dbGAN is not None:
+            pred_mel_postnet = pred['pred_mel_postnet'].unsqueeze(1)# -> [B, 1, n_mel, mel_T]
+            pred_mel         = pred['pred_mel'].unsqueeze(1)# -> [B, 1, n_mel, mel_T]
+            B, _, n_mel, mel_T = pred_mel.shape
+            
+            mels = torch.cat((pred_mel, pred_mel_postnet), dim=0)# [2*B, 1, n_mel, mel_T]
+            pred_fakeness = dbGAN.discriminator(mels).squeeze(1)# -> [B, C, mel_T]
+            pred_fakeness = pred_fakeness.mean(dim=1)# -> [B, mel_T]
+            pred_fakeness = pred_fakeness.mean(dim=1)# -> [B]
+            pred_fakeness, postnet_fakeness = pred_fakeness.chunk(2, dim=0)
+            real_label = torch.ones(B, device=gt_mel.device, dtype=gt_mel.dtype)*-1.0# [B]
+            
+            loss_dict['dbGAN_gLoss'] = 2*(F.mse_loss(real_label, pred_fakeness) + F.mse_loss(real_label, postnet_fakeness))
         
         #################################################################
         ## Colate / Merge the Losses into a single tensor with scalars ##

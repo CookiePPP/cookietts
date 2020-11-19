@@ -104,8 +104,6 @@ def generate_filelist_from_datasets(DATASET_FOLDER,
         speaker_durations = {}
         dataset_lookup    = {}
         bad_paths         = {}
-    else:
-        raise Exception
     
     # check default configs exist (and prompt user for datasets without premade configs)
     defaults_fpath = os.path.join(DATASET_CONF_FOLDER, 'defaults.pkl')

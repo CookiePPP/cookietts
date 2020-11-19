@@ -48,8 +48,8 @@ def create_hparams(hparams_string=None, verbose=False):
         #################################
         ## Batch Size / Segment Length ##
         #################################
-        batch_size    =40,# controls num of files processed in parallel per GPU
-        val_batch_size=40,# for more precise comparisons between models, constant batch_size is useful
+        batch_size    =32,# controls num of files processed in parallel per GPU
+        val_batch_size=32,# for more precise comparisons between models, constant batch_size is useful
         use_TBPTT  =False,# continue processing longer files into the next training iteration
         max_segment_length=768,# max mel length till a segment is sliced.
         max_chars_length  =192,# max text input till text is sliced. I use segment_length/4.
@@ -83,7 +83,7 @@ def create_hparams(hparams_string=None, verbose=False):
         dataset_folder = '/media/cookie/WD6TB/TTS/HiFiDatasets',
         dataset_audio_filters= ['*.wav','*.flac',],
         dataset_audio_rejects= ['*_Noisy_*','*_Very Noisy_*',],
-        dataset_p_val = 0.01,# portion of dataset for Validation
+        dataset_p_val = 0.005,# portion of dataset for Validation
         dataset_min_duration = 1.1,# minimum duration in seconds for audio files to be added.
         dataset_min_chars    =   7, # min number of letters/text that a transcript should have to be added to the audiofiles list.
         dataset_max_chars    = 240, # min number of letters/text that a transcript should have to be added to the audiofiles list.
@@ -203,6 +203,22 @@ def create_hparams(hparams_string=None, verbose=False):
         
         res_enc_dis_dim  = 128,
         res_enc_n_layers =   3,
+        
+        # (DebluraGAN) GAN Spectrogram Loss
+        # *Should* reduce the blur for generated spectrograms.
+        use_dbGAN      =True,
+        use_DecoderRNG =True,# add random number generator, HIGHLY RECOMMENDED WHEN USING dBGAN.
+        DecoderRNG_dim =  96,
+        dbGAN_dis_dim  = 128,
+        dbGAN_kernel_h =   3,
+        dbGAN_kernel_w =   3,
+        dbGAN_stride   =  [
+                            [3, 3],
+                            [3, 3],
+                            [1, 1],
+                          ],
+        dbGAN_n_layers =   2,
+        dbGAN_n_blocks =   3,
         
         # (AuxEmotionNet) TorchMoji
         torchMoji_attDim     = 2304,# published model uses 2304

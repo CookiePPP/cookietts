@@ -65,6 +65,9 @@ if iteration >  5000:
 if iteration > 25000:
     diag_att_weight *= 0.5
 
+dbGAN_gLoss_weight = 0.2500 if iteration > 100 else 0.001
+dbGAN_dLoss_weight = 0.2500 if iteration > 100 else 0.001
+
 res_enc_gMSE_weight = 0.0200# negative classification/regression weight for discriminator.
 res_enc_dMSE_weight = 0.0200# positive classification/regression weight for discriminator.
 res_enc_kld_weight  = 0.00005# try to hold res_enc_kld between 0.5 and something something.

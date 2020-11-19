@@ -15,7 +15,7 @@ from torch.utils.data.distributed import DistributedSampler
 from torch.utils.data import DataLoader
 from torch.optim.lr_scheduler import ReduceLROnPlateau
 
-from model import Tacotron2, ResGAN, load_model
+from model import Tacotron2, ResGAN, DebluraGAN, load_model
 from CookieTTS.utils.dataset.data_utils import TTSDataset, Collate, generate_filelist_from_datasets
 from CookieTTS.utils import get_args, force
 
@@ -587,6 +587,20 @@ def train(args, rank, group_name, hparams):
             _ = apply_gradient_allreduce(resGAN.discriminator)
             resGAN.discriminator = _
     
+    debluraGAN = None
+    if hparams.use_dbGAN:
+        dbGAN = DebluraGAN(hparams).cuda()
+        dbGAN.amp = amp
+        dbGAN.optimizer =  torch.optim.Adam(filter(lambda p: p.requires_grad, dbGAN.discriminator.parameters()), lr=learning_rate, weight_decay=hparams.weight_decay)
+        #dbGAN.optimizer = apexopt.FusedAdam(filter(lambda p: p.requires_grad, dbGAN.discriminator.parameters()), lr=learning_rate, weight_decay=hparams.weight_decay)
+        if hparams.fp16_run:
+            _ = amp.initialize(dbGAN.discriminator, dbGAN.optimizer, opt_level=f'O{hparams.fp16_run_optlvl}')
+            dbGAN.discriminator = _[0]
+            dbGAN.optimizer     = _[1]
+        if hparams.distributed_run:
+            _ = apply_gradient_allreduce(dbGAN.discriminator)
+            dbGAN.discriminator = _
+    
     if True and rank == 0:
         pytorch_total_params = sum(p.numel() for p in model.parameters())
         print("{:,} total parameters in model".format(pytorch_total_params))
@@ -750,8 +764,12 @@ def train(args, rank, group_name, hparams):
                      "res_enc_dMSE_weight": res_enc_dMSE_weight,
                       "res_enc_kld_weight": res_enc_kld_weight,
                          "diag_att_weight": diag_att_weight,
+                      "dbGAN_gLoss_weight": dbGAN_gLoss_weight,
+                      "dbGAN_dLoss_weight": dbGAN_dLoss_weight,
                     }
-                    loss_dict, file_losses_batch = criterion(y_pred, y, loss_scalars, resGAN if hparams.use_res_enc else None)
+                    loss_dict, file_losses_batch = criterion(y_pred, y, loss_scalars,
+                                                            resGAN if hparams.use_res_enc else None,
+                                                            dbGAN  if hparams.use_dbGAN else None,)
                     
                     file_losses = update_smoothed_dict(file_losses, file_losses_batch, file_losses_smoothness)
                     loss = loss_dict['loss']
@@ -784,7 +802,10 @@ def train(args, rank, group_name, hparams):
                     
                     # (Optional) Discriminator Forward+Backward Pass
                     if hparams.use_res_enc:
-                        resGAN(y_pred, reduced_loss_dict, loss_dict, loss_scalars)
+                        resGAN(y_pred,   reduced_loss_dict, loss_dict, loss_scalars)
+                    
+                    if hparams.use_dbGAN:
+                        dbGAN(y_pred, y, reduced_loss_dict, loss_dict, loss_scalars)
                     
                     # get current Loss Scale of first optimizer
                     loss_scale = amp._amp_state.loss_scalers[0]._loss_scale if hparams.fp16_run else 32768.
