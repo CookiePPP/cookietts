@@ -202,9 +202,9 @@ class Tacotron2Loss(nn.Module):
             # spectrogram / decoder loss
             pred_mel.masked_fill_(~mask, 0.0)
             gt_mel.masked_fill_(~mask, 0.0)
-            pred_mel = torch.masked_select(pred_mel, mask)
-            gt_mel   = torch.masked_select(gt_mel, mask)
-            spec_SE = nn.MSELoss(reduction='none')(pred_mel, gt_mel)
+            pred_mel_selected = torch.masked_select(pred_mel, mask)
+            gt_mel_selected   = torch.masked_select(gt_mel, mask)
+            spec_SE = nn.MSELoss(reduction='none')(pred_mel_selected, gt_mel_selected)
             loss_dict['spec_MSE'] = spec_SE.mean()
             
             losses = spec_SE.split([x*n_mel for x in mel_lengths.cpu()])
@@ -214,17 +214,17 @@ class Tacotron2Loss(nn.Module):
             
             # postnet
             pred_mel_postnet.masked_fill_(~mask, 0.0)
-            pred_mel_postnet = torch.masked_select(pred_mel_postnet, mask)
-            loss_dict['postnet_MSE'] = nn.MSELoss()(pred_mel_postnet, gt_mel)
+            pred_mel_postnet_selected = torch.masked_select(pred_mel_postnet, mask)
+            loss_dict['postnet_MSE'] = nn.MSELoss()(pred_mel_postnet_selected, gt_mel_selected)
             
             # squared by frame, mean postnet
             mask = get_mask_from_lengths(mel_lengths).unsqueeze(-1)# -> [B, mel_T] -> [B, mel_T, 1]
             
-            spec_AE = nn.L1Loss(reduction='none')(pred['pred_mel'], gt['gt_mel']).transpose(1, 2)# -> [B, mel_T, n_mel]
+            spec_AE = nn.L1Loss(reduction='none')(pred_mel, gt_mel).transpose(1, 2)# -> [B, mel_T, n_mel]
             spec_AE = spec_AE.masked_select(mask).view(mel_lengths.sum(), n_mel)# -> [B*mel_T, n_mel]
             loss_dict['spec_MFSE'] = (spec_AE * spec_AE.mean(dim=1, keepdim=True)).mean()# multiply by frame means (similar to square op from MSE) and get the mean of the losses
             
-            post_AE = nn.L1Loss(reduction='none')(pred['pred_mel_postnet'], gt['gt_mel']).transpose(1, 2)# -> [B, mel_T, n_mel]
+            post_AE = nn.L1Loss(reduction='none')(pred_mel_postnet, gt_mel).transpose(1, 2)# -> [B, mel_T, n_mel]
             post_AE = post_AE.masked_select(mask).view(mel_lengths.sum(), n_mel)# -> [B*mel_T, n_mel]
             loss_dict['postnet_MFSE'] = (post_AE * post_AE.mean(dim=1, keepdim=True)).mean()# multiply by frame means (similar to square op from MSE) and get the mean of the losses
         
@@ -295,7 +295,7 @@ class Tacotron2Loss(nn.Module):
             pred_fakeness, postnet_fakeness = pred_fakeness.chunk(2, dim=0)
             real_label = torch.ones(B, device=gt_mel.device, dtype=gt_mel.dtype)*-1.0# [B]
             
-            loss_dict['dbGAN_gLoss'] = 2*(F.mse_loss(real_label, pred_fakeness) + F.mse_loss(real_label, postnet_fakeness))
+            loss_dict['dbGAN_gLoss'] = 2*(F.mse_loss(pred_fakeness, real_label) + F.mse_loss(postnet_fakeness, real_label))
         
         #################################################################
         ## Colate / Merge the Losses into a single tensor with scalars ##

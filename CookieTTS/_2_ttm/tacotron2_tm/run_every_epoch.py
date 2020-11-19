@@ -79,7 +79,7 @@ drop_frame_rate = dfr_max_value if dfr_max_value < 0.01 else min(max(iteration-d
 
 # Teacher-forcing Config
 p_teacher_forcing  = 0.00
-teacher_force_till = 768# slowly decay this value when InfGAN is implemented and used.
+teacher_force_till = 760# slowly decay this value when InfGAN is implemented and used.
 val_p_teacher_forcing  = 1.00
 val_teacher_force_till = 0
 
