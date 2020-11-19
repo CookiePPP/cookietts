@@ -220,9 +220,9 @@ if __name__ == '__main__':
                         required=False, help='how many processes (workers) are used to load data for each GPU. Each process will use a chunk of RAM. 24 Workers on a Threadripper 2950X is enough to feed three RTX 2080 Ti\'s in fp16 mode.')
     parser.add_argument('--extremeGTA', type=int, default=0, required=False,
                         help='Generate a Ground Truth Aligned output every interval specified. This will run tacotron hop_length//interval times per file and can use thousands of GBs of storage. Caution is advised')
-    parser.add_argument('--max_mse', default=None, required=False,
+    parser.add_argument('--max_mse', default=None, required=False, type=float,
                         help='Maximum MSE from Ground Truth to be valid for saving. (Anything above this value will be discarded)')
-    parser.add_argument('--max_mae', default=None, required=False,
+    parser.add_argument('--max_mae', default=None, required=False, type=float,
                         help='Maximum MAE from Ground Truth to be valid for saving. (Anything above this value will be discarded)')
     parser.add_argument('--use_training_mode', action='store_true',
                         help='Use model.train() while generating alignments. Will increase both variablility and inaccuracy.')
