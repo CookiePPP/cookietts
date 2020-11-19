@@ -47,15 +47,14 @@ def identify_transcript_storage(directory, audio_files, audio_ext, audio_basenam
                 paths = [(os.path.splitext(x.split("|")[0])[0].replace('  ',' ').rstrip('.')+os.path.splitext(x.split("|")[0])[-1]) for x in text.split("\n") if len(x.strip())] # get paths
                 #n_exists = sum([os.path.exists(x) for x in paths]) # check how many paths exist
                 n_exists = sum([os.path.splitext(os.path.split(x)[1])[0].lower() in audio_basename_lookup.keys() for x in paths]) # check how many names exist
-                if False and len(paths)-n_exists > 0:
+                if False and len(paths)-n_exists > 0:# debug print
                     print(txt_file)
                     print('#'*70+'\nFailed to Find Below Paths')
-                    #print('\n'.join([str(k) for k in audio_basename_lookup.keys()]))
-                    #print('#'*70)
+                    print('\n'.join([str(k) for k in audio_basename_lookup.keys()]))
+                    print('#'*70)
                     print('\n'.join([os.path.splitext(os.path.split(x)[1])[0] for x in paths if os.path.splitext(os.path.split(x)[1])[0] not in audio_basename_lookup.keys()]))
                     print('#'*70)
-                
-                if n_exists > 5 or (len(paths)-n_exists < 1): # if more than 5 audio files were found
+                if n_exists > 4 or (len(paths)-n_exists < 1): # if more than 5 audio files were found
                     n_valid_txts += 1 # add it as a valid txt file
                     valid_txts.append(txt_file) # and save the txt files path (relative to the dataset root)
                 os.chdir(prev_wd_)

@@ -15,7 +15,7 @@ with open('t2s_config.json', 'r') as f:
 
 # start worker(s)
 t2s = T2S(conf['workers'])
-speakers = [x for x in list(t2s.ttm_sp_name_lookup.keys()) if "(Music)" not in x]
+speakers = t2s.ttm_sp_name_lookup.keys()
 if conf['webpage']['sort_speakers']:
     speakers = sorted(speakers)
 tacotron_conf = [[name,details] if os.path.exists(details['modelpath']) else [f"[MISSING]{name}",details] for name, details in list(conf['workers']['TTM']['models'].items())]

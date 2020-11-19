@@ -15,7 +15,7 @@ from torch.utils.data.distributed import DistributedSampler
 from torch.utils.data import DataLoader
 from torch.optim.lr_scheduler import ReduceLROnPlateau
 
-from model import Tacotron2, ResGAN, load_model
+from model import Tacotron2, ResGAN, DebluraGAN, load_model
 from CookieTTS.utils.dataset.data_utils import TTSDataset, Collate, generate_filelist_from_datasets
 from CookieTTS.utils import get_args, force
 
@@ -199,9 +199,16 @@ def prepare_directories_and_logger(hparams, args):
     return logger
 
 
-def warm_start_force_model(checkpoint_path, model):
+def warm_start_force_model(checkpoint_path, model, resGAN, debluraGAN):
     assert os.path.isfile(checkpoint_path)
     print(f"Warm starting model from checkpoint '{checkpoint_path}'")
+    
+    if resGAN is not None and os.path.exists(checkpoint_path+'_resdis'):
+        resGAN.load_state_dict_from_file(checkpoint_path+'_resdis')
+    
+    if debluraGAN is not None and os.path.exists(checkpoint_path+'_dbDis'):
+        debluraGAN.load_state_dict_from_file(checkpoint_path+'_dbDis')
+    
     checkpoint_dict = torch.load(checkpoint_path, map_location='cpu')
     pretrained_dict = checkpoint_dict['state_dict']
     model_dict = model.state_dict()
@@ -221,9 +228,16 @@ def warm_start_force_model(checkpoint_path, model):
     return model, iteration, saved_lookup
 
 
-def warm_start_model(checkpoint_path, model, ignore_layers):
+def warm_start_model(checkpoint_path, model, resGAN, debluraGAN, ignore_layers):
     assert os.path.isfile(checkpoint_path)
     print("Warm starting model from checkpoint '{}'".format(checkpoint_path))
+    
+    if resGAN is not None and os.path.exists(checkpoint_path+'_resdis'):
+        resGAN.load_state_dict_from_file(checkpoint_path+'_resdis')
+    
+    if debluraGAN is not None and os.path.exists(checkpoint_path+'_dbDis'):
+        debluraGAN.load_state_dict_from_file(checkpoint_path+'_dbDis')
+    
     checkpoint_dict = torch.load(checkpoint_path, map_location='cpu')
     model_dict = checkpoint_dict['state_dict']
     if len(ignore_layers) > 0:
@@ -239,9 +253,16 @@ def warm_start_model(checkpoint_path, model, ignore_layers):
     return model, iteration, saved_lookup
 
 
-def load_checkpoint(checkpoint_path, model, optimizer, best_val_loss_dict, best_loss_dict, best_validation_loss=1e3, best_inf_attsc=-99.):
+def load_checkpoint(checkpoint_path, model, optimizer, resGAN, debluraGAN, best_val_loss_dict, best_loss_dict, best_validation_loss=1e3, best_inf_attsc=-99.):
     assert os.path.isfile(args.checkpoint_path)
     print("Loading checkpoint '{}'".format(args.checkpoint_path))
+    
+    if resGAN is not None and os.path.exists(checkpoint_path+'_resdis'):
+        resGAN.load_state_dict_from_file(checkpoint_path+'_resdis')
+    
+    if debluraGAN is not None and os.path.exists(checkpoint_path+'_dbDis'):
+        debluraGAN.load_state_dict_from_file(checkpoint_path+'_dbDis')
+    
     checkpoint_dict = torch.load(args.checkpoint_path, map_location='cpu')
     
     model.load_state_dict(checkpoint_dict['state_dict'])# load model weights
@@ -272,13 +293,20 @@ def load_checkpoint(checkpoint_path, model, optimizer, best_val_loss_dict, best_
     return model, optimizer, learning_rate, iteration, best_validation_loss, best_inf_attsc, saved_lookup, best_val_loss_dict, best_loss_dict
 
 
-def save_checkpoint(model, optimizer, learning_rate, iteration, hparams, best_validation_loss, best_inf_attsc, average_loss,
+def save_checkpoint(model, optimizer, resGAN, debluraGAN, learning_rate, iteration, hparams, best_validation_loss, best_inf_attsc, average_loss,
                     best_val_loss_dict, best_loss_dict, speaker_id_lookup, speakerlist, filepath):
     from CookieTTS.utils.dataset.utils import load_filepaths_and_text
     tqdm.write("Saving model and optimizer state at iteration {} to {}".format(
         iteration, filepath))
     
-    speaker_name_lookup = {x[1]: x[2] for x in speakerlist}
+    if resGAN is not None:
+        resGAN.save_state_dict(filepath+'_resdis')
+    
+    if debluraGAN is not None:
+        debluraGAN.save_state_dict(filepath+'_dbDis')
+    
+    assert all(str(line[2]).isdigit() for line in speakerlist), 'speakerlist got str in speaker_id section!'
+    speaker_name_lookup = {x[1].strip(): x[2] for x in speakerlist}
     
     save_dict = {'iteration'           : iteration,
                  'state_dict'          : model.state_dict(),
@@ -356,11 +384,10 @@ def get_mse_sampled_filelist(original_filelist, file_losses, exp_factor, seed=No
     assert len(speaker_losses.keys())
     
     # then average the loss list for each speaker
-    speaker_avg_losses = speaker_losses
+    speaker_avg_losses = {k: {} for k in sorted(speaker_losses.keys())}
     for speaker in speaker_avg_losses.keys():
-        for loss_name in speaker_avg_losses[speaker].keys():
-            #if loss_name in speaker_avg_losses[speaker].keys() and speaker_avg_losses[speaker][loss_name] is not None:
-            speaker_avg_losses[speaker][loss_name] = sum([x for x in speaker_avg_losses[speaker][loss_name] if x is not None])/len(speaker_avg_losses[speaker][loss_name])
+        for loss_name in speaker_losses[speaker].keys():
+            speaker_avg_losses[speaker][loss_name] = sum([x for x in speaker_losses[speaker][loss_name] if x is not None])/len(speaker_losses[speaker][loss_name])
     assert len(speaker_avg_losses.keys())
     
     # generate speaker filelists
@@ -558,17 +585,33 @@ def train(args, rank, group_name, hparams):
     optimizer =  torch.optim.Adam(filter(lambda p: p.requires_grad, model.parameters()), lr=learning_rate, weight_decay=hparams.weight_decay)
     #optimizer = apexopt.FusedAdam(filter(lambda p: p.requires_grad, model.parameters()), lr=learning_rate, weight_decay=hparams.weight_decay)
     
+    resGAN = None
     if hparams.use_res_enc:
         resGAN = ResGAN(hparams).cuda()
+        resGAN.amp = amp
         resGAN.optimizer =  torch.optim.Adam(filter(lambda p: p.requires_grad, resGAN.discriminator.parameters()), lr=learning_rate, weight_decay=hparams.weight_decay)
         #resGAN.optimizer = apexopt.FusedAdam(filter(lambda p: p.requires_grad, resGAN.discriminator.parameters()), lr=learning_rate, weight_decay=hparams.weight_decay)
         if hparams.fp16_run:
-            _ = amp.initialize(model, resGAN.optimizer, opt_level=f'O{hparams.fp16_run_optlvl}')
-            resGAN.optimizer = _[1]
+            _ = amp.initialize(resGAN.discriminator, resGAN.optimizer, opt_level=f'O{hparams.fp16_run_optlvl}')
             resGAN.discriminator = _[0]
+            resGAN.optimizer     = _[1]
         if hparams.distributed_run:
             _ = apply_gradient_allreduce(resGAN.discriminator)
             resGAN.discriminator = _
+    
+    debluraGAN = None
+    if hparams.use_dbGAN:
+        dbGAN = DebluraGAN(hparams).cuda()
+        dbGAN.amp = amp
+        dbGAN.optimizer =  torch.optim.Adam(filter(lambda p: p.requires_grad, dbGAN.discriminator.parameters()), lr=learning_rate, weight_decay=hparams.weight_decay)
+        #dbGAN.optimizer = apexopt.FusedAdam(filter(lambda p: p.requires_grad, dbGAN.discriminator.parameters()), lr=learning_rate, weight_decay=hparams.weight_decay)
+        if hparams.fp16_run:
+            _ = amp.initialize(dbGAN.discriminator, dbGAN.optimizer, opt_level=f'O{hparams.fp16_run_optlvl}')
+            dbGAN.discriminator = _[0]
+            dbGAN.optimizer     = _[1]
+        if hparams.distributed_run:
+            _ = apply_gradient_allreduce(dbGAN.discriminator)
+            dbGAN.discriminator = _
     
     if True and rank == 0:
         pytorch_total_params = sum(p.numel() for p in model.parameters())
@@ -621,12 +664,12 @@ def train(args, rank, group_name, hparams):
     if args.checkpoint_path is not None:
         if args.warm_start:
             model, iteration, saved_lookup = warm_start_model(
-                args.checkpoint_path, model, hparams.ignore_layers)
+                args.checkpoint_path, model, resGAN, debluraGAN, hparams.ignore_layers)
         elif args.warm_start_force:
             model, iteration, saved_lookup = warm_start_force_model(
-                args.checkpoint_path, model)
+                args.checkpoint_path, model, resGAN, debluraGAN)
         else:
-            _ = load_checkpoint(args.checkpoint_path, model, optimizer, best_val_loss_dict, best_loss_dict)
+            _ = load_checkpoint(args.checkpoint_path, model, optimizer, resGAN, debluraGAN, best_val_loss_dict, best_loss_dict)
             model, optimizer, _learning_rate, iteration, best_validation_loss, best_inf_attsc, saved_lookup, best_val_loss_dict, best_loss_dict = _
             if hparams.use_saved_learning_rate:
                 learning_rate = _learning_rate
@@ -647,6 +690,7 @@ def train(args, rank, group_name, hparams):
         if rank != 0: # if global_mean not yet calcuated, wait for main thread to do it
             while not os.path.exists(hparams.global_mean_npy): time.sleep(1)
         global_mean = calculate_global_mean(train_loader, hparams.global_mean_npy, hparams)
+        assert hparams.n_mel_channels == global_mean.squeeze().shape[0], f'{hparams.global_mean_npy} has {global_mean.squeeze().shape[0]} channels, expected {hparams.n_mel_channels}.\nDelete the file if unsure.'
         hparams.global_mean = global_mean
         model.global_mean = global_mean
     
@@ -732,8 +776,12 @@ def train(args, rank, group_name, hparams):
                      "res_enc_dMSE_weight": res_enc_dMSE_weight,
                       "res_enc_kld_weight": res_enc_kld_weight,
                          "diag_att_weight": diag_att_weight,
+                      "dbGAN_gLoss_weight": dbGAN_gLoss_weight,
+                      "dbGAN_dLoss_weight": dbGAN_dLoss_weight,
                     }
-                    loss_dict, file_losses_batch = criterion(y_pred, y, loss_scalars, resGAN if hparams.use_res_enc else None)
+                    loss_dict, file_losses_batch = criterion(y_pred, y, loss_scalars,
+                                                            resGAN if hparams.use_res_enc else None,
+                                                            dbGAN  if hparams.use_dbGAN else None,)
                     
                     file_losses = update_smoothed_dict(file_losses, file_losses_batch, file_losses_smoothness)
                     loss = loss_dict['loss']
@@ -766,7 +814,10 @@ def train(args, rank, group_name, hparams):
                     
                     # (Optional) Discriminator Forward+Backward Pass
                     if hparams.use_res_enc:
-                        resGAN(y_pred, reduced_loss_dict, loss_dict, loss_scalars)
+                        resGAN(y_pred,   reduced_loss_dict, loss_dict, loss_scalars)
+                    
+                    if hparams.use_dbGAN:
+                        dbGAN(y_pred, y, reduced_loss_dict, loss_dict, loss_scalars)
                     
                     # get current Loss Scale of first optimizer
                     loss_scale = amp._amp_state.loss_scalers[0]._loss_scale if hparams.fp16_run else 32768.
@@ -805,7 +856,7 @@ def train(args, rank, group_name, hparams):
                         # save model checkpoint like normal
                         if rank == 0:
                             checkpoint_path = os.path.join(args.output_directory, "checkpoint_{}".format(iteration))
-                            save_checkpoint(model, optimizer, learning_rate, iteration, hparams, best_validation_loss, best_inf_attsc, average_loss, best_val_loss_dict, best_loss_dict, speaker_lookup, speakerlist, checkpoint_path)
+                            save_checkpoint(model, optimizer, resGAN, debluraGAN, learning_rate, iteration, hparams, best_validation_loss, best_inf_attsc, average_loss, best_val_loss_dict, best_loss_dict, speaker_lookup, speakerlist, checkpoint_path)
                     
                     if iteration%dump_filelosses_interval==0:
                         print("Updating File_losses dict!")
@@ -825,14 +876,14 @@ def train(args, rank, group_name, hparams):
                             if rank == 0 and hparams.save_best_val_model:
                                 checkpoint_path = os.path.join(args.output_directory, "best_val_model")
                                 save_checkpoint(
-                                    model, optimizer, learning_rate, iteration, hparams, best_validation_loss, max(best_inf_attsc, val_loss),
+                                    model, optimizer, resGAN, debluraGAN, learning_rate, iteration, hparams, best_validation_loss, max(best_inf_attsc, val_loss),
                                     average_loss, best_val_loss_dict, best_loss_dict, speaker_lookup, speakerlist, checkpoint_path)
                         if (valatt_loss > best_inf_attsc):
                             best_inf_attsc = valatt_loss
                             if rank == 0 and hparams.save_best_inf_attsc:
                                 checkpoint_path = os.path.join(args.output_directory, "best_inf_attsc")
                                 save_checkpoint(
-                                    model, optimizer, learning_rate, iteration, hparams, best_validation_loss, best_inf_attsc,
+                                    model, optimizer, resGAN, debluraGAN, learning_rate, iteration, hparams, best_validation_loss, best_inf_attsc,
                                     average_loss, best_val_loss_dict, best_loss_dict, speaker_lookup, speakerlist, checkpoint_path)
                         just_did_val = True
                     

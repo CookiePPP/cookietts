@@ -37,6 +37,16 @@ import syllables
 def latest_modified_date(directory):
     return max(os.stat(root).st_mtime for root,_,_ in os.walk(directory))
 
+# https://stackoverflow.com/a/43116588
+def latest_modified_date_filtered(directory, exts=['.wav','.flac','.txt']):
+    def filepaths(directory):
+        for root, dirs, filenames in os.walk(directory):
+            for filename in filenames:
+                yield os.path.join(root, filename)
+    files = (filepath for filepath in filepaths(directory) if any(filepath.lower().endswith(x) for x in exts))
+    latest = max(files, key=os.path.getmtime)
+    return os.stat(latest).st_mtime
+
 def generate_filelist_from_datasets(DATASET_FOLDER,
         DATASET_CONF_FOLDER=None,
         AUDIO_FILTER  = ['*.wav'],
@@ -44,38 +54,51 @@ def generate_filelist_from_datasets(DATASET_FOLDER,
         MIN_DURATION  = 0.73,
         MIN_CHAR_LEN  =   7,
         MAX_CHAR_LEN  = 160,
-        MIN_SPEAKER_DURATION_SECONDS=10,
-        valid_time = 7200.0,# set to 2hr for debugging # time_after_last_check_before_modifications_invalidate_the_dataset
+        MIN_SPEAKER_DURATION=10,
+        valid_time =1800.0,# set to 30 minutes (which should be enough time to complete 1 epoch hopefully) # time_after_last_check_before_modifications_invalidate_the_dataset
         rank=0):
     if DATASET_CONF_FOLDER is None:
         DATASET_CONF_FOLDER = os.path.join(DATASET_FOLDER, 'meta')
     
     # define meta dict (this is where all the data is collected)
+    should_reload_data = True
     if os.path.exists(os.path.join(DATASET_CONF_FOLDER, 'metadata.pkl')) and os.path.exists(os.path.join(DATASET_CONF_FOLDER, 'metadata_lm_dates.pkl')):
-        dict_    = pickle.load(open(os.path.join(DATASET_CONF_FOLDER, 'metadata.pkl'),          "rb"))
-        meta              = dict_["meta"]
-        speaker_durations = dict_["speaker_durations"]
-        dataset_lookup    = dict_["dataset_lookup"]
-        bad_paths         = dict_["bad_paths"]
-        meta_lm = pickle.load(open(os.path.join(DATASET_CONF_FOLDER, 'metadata_lm_dates.pkl'), "rb"))
-        for dataset, last_dataset_check in meta_lm.items():
-            if os.path.exists(os.path.join(DATASET_FOLDER, dataset)):
-                last_modified = latest_modified_date(os.path.join(DATASET_FOLDER, dataset))
-                if dataset in meta and last_modified > valid_time+last_dataset_check:
-                    print(f"Dataset {dataset} being reloaded.")
+        dict_ = pickle.load(open(os.path.join(DATASET_CONF_FOLDER, 'metadata.pkl'), "rb"))
+        should_reload_data = (
+          dict_.get("DATASET_FOLDER", None)       != DATASET_FOLDER or
+          dict_.get("DATASET_CONF_FOLDER", None)  != DATASET_CONF_FOLDER or
+          dict_.get("AUDIO_FILTER", None)         != AUDIO_FILTER or
+          dict_.get("AUDIO_REJECTS", None)        != AUDIO_REJECTS or
+          dict_.get("MIN_DURATION", None)         != MIN_DURATION or
+          dict_.get("MIN_CHAR_LEN", None)         != MIN_CHAR_LEN or
+          dict_.get("MAX_CHAR_LEN", None)         != MAX_CHAR_LEN or
+          dict_.get("MIN_SPEAKER_DURATION", None) != MIN_SPEAKER_DURATION
+        )
+        if not should_reload_data:
+            meta              = dict_["meta"]
+            speaker_durations = dict_["speaker_durations"]
+            dataset_lookup    = dict_["dataset_lookup"]
+            bad_paths         = dict_["bad_paths"]
+            meta_lm = pickle.load(open(os.path.join(DATASET_CONF_FOLDER, 'metadata_lm_dates.pkl'), "rb"))
+            for dataset, last_dataset_check in meta_lm.items():
+                if os.path.exists(os.path.join(DATASET_FOLDER, dataset)):
+                    last_modified = latest_modified_date_filtered(os.path.join(DATASET_FOLDER, dataset))
+                    if dataset in meta and last_modified > valid_time+last_dataset_check:
+                        print(f"Dataset {dataset} being reloaded.")
+                        del meta[dataset]
+                        del bad_paths[dataset]
+                        for speaker in [x for x in speaker_durations.keys() if dataset_lookup[x] == dataset]:
+                            del speaker_durations[speaker]
+                            del dataset_lookup[speaker]
+                else:
                     del meta[dataset]
                     del bad_paths[dataset]
                     for speaker in [x for x in speaker_durations.keys() if dataset_lookup[x] == dataset]:
                         del speaker_durations[speaker]
                         del dataset_lookup[speaker]
-            else:
-                del meta[dataset]
-                del bad_paths[dataset]
-                for speaker in [x for x in speaker_durations.keys() if dataset_lookup[x] == dataset]:
-                    del speaker_durations[speaker]
-                    del dataset_lookup[speaker]
         del dict_
-    else:
+    
+    if should_reload_data:
         meta = {}
         meta_lm = None
         speaker_durations = {}
@@ -265,7 +288,7 @@ def generate_filelist_from_datasets(DATASET_FOLDER,
     total_files = new_total_files
     for dataset in datasets:
         speaker_set = set(list(speaker_durations.keys()))
-        meta[dataset] = [x for x in meta[dataset] if x['speaker'] in speaker_set and speaker_durations[x['speaker']] > MIN_SPEAKER_DURATION_SECONDS]
+        meta[dataset] = [x for x in meta[dataset] if x['speaker'] in speaker_set and speaker_durations[x['speaker']] > MIN_SPEAKER_DURATION]
     new_total_files = sum(len(clips) for clips in meta.values())
     if total_files-new_total_files > 0:
         print(f"Removed {total_files-new_total_files} Files from speakers that have too little data.\n{new_total_files} File Remain.")
@@ -280,13 +303,21 @@ def generate_filelist_from_datasets(DATASET_FOLDER,
                   "meta": meta,
      "speaker_durations": speaker_durations,
         "dataset_lookup": dataset_lookup,
-             "bad_paths": bad_paths
+             "bad_paths": bad_paths,
+        "DATASET_FOLDER": DATASET_FOLDER,
+   "DATASET_CONF_FOLDER": DATASET_CONF_FOLDER,
+          "AUDIO_FILTER": AUDIO_FILTER,
+         "AUDIO_REJECTS": AUDIO_REJECTS,
+          "MIN_DURATION": MIN_DURATION,
+          "MIN_CHAR_LEN": MIN_CHAR_LEN,
+          "MAX_CHAR_LEN": MAX_CHAR_LEN,
+  "MIN_SPEAKER_DURATION": MIN_SPEAKER_DURATION,
         }
         pickle.dump(out, pickle_file, pickle.HIGHEST_PROTOCOL)
     
     meta_lm = {}
     for dataset in datasets:
-        meta_lm[dataset] = latest_modified_date(os.path.join(DATASET_FOLDER, dataset))
+        meta_lm[dataset] = latest_modified_date_filtered(os.path.join(DATASET_FOLDER, dataset))
     meta_lm_fpath = os.path.join(DATASET_CONF_FOLDER, 'metadata_lm_dates.pkl')
     with open(meta_lm_fpath, 'wb') as pickle_file:
         pickle.dump(meta_lm, pickle_file, pickle.HIGHEST_PROTOCOL)
@@ -300,9 +331,10 @@ def generate_filelist_from_datasets(DATASET_FOLDER,
     with open(fpath, "w") as f:
         lines = []
         lines.append(f';{"dataset":<23}|{"speaker_name":<32}|{"speaker_id":<10}|{"source":<24}|{"source_type":<20}|duration_hrs\n;')
-        for speaker_id, (speaker_name, duration) in enumerate(speaker_durations.items()):
+        for speaker_id, speaker_name in enumerate(sorted(speaker_durations.keys())):
+            duration = speaker_durations[speaker_name]
             dataset = dataset_lookup[speaker_name]
-            if duration < MIN_SPEAKER_DURATION_SECONDS:
+            if duration < MIN_SPEAKER_DURATION:
                 continue
             try:
                 clip = next(y for x in list(meta.values()) for y in x if y['speaker'] == speaker_name) # get the first clip with that speaker...
@@ -321,9 +353,9 @@ def generate_filelist_from_datasets(DATASET_FOLDER,
     
     # Unpack meta into filelist
     # filelist = [["path","quote","speaker_id"], ["path","quote","speaker_id"], ...]
+    speaker_lookup = {speaker: index for index, speaker in enumerate(sorted(speaker_durations.keys()))}
     filelist = []
     for dataset, clips in meta.items():
-        speaker_lookup = {speaker: index for index, speaker in enumerate(list(speaker_durations.keys()))}
         for i, clip in enumerate(clips):
             audiopath  = clip["path"]
             quote      = clip["quote"]
@@ -331,24 +363,25 @@ def generate_filelist_from_datasets(DATASET_FOLDER,
             
             if len(clip["quote"]) < MIN_CHAR_LEN or len(clip["quote"]) > MAX_CHAR_LEN:
                 continue
-            if speaker_durations[clip['speaker']] < MIN_SPEAKER_DURATION_SECONDS:
+            if speaker_durations[clip['speaker']] < MIN_SPEAKER_DURATION:
                 continue
             filelist.append([audiopath, quote, speaker_id])
     
     # speakerlist = [["name","id","dataset","source","source_type","duration"], ...]
     speakerlist = []
-    for speaker_id, (speaker_name, duration) in enumerate(speaker_durations.items()):
+    for speaker_id, speaker_name in enumerate(sorted(speaker_durations.keys())):
+        duration = speaker_durations[speaker_name]
         dataset = dataset_lookup[speaker_name]
-        if duration < MIN_SPEAKER_DURATION_SECONDS:
+        if duration < MIN_SPEAKER_DURATION:
             continue
         try:
             clip = next(y for x in list(meta.values()) for y in x if y['speaker'] == speaker_name) # get the first clip with that speaker...
         except StopIteration as ex:
             print(speaker_name, duration, speaker_id)
             raise ex
-        source = clip['source'] or "Unknown" # and pick up the source...
+        source      = clip['source'] or "Unknown" # and pick up the source...
         source_type = clip['source_type'] or "Unknown" # and source type that speaker uses.
-        speakerlist.append((dataset, speaker_name, speaker_id, source, source_type, duration/3600.))
+        speakerlist.append((dataset, str(speaker_name), speaker_id, source, source_type, duration/3600.))
     
     outputs = {
         "filelist": filelist,
@@ -755,7 +788,6 @@ class TTSDataset(torch.utils.data.Dataset):
                 audio, sampling_rate = torch.load(trimmed_audiopath), self.sampling_rate
             else:
                 audio, sampling_rate = self.get_audio(audiopath)
-                audio = audio[:int(sampling_rate*10.)]
                 audio_duration = len(audio)/sampling_rate
                 if self.trim_enable:
                     audio = self.trim_audio(audio, sampling_rate, file_path=audiopath)

@@ -38,7 +38,8 @@ class ReferenceEncoder(nn.Module):
         self.gru = nn.GRU(input_size=hparams.res_enc_filters[-1] * out_channels,
                           hidden_size=hparams.res_enc_gru_dim,
                           batch_first=True)
-        self.n_mels = hparams.n_mel_channels
+        self.n_mels   = hparams.n_mel_channels
+        self.n_tokens = hparams.res_enc_n_tokens
         self.post_fc  = nn.Linear(hparams.res_enc_gru_dim,    hparams.res_enc_n_tokens*2)
         self.embed_fc = nn.Linear(hparams.res_enc_n_tokens, hparams.res_enc_embed_dim )
     
@@ -71,6 +72,11 @@ class ReferenceEncoder(nn.Module):
         embed = self.embed_fc(zr)# [B, n_tokens] -> [B, embed]
         
         return embed, zr, mu, logvar, out
+    
+    def prior(self, x, std=0.0):
+        zr = torch.randn(x.shape[0], self.n_tokens, device=x.device, dtype=next(self.parameters()).dtype) * std
+        embed = self.embed_fc(zr)# [B, n_tokens] -> [B, embed]
+        return embed
     
     def reparameterize(self, mu, logvar, rand_sampling=False):
         if self.training or rand_sampling:
