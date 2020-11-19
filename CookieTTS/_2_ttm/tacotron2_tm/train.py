@@ -758,7 +758,12 @@ def train(args, rank, group_name, hparams):
                             just_did_val=False
                         for param_group in optimizer.param_groups:
                             param_group['lr'] = learning_rate
-                    
+                        if resGAN is not None and hasattr(resGAN, 'optimizer'):
+                            for param_group in resGAN.optimizer.param_groups:
+                                param_group['lr'] = learning_rate
+                        if dbGAN is not None and hasattr(dbGAN, 'optimizer'):
+                            for param_group in dbGAN.optimizer.param_groups:
+                                param_group['lr'] = learning_rate
                     # /run external code every epoch, allows the run to be adjusting without restarts/
                     model.zero_grad()
                     y = model.parse_batch(batch) # move batch to GPU (async)

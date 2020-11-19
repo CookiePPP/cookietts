@@ -64,8 +64,8 @@ if iteration >  5000:
 if iteration > 25000:
     diag_att_weight *= 0.5
 
-dbGAN_gLoss_weight = 0.2500 if iteration > 100 else 0.001# De-Blur-GAN Generator Loss
-dbGAN_dLoss_weight = 0.2500 if iteration > 100 else 0.001# De-Blur-GAN Discriminator Loss
+dbGAN_gLoss_weight = 0.1250 if iteration > 100 else 0.001# De-Blur-GAN Generator Loss
+dbGAN_dLoss_weight = 0.1250 if iteration > 100 else 0.001# De-Blur-GAN Discriminator Loss
 
 res_enc_gMSE_weight = 0.0200# negative classification/regression weight for discriminator.
 res_enc_dMSE_weight = 0.0200# positive classification/regression weight for discriminator.
@@ -79,7 +79,7 @@ drop_frame_rate = dfr_max_value if dfr_max_value < 0.01 else min(max(iteration-d
 
 # Teacher-forcing Config
 p_teacher_forcing  = 0.00
-teacher_force_till = 760# slowly decay this value when InfGAN is implemented and used.
+teacher_force_till = 768# slowly decay this value when InfGAN is implemented and used.
 val_p_teacher_forcing  = 1.00
 val_teacher_force_till = 0
 

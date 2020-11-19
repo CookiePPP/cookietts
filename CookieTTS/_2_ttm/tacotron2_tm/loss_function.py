@@ -255,7 +255,7 @@ class Tacotron2Loss(nn.Module):
             loss_dict['diag_att'] = self.guided_att(alignments[pres_prev_state==0.0],
                                                   text_lengths[pres_prev_state==0.0],
                                                 output_lengths[pres_prev_state==0.0])
-            del alignments, text_lengths, output_lengths
+            del alignments, text_lengths, output_lengths, pres_prev_state
         
         if self.use_res_enc and resGAN is not None:# Residual Encoder KL Divergence Loss
             mu, logvar, mulogvar = pred['res_enc_pkg']
