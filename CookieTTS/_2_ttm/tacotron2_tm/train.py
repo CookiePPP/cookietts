@@ -758,12 +758,6 @@ def train(args, rank, group_name, hparams):
                             just_did_val=False
                         for param_group in optimizer.param_groups:
                             param_group['lr'] = learning_rate
-                        if resGAN is not None and hasattr(resGAN, 'optimizer'):
-                            for param_group in resGAN.optimizer.param_groups:
-                                param_group['lr'] = learning_rate
-                        if dbGAN is not None and hasattr(dbGAN, 'optimizer'):
-                            for param_group in dbGAN.optimizer.param_groups:
-                                param_group['lr'] = learning_rate
                     # /run external code every epoch, allows the run to be adjusting without restarts/
                     model.zero_grad()
                     y = model.parse_batch(batch) # move batch to GPU (async)
@@ -820,11 +814,20 @@ def train(args, rank, group_name, hparams):
                     
                     optimizer.step()
                     
+                    # calcuate the effective learning rate after gradient clipping is applied, and use the effective learning rate on the GAN modules.
+                    effective_lr = 0.0 if is_overflow else learning_rate*min((grad_clip_thresh/grad_norm+1e-6), 1.0)
+                    
                     # (Optional) Discriminator Forward+Backward Pass
                     if hparams.use_res_enc:
+                        if resGAN is not None and hasattr(resGAN, 'optimizer'):
+                            for param_group in resGAN.optimizer.param_groups:
+                                param_group['lr'] = effective_lr
                         resGAN(y_pred,   reduced_loss_dict, loss_dict, loss_scalars)
                     
                     if hparams.use_dbGAN:
+                        if dbGAN is not None and hasattr(dbGAN, 'optimizer'):
+                            for param_group in dbGAN.optimizer.param_groups:
+                                param_group['lr'] = effective_lr
                         dbGAN(y_pred, y, reduced_loss_dict, loss_dict, loss_scalars)
                     
                     # get current Loss Scale of first optimizer
