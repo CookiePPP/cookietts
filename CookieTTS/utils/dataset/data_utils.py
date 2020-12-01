@@ -15,7 +15,11 @@ from tqdm import tqdm
 
 # audio processing
 import librosa
-import pyworld as pw
+try:
+    import pyworld as pw
+except Exception as ex:
+    print(ex)
+    print("Warning! pyworld not imported.")
 import pyloudnorm as pyln
 import CookieTTS.utils.audio.stft as STFT
 from CookieTTS.utils.dataset.utils import load_wav_to_torch, load_filepaths_and_text
@@ -51,10 +55,11 @@ def generate_filelist_from_datasets(DATASET_FOLDER,
         DATASET_CONF_FOLDER=None,
         AUDIO_FILTER  = ['*.wav'],
         AUDIO_REJECTS = ['*_Noisy_*','*_Very Noisy_*'],
-        MIN_DURATION  = 0.73,
+        MIN_DURATION  =   0.73,
+        MAX_DURATION  =  30.00,
         MIN_CHAR_LEN  =   7,
         MAX_CHAR_LEN  = 160,
-        MIN_SPEAKER_DURATION=10,
+        MIN_SPEAKER_DURATION=10.0,
         valid_time =1800.0,# set to 30 minutes (which should be enough time to complete 1 epoch hopefully) # time_after_last_check_before_modifications_invalidate_the_dataset
         rank=0):
     if DATASET_CONF_FOLDER is None:
@@ -69,9 +74,10 @@ def generate_filelist_from_datasets(DATASET_FOLDER,
           dict_.get("DATASET_CONF_FOLDER", None)  != DATASET_CONF_FOLDER or
           dict_.get("AUDIO_FILTER", None)         != AUDIO_FILTER or
           dict_.get("AUDIO_REJECTS", None)        != AUDIO_REJECTS or
-          dict_.get("MIN_DURATION", None)         != MIN_DURATION or
-          dict_.get("MIN_CHAR_LEN", None)         != MIN_CHAR_LEN or
-          dict_.get("MAX_CHAR_LEN", None)         != MAX_CHAR_LEN or
+          dict_.get("MIN_DURATION", 0.73)         != MIN_DURATION or
+          dict_.get("MAX_DURATION", 30.0)         != MAX_DURATION or
+          dict_.get("MIN_CHAR_LEN",    7)         != MIN_CHAR_LEN or
+          dict_.get("MAX_CHAR_LEN",  160)         != MAX_CHAR_LEN or
           dict_.get("MIN_SPEAKER_DURATION", None) != MIN_SPEAKER_DURATION
         )
         if not should_reload_data:
@@ -232,15 +238,6 @@ def generate_filelist_from_datasets(DATASET_FOLDER,
     dataset_lookup    = dataset_lookup    if dataset_lookup    else {}
     bad_paths         = bad_paths         if bad_paths         else {}
     
-    def is_file_valid(path, dataset, MIN_DURATION):
-        try:
-            audio, sampling_rate = load_wav_to_torch(clip['path'], return_empty_on_exception=True)
-            clip_duration = len(audio)/sampling_rate
-            if clip_duration < MIN_DURATION:
-                raise Exception('File is too short.')
-        except Exception as ex:
-            return bad_paths[dataset]
-    
     total_files = sum(len(clips) for clips in [v for k,v in meta.items() if k in unchecked_datasets])
     with tqdm(total=total_files) as pbar:
         for dataset in unchecked_datasets:
@@ -255,7 +252,7 @@ def generate_filelist_from_datasets(DATASET_FOLDER,
                 try:
                     audio, sampling_rate = load_wav_to_torch(clip['path'], min_sr=22049.0, return_empty_on_exception=True)
                     clip_duration = len(audio)/sampling_rate
-                    if clip_duration < MIN_DURATION:
+                    if clip_duration < MIN_DURATION or clip_duration > MAX_DURATION:
                         bad_paths[dataset].append(clip['path'])
                         continue
                 except Exception as ex:
@@ -309,6 +306,7 @@ def generate_filelist_from_datasets(DATASET_FOLDER,
           "AUDIO_FILTER": AUDIO_FILTER,
          "AUDIO_REJECTS": AUDIO_REJECTS,
           "MIN_DURATION": MIN_DURATION,
+          "MAX_DURATION": MAX_DURATION,
           "MIN_CHAR_LEN": MIN_CHAR_LEN,
           "MAX_CHAR_LEN": MAX_CHAR_LEN,
   "MIN_SPEAKER_DURATION": MIN_SPEAKER_DURATION,
@@ -861,7 +859,7 @@ class TTSDataset(torch.utils.data.Dataset):
         
         if 'gt_sylps' in args:
             gt_sylps = self.get_syllables_per_second(text, len(audio)/sampling_rate)# [] FloatTensor
-            output['gt_sylps'] = gt_sylps
+            output['gt_sylps'] = gt_sylps.float()
             del gt_sylps
         
         if any([arg in ('text', 'gt_sylps', 'alignment','gt_char_f0','gt_char_voiced','gt_char_energy') for arg in args]):
@@ -880,55 +878,55 @@ class TTSDataset(torch.utils.data.Dataset):
         if any(arg in ('speaker_id','speaker_id_ext') for arg in args):
             output['speaker_id_ext'] = speaker_id_ext
             output['speaker_id'] = self.get_speaker_id(speaker_id_ext)# get speaker_id as tensor normalized [ 0 -> len(speaker_ids) ]
-            output['speaker_id_onehot'] = self.indexes_to_one_hot(output['speaker_id'], num_classes=self.n_speakers).squeeze()# [n_speakers]
+            output['speaker_id_onehot'] = self.indexes_to_one_hot(output['speaker_id'], num_classes=self.n_speakers).squeeze().float()# [n_speakers]
         
         if any([arg in ['gt_emotion_id','gt_emotion_onehot'] for arg in args]):
             output['gt_emotion_id'] = self.get_emotion_id(audiopath)# [1] IntTensor
             gt_emotion_onehot = self.indexes_to_one_hot(gt_emotion_id, num_classes=self.n_classes+1).squeeze(0)[:-1]# [n_classes]
-            output['gt_emotion_onehot'] = gt_emotion_onehot
+            output['gt_emotion_onehot'] = gt_emotion_onehot.float()
         
         if 'torchmoji_hdn' in args:
             tm_path = os.path.splitext(audiopath)[0]+'_tm.pt'
             if os.path.exists(tm_path):
-                torchmoji = self.get_torchmoji_hidden_from_file(tm_path)
+                torchmoji = self.get_torchmoji_hidden_from_file(tm_path).float()
             else:
-                torchmoji = self.get_torchmoji_hidden_from_text(output['gtext_str'])
+                torchmoji = self.get_torchmoji_hidden_from_text(output['gtext_str']).float()
                 if not os.path.exists(tm_path):
                     torch.save(torchmoji, tm_path)
             output['torchmoji_hdn'] = torchmoji# [Embed]
         
         if any([arg in ('gt_frame_f0','gt_frame_voiced','gt_char_f0','gt_char_voiced') for arg in args]):
             f0, voiced_mask = self.get_pitch(output['gt_audio'], self.sampling_rate, self.hop_length)
-            output['gt_frame_f0']     = f0
+            output['gt_frame_f0']     = f0.float()
             output['gt_frame_voiced'] = voiced_mask
         
         if any([arg in ('gt_frame_energy','gt_char_energy') for arg in args]):
-            output['gt_frame_energy'] = self.get_energy(mel)
+            output['gt_frame_energy'] = self.get_energy(mel).float()
         
         if any([arg in ('alignment','gt_char_f0','gt_char_voiced','gt_char_energy') for arg in args]):
             output['alignment'] = alignment = self.get_alignments(audiopath, arpa=use_phones)
             if 'gt_char_f0' in args:
-                output['gt_char_f0']     = self.get_charavg_from_frames(f0                 , alignment)# [txt_T]
+                output['gt_char_f0']     = self.get_charavg_from_frames(f0                 , alignment).float()# [txt_T]
             if 'gt_char_voiced' in args:
                 output['gt_char_voiced'] = self.get_charavg_from_frames(voiced_mask.float(), alignment)# [txt_T]
             if 'gt_char_energy' in args:
-                output['gt_char_energy'] = self.get_charavg_from_frames(output['gt_frame_energy'], alignment)# [txt_T]
+                output['gt_char_energy'] = self.get_charavg_from_frames(output['gt_frame_energy'], alignment).float()# [txt_T]
             if 'gt_char_dur' in args:
-                output['gt_char_dur'] = alignment.sum(0)# [mel_T, txt_T] -> [txt_T]
+                output['gt_char_dur'] = alignment.sum(0).float()# [mel_T, txt_T] -> [txt_T]
         
         if 'diagonality' in args:
             diagonality_path = f'{os.path.splitext(audiopath)[0]}_diag.pt'
             if os.path.exists(diagonality_path):
-                output['diagonality'] = torch.load(diagonality_path)
+                output['diagonality'] = torch.load(diagonality_path).float()
             else:
-                output['diagonality'] = torch.tensor(1.08)
+                output['diagonality'] = torch.tensor(1.08).float()
         
         if 'avg_prob' in args:
             avg_prob_path = f'{os.path.splitext(audiopath)[0]}_avgp.pt'
             if os.path.exists(avg_prob_path):
-                output['avg_prob'] = torch.load(avg_prob_path)
+                output['avg_prob'] = torch.load(avg_prob_path).float()
             else:
-                output['avg_prob'] = torch.tensor(0.6)
+                output['avg_prob'] = torch.tensor(0.6).float()
         
         ########################
         ## Trim into Segments ##
@@ -1169,6 +1167,7 @@ class Collate():
                 output[i, :item.shape[0], :item.shape[1]] = item
         else:
             raise Exception(f"Unexpected input shape, got {len(tensor_arr[0].shape)} dims and expected 1 or 2 dims.")
+        assert not (torch.isnan(output) | torch.isinf(output)).any(), 'NaN or Inf value found in computation'
         return output
     
     def collatea(self, *args, check_const_channels=False, **kwargs):
@@ -1202,12 +1201,14 @@ class Collate():
         out = {}
         B = len(batch)# Batch Size
         
-        if self.sort_text_len_decending and all("text" in item for item in batch):# if text, reorder entire batch to go from longest text -> shortest text.
-            text_lengths, ids_sorted = torch.sort(
-                torch.LongTensor([len(item['text']) for item in batch]), dim=0, descending=True)
-            out['text_lengths'] = text_lengths
-        else:
-            ids_sorted = list(range(B))# elif no text, batch can be whatever order it's loaded in
+        if all("text" in item for item in batch):
+            out['text_lengths'] = torch.LongTensor([len(item['text']) for item in batch])
+            if self.sort_text_len_decending:# if text, reorder entire batch to go from longest text -> shortest text.
+                text_lengths, ids_sorted = torch.sort(out['text_lengths'], dim=0, descending=True)
+                out['text_lengths'] = text_lengths
+            else:
+                ids_sorted = list(range(B))# elif len_decending sorting is disabled
+        else:   ids_sorted = list(range(B))# else no text, batch can be whatever order it's loaded in
         
         if all("gt_mel" in item for item in batch):
             out['mel_lengths'] = torch.tensor([batch[ids_sorted[i]]['gt_mel'].shape[-1] for i in range(B)])

@@ -5,7 +5,7 @@
         "filenames": [
             "LJSpeech-1.1.tar.bz2"
         ],
-        "download": 1,
+        "download": 0,
         "force_dl": 0
     },
     "VCTK": {
@@ -15,12 +15,12 @@
         "filenames": [
             "VCTK-Corpus-0.92.zip"
         ],
-        "download": 1,
+        "download": 0,
         "force_dl": 0
     },
     "Clipper_MLP": {
         "url": "https://mega.nz/folder/L952DI4Q#nibaVrvxbwgCgXMlPHVnVw",
-        "download": 1,
+        "download": 0,
         "force_dl": 0
     },
     "Blizzard2011": {

@@ -6,13 +6,15 @@ from numpy import finfo
 import torch
 from torch import nn
 from torch.nn import functional as F
+from torch.utils.checkpoint import checkpoint
 
 from torch import Tensor
 from typing import List, Tuple, Optional
+from collections import OrderedDict
 
 from CookieTTS.utils.model.layers import ConvNorm, ConvNorm2D, LinearNorm, LSTMCellWithZoneout, GMMAttention, DynamicConvolutionAttention
 from CookieTTS.utils.model.GPU import to_gpu
-from CookieTTS.utils.model.utils import get_mask_from_lengths, dropout_frame
+from CookieTTS.utils.model.utils import get_mask_from_lengths, dropout_frame, freeze_grads
 
 from CookieTTS._2_ttm.tacotron2_ssvae.nets.SylpsNet import SylpsNet
 from CookieTTS._2_ttm.tacotron2_tm.modules_vae import ReferenceEncoder
@@ -92,11 +94,11 @@ class Attention(nn.Module):
         self.score_mask_value = -float("inf")
     
     def forward(self, attention_hidden_state, memory, processed_memory, attention_weights_cat,
-                mask: Optional[Tensor] = None,
-                memory_lengths: Optional[Tensor] = None,
+                mask             : Optional[Tensor] = None,
+                memory_lengths   : Optional[Tensor] = None,
                 attention_weights: Optional[Tensor] = None,
-                current_pos: Optional[Tensor] = None,
-                score_mask_value: float = -float('inf')) -> Tuple[Tensor, Tensor]:
+                current_pos      : Optional[Tensor] = None,
+                score_mask_value : float = -float('inf')) -> Tuple[Tensor, Tensor]:
         """
         PARAMS
         ------
@@ -138,8 +140,8 @@ class Attention(nn.Module):
                     
                     mask_start = (current_pos-self.windowed_attention_range).clamp(min=0).round() # [B]
                     mask_end = mask_start+(self.windowed_attention_range*2)                       # [B]
-                    pos_mask = torch.arange(txt_T, device=current_pos.device).unsqueeze(0).repeat(B, 1)  # [B, txt_T]
-                    pos_mask = (pos_mask >= mask_start.unsqueeze(1).repeat(1, txt_T)) & (pos_mask <= mask_end.unsqueeze(1).repeat(1, txt_T))# [B, txt_T]
+                    pos_mask = torch.arange(txt_T, device=current_pos.device).unsqueeze(0).expand(B, -1)  # [B, txt_T]
+                    pos_mask = (pos_mask >= mask_start.unsqueeze(1).expand(-1, txt_T)) & (pos_mask <= mask_end.unsqueeze(1).expand(-1, txt_T))# [B, txt_T]
                     
                     # attention_weights_cat[pos_mask].view(B, self.windowed_attention_range*2+1) # for inference masked_select later
                     
@@ -284,7 +286,7 @@ class Encoder(nn.Module):
     def forward(self, text, text_lengths=None, speaker_ids=None):
         if self.encoder_speaker_embed_dim:
             speaker_embedding = self.encoder_speaker_embedding(speaker_ids)[:, None].transpose(1,2) # [B, embed, sequence]
-            speaker_embedding = speaker_embedding.repeat(1, 1, text.size(2)) # extend across all encoder steps
+            speaker_embedding = speaker_embedding.expand(-1, -1, text.size(2)) # extend across all encoder steps
             if self.encoder_concat_speaker_embed == 'before_conv':
                 text = torch.cat((text, speaker_embedding), dim=1) # [B, embed, sequence]
         
@@ -350,52 +352,50 @@ def HeightGaussianBlur(inp, blur_strength=1.0):
 
 
 class Decoder(nn.Module):
-    attention_hidden: Optional[torch.Tensor]# init self vars
-    attention_cell: Optional[torch.Tensor]# init self vars
-    decoder_hidden: Optional[torch.Tensor]# init self vars
-    decoder_cell: Optional[torch.Tensor]# init self vars
+    attention_hidden:        Optional[torch.Tensor]# init self vars
+    attention_cell:          Optional[torch.Tensor]# init self vars
+    second_attention_hidden: Optional[torch.Tensor]# init self vars
+    second_attention_cell:   Optional[torch.Tensor]# init self vars
+    
+    decoder_hidden:        Optional[torch.Tensor]# init self vars
+    decoder_cell:          Optional[torch.Tensor]# init self vars
     second_decoder_hidden: Optional[torch.Tensor]# init self vars
-    second_decoder_cell: Optional[torch.Tensor]# init self vars
-    attention_weights: Optional[torch.Tensor]# init self vars
+    second_decoder_cell:   Optional[torch.Tensor]# init self vars
+    
+    attention_weights:     Optional[torch.Tensor]# init self vars
     attention_weights_cum: Optional[torch.Tensor]# init self vars
-    saved_attention_weights: Optional[torch.Tensor]# init self vars
+    saved_attention_weights:     Optional[torch.Tensor]# init self vars
     saved_attention_weights_cum: Optional[torch.Tensor]# init self vars
+    
     attention_context: Optional[torch.Tensor]# init self vars
     previous_location: Optional[torch.Tensor]# init self vars
-    memory: Optional[torch.Tensor]# init self vars
+    
+    memory:           Optional[torch.Tensor]# init self vars
     processed_memory: Optional[torch.Tensor]# init self vars
+    
     mask: Optional[torch.Tensor]# init self vars
     gate_delay: int
     
     def __init__(self, hparams):
         super(Decoder, self).__init__()
-        self.n_mel_channels = hparams.n_mel_channels
+        self.n_mel_channels    = hparams.n_mel_channels
         self.n_frames_per_step = hparams.n_frames_per_step
+        self.context_frames    = hparams.context_frames
+        self.max_decoder_steps = hparams.max_decoder_steps
+        self.gate_threshold = hparams.gate_threshold# Float
+        self.p_teacher_forcing  = hparams.p_teacher_forcing
+        self.teacher_force_till = hparams.teacher_force_till
+        
         if hparams.use_memory_bottleneck:
             self.memory_dim = hparams.memory_bottleneck_dim
         else:
             self.memory_dim = hparams.encoder_LSTM_dim + hparams.speaker_embedding_dim + len(hparams.emotion_classes) + hparams.emotionnet_latent_dim + 1# size 1 == "sylzu"
-        self.attention_rnn_dim = hparams.attention_rnn_dim
         self.decoder_rnn_dim = hparams.decoder_rnn_dim
-        self.prenet_dim = hparams.prenet_dim
-        self.prenet_layers = hparams.prenet_layers
-        self.prenet_batchnorm = hparams.prenet_batchnorm if hasattr(hparams, 'prenet_batchnorm') else False
-        self.prenet_bn_momentum = hparams.prenet_bn_momentum
-        self.p_prenet_dropout = hparams.p_prenet_dropout
-        self.prenet_speaker_embed_dim = hparams.prenet_speaker_embed_dim if hasattr(hparams, 'prenet_speaker_embed_dim') else 0
-        self.max_decoder_steps = hparams.max_decoder_steps
-        self.gate_threshold = hparams.gate_threshold# Float
-        self.AttRNN_extra_decoder_input = hparams.AttRNN_extra_decoder_input
-        self.use_DecoderRNG             = getattr(hparams, 'use_DecoderRNG', False)
-        self.DecoderRNG_dim             = getattr(hparams, 'DecoderRNG_dim', 0)
+        self.use_DecoderRNG  = getattr(hparams, 'use_DecoderRNG', False)
+        self.DecoderRNG_dim  = getattr(hparams, 'DecoderRNG_dim', 0)
         
-        self.AttRNN_hidden_dropout_type = hparams.AttRNN_hidden_dropout_type
-        self.p_AttRNN_hidden_dropout    = hparams.p_AttRNN_hidden_dropout
         self.DecRNN_hidden_dropout_type = hparams.DecRNN_hidden_dropout_type
         self.p_DecRNN_hidden_dropout    = hparams.p_DecRNN_hidden_dropout
-        
-        self.p_teacher_forcing = hparams.p_teacher_forcing
-        self.teacher_force_till = hparams.teacher_force_till
         
         self.num_att_mixtures = hparams.num_att_mixtures
         self.normalize_attention_input = hparams.normalize_attention_input
@@ -407,42 +407,73 @@ class Decoder(nn.Module):
             self.exp_smoothing_factor = nn.Parameter( torch.ones(1) * 0.0 )
         self.attention_layers = hparams.attention_layers
         
-        self.dump_attention_weights = False
-        self.prenet_noise = hparams.prenet_noise
-        self.prenet_blur_min = hparams.prenet_blur_min
-        self.prenet_blur_max = hparams.prenet_blur_max
-        self.context_frames = hparams.context_frames
+        self.half_inference_mode = False# updated by "run_every_epoch.py" when InferenceGAN is enabled.
+        self.gradient_checkpoint = getattr(hparams, 'gradient_checkpoint', False)
+        self.decode_chunksize    = getattr(hparams, 'checkpoint_decode_chunksize', 32)
         self.hide_startstop_tokens = hparams.hide_startstop_tokens
         
-        # Default States
-        self.second_decoder_rnn = None
-        self.memory_bottleneck = None
+        self.dump_attention_weights = False# dump as in, not store in VRAM
+        self.return_attention_rnn_outputs = False
+        self.return_decoder_rnn_outputs   = False
+        self.return_attention_contexts    = False
+        
+        ######################
+        ##  Default States  ##
+        ######################
         self.attention_hidden = None
-        self.attention_cell = None
+        self.attention_cell   = None
+        self.second_attention_hidden = None
+        self.second_attention_cell   = None
+        
         self.decoder_hidden = None
-        self.decoder_cell = None
+        self.decoder_cell   = None
         self.second_decoder_hidden = None
-        self.second_decoder_cell = None
-        self.attention_weights = None
+        self.second_decoder_cell   = None
+        
+        self.attention_weights     = None
         self.attention_weights_cum = None
-        self.attention_position = None
-        self.saved_attention_weights = None
+        self.saved_attention_weights     = None
         self.saved_attention_weights_cum = None
+        self.attention_position = None
+        
         self.attention_context = None
         self.previous_location = None
         self.attention_weights_scaler = None
+        
         self.memory = None
         self.processed_memory = None
         self.mask = None
         self.gate_delay = 0
         
+        ###############
+        ##  Modules  ##
+        ###############
+        self.memory_bottleneck = None
         if hparams.use_memory_bottleneck:
             self.memory_bottleneck = MemoryBottleneck(hparams)
         
+        # Prenet
+        self.prenet_dim               = hparams.prenet_dim
+        self.prenet_layers            = hparams.prenet_layers
+        self.prenet_batchnorm         = getattr(hparams, 'prenet_batchnorm', False)
+        self.prenet_bn_momentum       = hparams.prenet_bn_momentum
+        self.p_prenet_dropout         = hparams.p_prenet_dropout
+        self.prenet_speaker_embed_dim = getattr(hparams, 'prenet_speaker_embed_dim', 0)
+        
         self.prenet = Prenet(
-            hparams.n_mel_channels * hparams.n_frames_per_step * self.context_frames,
-            [hparams.prenet_dim]*hparams.prenet_layers, self.p_prenet_dropout,
+            (hparams.n_mel_channels+self.prenet_speaker_embed_dim) * hparams.n_frames_per_step * self.context_frames,
+            [self.prenet_dim]*self.prenet_layers, self.p_prenet_dropout,
             self.prenet_batchnorm, self.prenet_bn_momentum)
+        
+        self.prenet_noise    = hparams.prenet_noise
+        self.prenet_blur_min = hparams.prenet_blur_min
+        self.prenet_blur_max = hparams.prenet_blur_max
+        
+        # Attention/Input LSTM
+        self.attention_rnn_dim = hparams.attention_rnn_dim
+        self.AttRNN_hidden_dropout_type = hparams.AttRNN_hidden_dropout_type
+        self.p_AttRNN_hidden_dropout    = hparams.p_AttRNN_hidden_dropout
+        self.AttRNN_extra_decoder_input = hparams.AttRNN_extra_decoder_input
         
         AttRNN_Dimensions = hparams.prenet_dim + self.memory_dim
         if self.AttRNN_extra_decoder_input:
@@ -454,10 +485,24 @@ class Decoder(nn.Module):
             AttRNN_Dimensions, hparams.attention_rnn_dim, bias=True,
             zoneout=self.p_AttRNN_hidden_dropout if self.AttRNN_hidden_dropout_type == 'zoneout' else 0.0,
             dropout=self.p_AttRNN_hidden_dropout if self.AttRNN_hidden_dropout_type == 'dropout' else 0.0)
+        AttRNN_output_dim = hparams.attention_rnn_dim
         
+        self.second_attention_rnn = None
+        self.second_attention_rnn_dim                 = getattr(hparams, 'second_attention_rnn_dim', 0)
+        self.second_attention_rnn_residual_connection = getattr(hparams, 'second_attention_rnn_residual_connection', False)
+        if self.second_attention_rnn_dim > 0:
+            if self.second_attention_rnn_residual_connection:
+                assert self.second_attention_rnn_dim == hparams.attention_rnn_dim, "if using 'second_attention_rnn_residual_connection', both Attention RNN dimensions must match."
+            self.second_attention_rnn = LSTMCellWithZoneout(
+            hparams.attention_rnn_dim, self.second_attention_rnn_dim, bias=True,
+            zoneout=self.p_AttRNN_hidden_dropout if self.AttRNN_hidden_dropout_type == 'zoneout' else 0.0,
+            dropout=self.p_AttRNN_hidden_dropout if self.AttRNN_hidden_dropout_type == 'dropout' else 0.0)
+            AttRNN_output_dim = self.second_attention_rnn_dim
+        
+        # Location/Attention Layer
         if self.attention_type == 0:
             self.attention_layer = Attention(
-                hparams.attention_rnn_dim, self.memory_dim,
+                AttRNN_output_dim, self.memory_dim,
                 hparams.attention_dim, hparams.attention_location_n_filters,
                 hparams.attention_location_kernel_size,
                 self.windowed_attention_range,
@@ -473,13 +518,14 @@ class Decoder(nn.Module):
         
         self.decoder_residual_connection = hparams.decoder_residual_connection
         if self.decoder_residual_connection:
-            assert (hparams.attention_rnn_dim + self.memory_dim) == hparams.decoder_rnn_dim, f"if using 'decoder_residual_connection', decoder_rnn_dim must equal attention_rnn_dim + memory_dim ({hparams.attention_rnn_dim + self.memory_dim})."
+            assert (AttRNN_output_dim + self.memory_dim) == hparams.decoder_rnn_dim, f"if using 'decoder_residual_connection', decoder_rnn_dim must equal attention_rnn_dim + memory_dim ({hparams.attention_rnn_dim + self.memory_dim})."
         self.decoder_rnn = LSTMCellWithZoneout(
-            hparams.attention_rnn_dim + self.memory_dim, hparams.decoder_rnn_dim, bias=True,
+            AttRNN_output_dim + self.memory_dim, hparams.decoder_rnn_dim, bias=True,
             zoneout=self.p_DecRNN_hidden_dropout if self.DecRNN_hidden_dropout_type == 'zoneout' else 0.0,
             dropout=self.p_DecRNN_hidden_dropout if self.DecRNN_hidden_dropout_type == 'dropout' else 0.0)
         decoder_rnn_output_dim = hparams.decoder_rnn_dim
         
+        self.second_decoder_rnn   = None
         if hparams.second_decoder_rnn_dim > 0:
             self.second_decoder_rnn_dim = hparams.second_decoder_rnn_dim
             self.second_decoder_residual_connection = hparams.second_decoder_residual_connection
@@ -491,13 +537,12 @@ class Decoder(nn.Module):
             dropout=self.p_DecRNN_hidden_dropout if self.DecRNN_hidden_dropout_type == 'dropout' else 0.0)
             decoder_rnn_output_dim = hparams.second_decoder_rnn_dim
         
-        self.linear_projection = LinearNorm(
-            decoder_rnn_output_dim + self.memory_dim,
-            hparams.n_mel_channels * hparams.n_frames_per_step)
-        
-        self.gate_layer = LinearNorm(
-            decoder_rnn_output_dim + self.memory_dim, 1,
-            bias=True, w_init_gain='sigmoid')
+        lin_proj_input_dim = decoder_rnn_output_dim + self.memory_dim
+        self.decoder_input_residual = getattr(hparams, 'decoder_input_residual', False)
+        if self.decoder_input_residual:
+            lin_proj_input_dim+=self.prenet_dim
+        self.linear_projection = LinearNorm(lin_proj_input_dim, hparams.n_mel_channels*hparams.n_frames_per_step)
+        self.gate_layer        = LinearNorm(lin_proj_input_dim, 1, w_init_gain='sigmoid')
     
     def get_go_frame(self, memory):
         """ Gets all zeros frames to use as first decoder input
@@ -514,18 +559,16 @@ class Decoder(nn.Module):
         return decoder_input
     
     
-    def initialize_decoder_states(self, memory, mask: Optional[Tensor] = None, preserve: Optional[Tensor] = None):
+    def get_decoder_states(self, memory, preserve: Optional[Tensor] = None):
         """ Initializes attention rnn states, decoder rnn states, attention
         weights, attention cumulative weights, attention context, stores memory
         and stores processed memory
         PARAMS
         ------
-        memory: Encoder outputs
-        mask: Mask for padded data if training, expects None for inference
+        memory  : Encoder outputs
         preserve: Batch shape bool tensor of decoder states to preserve
         """
-        B = memory.size(0)
-        MAX_ENCODE = memory.size(1)
+        B, MAX_ENCODE, *_ = memory.shape
         
         if preserve is not None:
             if len(preserve.shape) < 2:
@@ -533,61 +576,79 @@ class Decoder(nn.Module):
             assert preserve.shape[0] == B
         
         attention_hidden = self.attention_hidden # https://github.com/pytorch/pytorch/issues/22155#issue-460050914
-        attention_cell = self.attention_cell
+        attention_cell   = self.attention_cell
         if attention_hidden is not None and attention_cell is not None and preserve is not None:
             attention_hidden *= preserve
-            attention_hidden.detach_()
+            attention_hidden.detach_().requires_grad_(True)
             attention_cell *= preserve
-            attention_cell.detach_()
+            attention_cell.detach_().requires_grad_(True)
         else:
-            self.attention_hidden = memory.new_zeros( B, self.attention_rnn_dim)# attention hidden state
-            self.attention_cell = memory.new_zeros( B, self.attention_rnn_dim)# attention cell state
+            attention_hidden = memory.new_zeros(B, self.attention_rnn_dim)# attention hidden state
+            attention_cell   = memory.new_zeros(B, self.attention_rnn_dim)# attention cell state
+        
+        second_attention_rnn    = self.second_attention_rnn
+        second_attention_hidden = self.second_attention_hidden
+        second_attention_cell   = self.second_attention_cell
+        if second_attention_rnn is not None:
+            if second_attention_hidden is not None and second_attention_cell is not None and preserve is not None:
+                second_attention_hidden *= preserve
+                second_attention_hidden.detach_().requires_grad_(True)
+                second_attention_cell *= preserve
+                second_attention_cell.detach_().requires_grad_(True)
+            else:
+                second_attention_hidden = memory.new_zeros(B, self.second_attention_rnn_dim)# LSTM attention hidden state
+                second_attention_cell   = memory.new_zeros(B, self.second_attention_rnn_dim)# LSTM attention cell state
+        else:
+            second_attention_hidden = memory.new_zeros(1, requires_grad=True)# Dummy LSTM attention cell state
+            second_attention_cell   = memory.new_zeros(1, requires_grad=True)# Dummy LSTM attention cell state
         
         decoder_hidden = self.decoder_hidden
-        decoder_cell = self.decoder_cell
+        decoder_cell   = self.decoder_cell
         if decoder_hidden is not None and decoder_cell is not None and preserve is not None:
             decoder_hidden *= preserve
-            decoder_hidden.detach_()
+            decoder_hidden.detach_().requires_grad_(True)
             decoder_cell *= preserve
-            decoder_cell.detach_()
+            decoder_cell.detach_().requires_grad_(True)
         else:
-            self.decoder_hidden = memory.new_zeros( B, self.decoder_rnn_dim)# LSTM decoder hidden state
-            self.decoder_cell = memory.new_zeros( B, self.decoder_rnn_dim)# LSTM decoder cell state
+            decoder_hidden = memory.new_zeros(B, self.decoder_rnn_dim, requires_grad=True)# LSTM decoder hidden state
+            decoder_cell   = memory.new_zeros(B, self.decoder_rnn_dim, requires_grad=True)# LSTM decoder cell state
         
-        second_decoder_rnn = self.second_decoder_rnn
+        second_decoder_rnn    = self.second_decoder_rnn
+        second_decoder_hidden = self.second_decoder_hidden
+        second_decoder_cell   = self.second_decoder_cell
         if second_decoder_rnn is not None:
-            second_decoder_hidden = self.second_decoder_hidden
-            second_decoder_cell = self.second_decoder_cell
             if second_decoder_hidden is not None and second_decoder_cell is not None and preserve is not None:
                 second_decoder_hidden *= preserve
-                second_decoder_hidden.detach_()
+                second_decoder_hidden.detach_().requires_grad_(True)
                 second_decoder_cell *= preserve
-                second_decoder_cell.detach_()
+                second_decoder_cell.detach_().requires_grad_(True)
             else:
-                self.second_decoder_hidden = memory.new_zeros( B, self.second_decoder_rnn_dim)# LSTM decoder hidden state
-                self.second_decoder_cell = memory.new_zeros( B, self.second_decoder_rnn_dim)# LSTM decoder cell state
+                second_decoder_hidden = memory.new_zeros(B, self.second_decoder_rnn_dim, requires_grad=True)# LSTM decoder hidden state
+                second_decoder_cell   = memory.new_zeros(B, self.second_decoder_rnn_dim, requires_grad=True)# LSTM decoder cell state
+        else:
+            second_decoder_hidden = memory.new_zeros(1, requires_grad=True)# Dummy LSTM attention cell state
+            second_decoder_cell   = memory.new_zeros(1, requires_grad=True)# Dummy LSTM attention cell state
         
+        saved_attention_weights     = None
+        saved_attention_weights_cum = None
         attention_weights = self.attention_weights
         if attention_weights is not None and preserve is not None: # save all the encoder possible
-            self.saved_attention_weights = attention_weights
-            self.saved_attention_weights_cum = self.attention_weights_cum
+            saved_attention_weights     = attention_weights
+            saved_attention_weights_cum = self.attention_weights_cum
         
-        self.attention_weights = memory.new_zeros( B, MAX_ENCODE)# attention weights of that frame
-        self.attention_weights_cum = memory.new_zeros( B, MAX_ENCODE)# cumulative weights of all frames during that inferrence
+        attention_weights     = memory.new_zeros( B, MAX_ENCODE, requires_grad=True)# attention weights of that frame
+        attention_weights_cum = memory.new_zeros( B, MAX_ENCODE, requires_grad=True)# cumulative weights of all frames during that inferrence
         
-        saved_attention_weights = self.saved_attention_weights
-        attention_weights = self.attention_weights
-        attention_weights_cum = self.attention_weights_cum
         if saved_attention_weights is not None and attention_weights is not None and attention_weights_cum is not None and preserve is not None:
             COMMON_ENCODE = min(MAX_ENCODE, saved_attention_weights.shape[1]) # smallest MAX_ENCODE of the saved and current encodes
-            attention_weights[:, :COMMON_ENCODE] = saved_attention_weights[:, :COMMON_ENCODE] # preserve any encoding weights possible (some will be part of the previous iterations padding and are gone)
-            attention_weights_cum[:, :COMMON_ENCODE] = saved_attention_weights[:, :COMMON_ENCODE]
+            attention_weights    [:, :COMMON_ENCODE] = saved_attention_weights    [:, :COMMON_ENCODE] # preserve any encoding weights possible (some will be part of the previous iterations padding and are gone)
+            attention_weights_cum[:, :COMMON_ENCODE] = saved_attention_weights_cum[:, :COMMON_ENCODE]
             attention_weights *= preserve
-            attention_weights.detach_()
+            attention_weights.detach_().requires_grad_(True)
             attention_weights_cum *= preserve
-            attention_weights_cum.detach_()
+            attention_weights_cum.detach_().requires_grad_(True)
             if self.attention_type == 2: # Dynamic Convolution Attention
-                    attention_weights[:, 0] = ~(preserve==1)[:,0] # [B, 1] -> [B] # initialize the weights at encoder step 0
+                    attention_weights[:, 0]     = ~(preserve==1)[:,0] # [B, 1] -> [B] # initialize the weights at encoder step 0
                     attention_weights_cum[:, 0] = ~(preserve==1)[:,0] # [B, 1] -> [B] # initialize the weights at encoder step 0
         elif attention_weights is not None and attention_weights_cum is not None and self.attention_type == 2:
             first_attention_weights = attention_weights[:, 0]
@@ -598,29 +659,185 @@ class Decoder(nn.Module):
         attention_context = self.attention_context
         if attention_context is not None and preserve is not None:
             attention_context *= preserve
-            self.attention_context = attention_context.detach()
+            attention_context = attention_context.detach().requires_grad_(True)
         else:
-            self.attention_context = memory.new_zeros(B, self.memory_dim)# attention output
+            attention_context = memory.new_zeros(B, self.memory_dim, requires_grad=True)# attention output
         
-        self.memory = memory
         if self.attention_type == 0:
-            self.processed_memory = self.attention_layer.memory_layer(memory) # Linear Layer, [B, txt_T, enc_dim] -> [B, txt_T, attention_dim]
-            if self.windowed_attention_range:
-                attention_position = self.attention_position
-                if attention_position is not None and preserve is not None:
-                    attention_position *= preserve.squeeze(1)
-                    attention_position.detach_()
-                else:
-                    self.attention_position = memory.new_zeros(B)# [B]
-        
+            processed_memory = self.attention_layer.memory_layer(memory) # Linear Layer, [B, txt_T, enc_dim] -> [B, txt_T, attention_dim]
+            
+            attention_position = self.attention_position
+            if attention_position is not None and preserve is not None:
+                attention_position *= preserve.squeeze(1)
+                attention_position.detach_().requires_grad_(True)
+            else:
+                attention_position = memory.new_zeros(B, requires_grad=True)# [B]
         elif self.attention_type == 1:
-            self.previous_location = memory.new_zeros( B, 1, self.num_att_mixtures)
-        self.mask = mask
+            previous_location = memory.new_zeros(B, 1, self.num_att_mixtures, requires_grad=True)
+        
+        return (attention_hidden,  attention_cell,     second_attention_hidden, second_attention_cell,
+                decoder_hidden,    decoder_cell,       second_decoder_hidden,   second_decoder_cell,
+                attention_context, attention_position, attention_weights,       attention_weights_cum,
+                memory, processed_memory)
+    
+    def lstm_cp(self, func, input_, states):
+        hidden_state, cell_state = states
+        def new_func(input_, hidden_state, cell_state):
+            return func(input_, (hidden_state, cell_state))
+        return checkpoint(new_func, input_, hidden_state, cell_state)
+    
+    def att_cp(self, func, attention_rnn_output, memory, processed_memory, attention_weights_cat, mask, memory_lengths, _, attention_position):
+        def new_func(attention_rnn_output, memory, processed_memory, attention_weights_cat, mask, memory_lengths, attention_position):
+            return func(attention_rnn_output, memory, processed_memory, attention_weights_cat, mask, memory_lengths, None, attention_position)
+        return checkpoint(new_func, attention_rnn_output, memory, processed_memory, attention_weights_cat, mask, memory_lengths, attention_position)
+    
+    def decode(self, decoder_input, memory_lengths, mask: Optional[Tensor],
+        attention_hidden,  attention_cell, second_attention_hidden, second_attention_cell,
+        decoder_hidden,    decoder_cell,   second_decoder_hidden,   second_decoder_cell,
+        attention_context, attention_position, attention_weights,   attention_weights_cum,
+        memory, processed_memory):
+        """ Decoder step using stored states, attention and memory
+        PARAMS
+        ------
+        decoder_input: previous mel output
+
+        RETURNS
+        -------
+        mel_output:
+        gate_output: gate output energies
+        attention_weights:
+        """
+#        attention_hidden, attention_cell, second_attention_hidden, second_attention_cell,
+#        decoder_hidden, decoder_cell, second_decoder_hidden, second_decoder_cell,
+#        attention_context, attention_weights, attention_weights_cum, memory, processed_memory, mask
+        
+        assert attention_hidden is not None
+        assert attention_cell is not None
+        #assert second_attention_rnn is not None # module, not Tensor
+        assert second_attention_hidden is not None
+        assert second_attention_cell is not None
+        
+        assert attention_context is not None
+        assert attention_position is not None
+        assert attention_weights is not None
+        assert attention_weights_cum is not None
+        
+        assert memory           is not None
+        assert processed_memory is not None
+        
+        assert decoder_hidden is not None
+        assert decoder_cell is not None
+        #assert second_decoder_rnn is not None # module, not Tensor
+        assert second_decoder_hidden is not None
+        assert second_decoder_cell is not None
+        
+        cell_input = [decoder_input, attention_context]
+        if self.AttRNN_extra_decoder_input:
+            cell_input.append(decoder_hidden)
+        if self.use_DecoderRNG:
+            cell_input.append(torch.randn(decoder_input.shape[0], self.DecoderRNG_dim, device=decoder_input.device, dtype=decoder_input.dtype))
+        cell_input = torch.cat(cell_input, -1)# [Processed Previous Spect Frame, Last input Taken from Text/Att]
+        
+        if self.normalize_AttRNN_output and self.attention_type == 1:
+            cell_input = cell_input.tanh()
+        
+        if False and self.training and self.gradient_checkpoint:
+            _ = self.lstm_cp(self.attention_rnn.__call__, cell_input, (attention_hidden, attention_cell))
+        else:
+            _ = self.attention_rnn(cell_input, (attention_hidden, attention_cell))
+        attention_hidden = _[0]
+        attention_cell   = _[1]
+        attention_rnn_output = attention_hidden
+        
+        if self.second_attention_rnn is not None:
+            if False and self.training and self.gradient_checkpoint:
+                second_attention_state = self.lstm_cp(self.second_attention_rnn, attention_rnn_output, (second_attention_hidden, second_attention_cell))
+            else:
+                second_attention_state = self.second_attention_rnn(attention_rnn_output, (second_attention_hidden, second_attention_cell))
+            second_attention_hidden = second_attention_state[0]
+            second_attention_cell   = second_attention_state[1]
+            if self.second_attention_rnn_residual_connection:
+                attention_rnn_output = attention_rnn_output + second_attention_hidden
+            else:
+                attention_rnn_output = second_attention_hidden
+        else:
+            _ = torch.nn.parameter.Parameter(second_attention_hidden.new_ones(1))
+            second_attention_hidden=second_attention_hidden*_;second_attention_cell=second_attention_cell*_
+        
+        scaled_attention_weights_cum = attention_weights_cum.unsqueeze(1)
+        if self.attention_weights_scaler is not None:
+            scaled_attention_weights_cum *= self.attention_weights_scaler
+        attention_weights_cat = torch.cat((attention_weights.unsqueeze(1), scaled_attention_weights_cum), dim=1)
+        # [B, 1, txt_T] cat [B, 1, txt_T] -> [B, 2, txt_T]
+        
+        if self.attention_type == 0:
+            if True and self.training and self.gradient_checkpoint:
+                _ = self.att_cp(self.attention_layer, *(attention_rnn_output, memory, processed_memory, attention_weights_cat, mask, memory_lengths, None, attention_position))
+            else:
+                _ = self.attention_layer(attention_rnn_output, memory, processed_memory, attention_weights_cat, mask, memory_lengths, None, attention_position)
+            attention_context = _[0]
+            attention_weights = _[1]
+            new_pos = _[2]
+            
+            exp_smoothing_factor = self.exp_smoothing_factor
+            assert exp_smoothing_factor is not None
+            
+            smooth_factor = torch.sigmoid(exp_smoothing_factor)
+            attention_position = (attention_position*smooth_factor) + (new_pos*(1-smooth_factor))
+            
+            attention_weights_cum = attention_weights_cum + attention_weights
+        else:
+            raise NotImplementedError(f"Attention Type {self.attention_type} Invalid / Not Implemented / Deprecated")
+        
+        decoder_rnn_input = torch.cat( ( attention_rnn_output, attention_context), -1) # cat 6.475ms
+        
+        if False and self.training and self.gradient_checkpoint:
+            decoderrnn_state = self.lstm_cp(self.decoder_rnn, decoder_rnn_input, (decoder_hidden, decoder_cell))
+        else:
+            decoderrnn_state = self.decoder_rnn(decoder_rnn_input, (decoder_hidden, decoder_cell))# lstmcell 12.789ms
+        decoder_hidden = decoderrnn_state[0]
+        decoder_cell   = decoderrnn_state[1]
+        if self.decoder_residual_connection:
+            decoder_rnn_output = decoder_hidden + decoder_rnn_input
+        else:
+            decoder_rnn_output = decoder_hidden
+        
+        if self.second_decoder_rnn is not None:
+            if False and self.training and self.gradient_checkpoint:
+                second_decoder_state = self.lstm_cp(self.second_decoder_rnn, decoder_rnn_output, (second_decoder_hidden, second_decoder_cell))
+            else:
+                second_decoder_state = self.second_decoder_rnn(decoder_rnn_output, (second_decoder_hidden, second_decoder_cell))
+            second_decoder_hidden = second_decoder_state[0]
+            second_decoder_cell   = second_decoder_state[1]
+            if self.second_decoder_residual_connection:
+                decoder_rnn_output = decoder_rnn_output + second_decoder_hidden
+            else:
+                decoder_rnn_output = second_decoder_hidden
+        else:
+            second_decoder_hidden.requires_grad_(True)
+            second_decoder_cell  .requires_grad_(True)
+            second_decoder_hidden = second_decoder_hidden*0.9; second_decoder_cell = second_decoder_cell*0.9
+        
+        if self.decoder_input_residual:
+            decoder_hidden_attention_context = torch.cat((decoder_rnn_output, attention_context, decoder_input), dim=1) # -> [B, dim] cat 6.555ms
+        else:
+            decoder_hidden_attention_context = torch.cat((decoder_rnn_output, attention_context), dim=1) # -> [B, dim] cat 6.555ms
+        
+        gate_prediction = self.gate_layer(       decoder_hidden_attention_context)# -> [B, 1] addmm 5.762ms
+        decoder_output  = self.linear_projection(decoder_hidden_attention_context)# -> [B, context_frames*n_mel] addmm 5.621ms
+        
+        decode_args = [attention_hidden,  attention_cell,     second_attention_hidden, second_attention_cell,
+                       decoder_hidden,    decoder_cell,       second_decoder_hidden,   second_decoder_cell,
+                       attention_context, attention_position, attention_weights,       attention_weights_cum,
+                       memory, processed_memory,
+                       attention_rnn_output, decoder_rnn_output,]# these last 2 are not required for gradient checkpointing.
+        return decoder_output, gate_prediction, attention_weights, decode_args
     
     def parse_decoder_inputs(self, decoder_inputs):
         """ Prepares decoder inputs, i.e. mel outputs
         PARAMS
         ------
+        
         decoder_inputs: inputs used for teacher-forced training, i.e. mel-specs
         
         RETURNS
@@ -630,9 +847,7 @@ class Decoder(nn.Module):
         """
         # (B, n_mel_channels, T_out) -> (B, T_out, n_mel_channels)
         decoder_inputs = decoder_inputs.transpose(1, 2)
-        decoder_inputs = decoder_inputs.view(
-            decoder_inputs.size(0),
-            int(decoder_inputs.size(1)/self.n_frames_per_step), -1)
+        decoder_inputs = decoder_inputs.view(decoder_inputs.size(0), int(decoder_inputs.size(1)/self.n_frames_per_step), -1)
         # (B, T_out, n_mel_channels) -> (T_out, B, n_mel_channels)
         decoder_inputs = decoder_inputs.transpose(0, 1)
         return decoder_inputs
@@ -640,8 +855,7 @@ class Decoder(nn.Module):
     def parse_decoder_outputs(self,
             mel_outputs:  List[Tensor],
             gate_outputs: List[Tensor],
-            alignments:   List[Tensor],
-            hidden_att_contexts_arr: Optional[List[Tensor]] = None):
+            alignments:   List[Tensor],):
         """ Prepares decoder outputs for output
         PARAMS
         ------
@@ -655,135 +869,97 @@ class Decoder(nn.Module):
         gate_outputs: gate output energies
         alignments:
         """
+        if type(alignments) in (list, tuple):
+            alignments = torch.stack(alignments)
+        alignments = alignments.transpose(0, 1)
+        
         # (T_out, B) -> (B, T_out)
-        alignments = torch.stack(alignments).transpose(0, 1)
-        # (T_out, B) -> (B, T_out)
-        gate_outputs = torch.stack(gate_outputs)
+        if type(gate_outputs) in (list, tuple):
+            gate_outputs = torch.stack(gate_outputs)
         gate_outputs = gate_outputs.transpose(0, 1) if len(gate_outputs.size()) > 1 else gate_outputs[None]
         gate_outputs = gate_outputs.contiguous()
         
-        # (T_out, B, n_mel_channels) -> (B, T_out, n_mel_channels)
-        mel_outputs = torch.stack(mel_outputs).transpose(0, 1).contiguous()
+        if type(mel_outputs) in (list, tuple):
+            # (T_out, B, n_mel_channels) -> (B, T_out, n_mel_channels)
+            mel_outputs = torch.stack(mel_outputs)
+        mel_outputs = mel_outputs.transpose(0, 1).contiguous()
         # decouple frames per step
         mel_outputs = mel_outputs.view( mel_outputs.size(0), -1, self.n_mel_channels )
         # (B, T_out, n_mel_channels) -> (B, n_mel_channels, T_out)
         mel_outputs = mel_outputs.transpose(1, 2)
-        
-        if hidden_att_contexts_arr is not None and len(hidden_att_contexts_arr):
-            hidden_att_contexts = torch.stack(hidden_att_contexts_arr, dim=1).transpose(1, 2)# list([B, dim], [B, dim], ...) -> [B, dim, mel_T]
-        else:
-            hidden_att_contexts = None
-        return mel_outputs, gate_outputs, alignments, hidden_att_contexts
+        return mel_outputs, gate_outputs, alignments
     
-    def decode(self, decoder_input: Tensor, memory_lengths: Tensor) -> Tuple[Tensor, Tensor, Tensor, Tensor]:
-        """ Decoder step using stored states, attention and memory
-        PARAMS
-        ------
-        decoder_input: previous mel output
-
-        RETURNS
-        -------
-        mel_output:
-        gate_output: gate output energies
-        attention_weights:
+    def forward(self, decoder_inputs, memory_lengths, 
+                mel_outputs, n_already_generated,
+                mask, *decode_args,):
         """
-        attention_hidden      = self.attention_hidden
-        assert attention_hidden is not None
-        attention_cell        = self.attention_cell
-        assert attention_cell is not None
-        attention_weights     = self.attention_weights
-        assert attention_weights is not None
-        attention_context     = self.attention_context
-        assert attention_context is not None
-        attention_weights_cum = self.attention_weights_cum
-        assert attention_weights_cum is not None
-        decoder_hidden        = self.decoder_hidden
-        assert decoder_hidden is not None
-        decoder_cell          = self.decoder_cell
-        second_decoder_rnn = self.second_decoder_rnn
-        if second_decoder_rnn is not None:
-            assert decoder_cell is not None
-            second_decoder_hidden = self.second_decoder_hidden
-            assert second_decoder_hidden is not None
-            second_decoder_cell   = self.second_decoder_cell
-            assert second_decoder_cell is not None
-        memory = self.memory
-        assert memory is not None
-        processed_memory = self.processed_memory
-        assert processed_memory is not None
-        mask = self.mask
-        assert mask is not None
+        Decoder truncated forward pass.
+        This function takes part of the decoder sequence and processes it and is used for gradient checkpointing.
+        """
+        teacher_force_till  = self.teacher_force_till
+        p_teacher_forcing   = self.p_teacher_forcing
         
-        cell_input = [decoder_input, attention_context]
-        if self.AttRNN_extra_decoder_input:
-            cell_input.append(decoder_hidden)
-        if self.use_DecoderRNG:
-            cell_input.append(torch.randn(decoder_input.shape[0], self.DecoderRNG_dim, device=decoder_input.device, dtype=decoder_input.dtype))
-        cell_input = torch.cat(cell_input, -1)# [Processed Previous Spect Frame, Last input Taken from Text/Att]
-        
-        if self.normalize_AttRNN_output and self.attention_type == 1:
-            cell_input = cell_input.tanh()
-        
-        _ = self.attention_rnn(cell_input, (attention_hidden, attention_cell))
-        self.attention_hidden = attention_hidden = _[0]
-        self.attention_cell   = attention_cell   = _[1]
-        
-        scaled_attention_weights_cum = attention_weights_cum.unsqueeze(1)
-        if self.attention_weights_scaler is not None:
-            scaled_attention_weights_cum *= self.attention_weights_scaler
-        attention_weights_cat = torch.cat((attention_weights.unsqueeze(1), scaled_attention_weights_cum), dim=1)
-        # [B, 1, txt_T] cat [B, 1, txt_T] -> [B, 2, txt_T]
-        
-        if self.attention_type == 0:
-            _ = self.attention_layer(attention_hidden, memory, processed_memory, attention_weights_cat, mask, memory_lengths, None, self.attention_position)
-            self.attention_context = attention_context = _[0]
-            self.attention_weights = attention_weights = _[1]
-            new_pos = _[2]
-            
-            attention_position = self.attention_position
-            assert attention_position is not None
-            exp_smoothing_factor = self.exp_smoothing_factor
-            assert exp_smoothing_factor is not None
-            
-            smooth_factor = torch.sigmoid(exp_smoothing_factor)
-            self.attention_position = (attention_position*smooth_factor) + (new_pos*(1-smooth_factor))
-            
-            attention_weights_cum += attention_weights
-            self.attention_weights_cum = attention_weights_cum
-        else:
-            raise NotImplementedError(f"Attention Type {self.attention_type} Invalid / Not Implemented / Deprecated")
-        
-        decoder_input = torch.cat( ( attention_hidden, attention_context), -1) # cat 6.475ms
-        
-        decoderrnn_state = self.decoder_rnn(decoder_input, (decoder_hidden, decoder_cell))# lstmcell 12.789ms
-        self.decoder_hidden = decoder_rnn_output = decoderrnn_state[0]
-        self.decoder_cell   = decoder_cell       = decoderrnn_state[1]
-        if self.decoder_residual_connection:
-            decoder_rnn_output = decoder_rnn_output + decoder_input
-        
-        if second_decoder_rnn is not None:
-            second_decoder_state = self.second_decoder_rnn(decoder_rnn_output, (second_decoder_hidden, second_decoder_cell))
-            self.second_decoder_hidden = second_decoder_hidden = second_decoder_state[0]
-            self.second_decoder_cell   = second_decoder_cell   = second_decoder_state[1]
-            if self.second_decoder_residual_connection:
-                decoder_rnn_output = decoder_rnn_output + second_decoder_hidden
+        gate_outputs, alignments = [], []
+        attention_rnn_outputs = [] if self.return_attention_rnn_outputs else None
+        decoder_rnn_outputs   = [] if self.return_decoder_rnn_outputs   else None
+        attention_contexts    = [] if self.return_attention_contexts    else None
+        for i in range(len(decoder_inputs)):
+            if self.half_inference_mode:
+                decoder_input = decoder_inputs[ i].chunk(2, dim=0)[0]# [B/2, C] use teacher forced input
+                prenet_input  =    mel_outputs[-1].chunk(2, dim=0)[1]# [B/2, n_mel]
+                prenet_input  = self.prenet(prenet_input.detach())# [B/2, C] use last output for next input (like inference)
+                decoder_input = torch.cat((decoder_input, prenet_input), dim=0)# [B/2, ...] + [B/2, ...] -> [B]
+                del prenet_input
             else:
-                decoder_rnn_output = second_decoder_hidden
+                if teacher_force_till >= len(mel_outputs)+n_already_generated-1 or p_teacher_forcing >= torch.rand(1):
+                    decoder_input = decoder_inputs[i] # use teacher forced input
+                else:
+                    decoder_input = self.prenet(mel_outputs[-1])# [B, n_mel] use last output for next input (like inference)
+            
+            mel_output, gate_output, attention_weights, decode_args = self.decode(decoder_input, memory_lengths, mask, *decode_args)
+            if self.dump_attention_weights:
+                attention_weights = attention_weights.cpu()
+            if i == 0:
+                mel_outputs = []
+            mel_outputs += [mel_output.squeeze(1)]
+            gate_outputs += [gate_output.squeeze(1)]
+            if not self.dump_attention_weights or len(mel_outputs) < 2:
+                alignments += [attention_weights]
+            if self.return_decoder_rnn_outputs:
+                decoder_rnn_outputs  += [decode_args[-1],]# decoder_rnn_output
+            if self.return_attention_rnn_outputs:
+                attention_rnn_outputs+= [decode_args[-2],]# attention_rnn_output
+            if self.return_attention_contexts:
+                attention_contexts   += [decode_args[ 8],]# attention_contexts
+            del decode_args[-2:]# delete attention_rnn_outputs and decoder_rnn_outputs from decoder_args
         
-        decoder_hidden_attention_context = torch.cat( (decoder_rnn_output, attention_context), dim=1) # -> [B, dim] cat 6.555ms
+        if self.output_tensor:
+            mel_outputs  = torch.stack(mel_outputs)
+            gate_outputs = torch.stack(gate_outputs)
+            alignments   = torch.stack(alignments)
+        attention_rnn_outputs = torch.stack(attention_rnn_outputs, dim=2) if self.return_attention_rnn_outputs else None# [[B, C], [B, C], ...] -> [B, C, T]
+        decoder_rnn_outputs   = torch.stack(decoder_rnn_outputs,   dim=2) if self.return_decoder_rnn_outputs   else None# [[B, C], [B, C], ...] -> [B, C, T]
+        attention_contexts    = torch.stack(attention_contexts,    dim=2) if self.return_attention_contexts    else None# [[B, C], [B, C], ...] -> [B, C, T]
         
-        gate_prediction = self.gate_layer(decoder_hidden_attention_context) # -> [B, 1] addmm 5.762ms
-        
-        decoder_output = self.linear_projection(decoder_hidden_attention_context) # -> [B, context_frames*n_mel] addmm 5.621ms
-        
-        return decoder_output, gate_prediction, attention_weights, decoder_hidden_attention_context
+#        attention_hidden, attention_cell, second_attention_hidden, second_attention_cell,\
+#        decoder_hidden,   decoder_cell,   second_decoder_hidden,   second_decoder_cell,\
+#        attention_context, attention_position, attention_weights, attention_weights_cum,\
+#        memory, processed_memory = decode_args
+        outputs = [mel_outputs, gate_outputs, alignments, *decode_args]
+        if self.return_attention_rnn_outputs:
+            outputs.append(attention_rnn_outputs)
+        if self.return_decoder_rnn_outputs:
+            outputs.append(decoder_rnn_outputs)
+        if self.return_attention_contexts:
+            outputs.append(attention_contexts)
+        return outputs
     
-    def forward(self, memory, decoder_inputs, memory_lengths,
-                preserve_decoder:    Optional[Tensor] = None,
-                decoder_input:       Optional[Tensor] = None,
-                teacher_force_till:               int = 0,
-                p_teacher_forcing:              float = 1.0,
-                return_hidden_state:             bool = False):
+    def forward_init(self, memory, decoder_inputs, memory_lengths,
+                preserve_decoder: Optional[Tensor] = None,
+                decoder_input:    Optional[Tensor] = None,
+                teacher_force_till:            int = 0,
+                p_teacher_forcing:           float = 1.0,
+                return_hidden_state:          bool = False):
         """ Decoder forward pass for training
         PARAMS
         ------
@@ -817,53 +993,85 @@ class Decoder(nn.Module):
         if decoder_input is None:
             decoder_input = self.get_go_frame(memory).unsqueeze(0) # create blank starting frame
             if self.context_frames > 1:
-                decoder_input = decoder_input.repeat(self.context_frames, 1, 1)
+                decoder_input = decoder_input.expand(self.context_frames, -1, -1)
         else:
             decoder_input = decoder_input.permute(2, 0, 1) # [B, n_mel, context_frames] -> [context_frames, B, n_mel]
         # memory -> (1, B, n_mel) <- which is all 0's
         
-        decoder_inputs = torch.cat((decoder_input, decoder_inputs), dim=0) # [context_frames+mel_T, B, n_mel] concat T_out
+        decoder_inputs = torch.cat((decoder_input, decoder_inputs[:-1]), dim=0) # [context_frames+mel_T, B, n_mel] concat T_out
         
         if self.prenet_noise and self.training:
-            decoder_inputs = decoder_inputs + self.prenet_noise * torch.randn(decoder_inputs.shape, device=decoder_inputs.device, dtype=decoder_inputs.dtype)
+            prenet_noise = torch.randn(decoder_inputs.shape, device=decoder_inputs.device, dtype=decoder_inputs.dtype)
+            prenet_noise *= self.prenet_noise
+            decoder_inputs += prenet_noise
         
         #if self.prenet_speaker_embed_dim: # __future__ feature, not added yet!
         #    embedded_speakers = self.speaker_embedding(speaker_ids)[:, None]
         #    embedded_speakers = embedded_speakers.repeat(1, encoder_outputs.size(1), 1)
         #    decoder_inputs = torch.cat((decoder_inputs, embedded_speakers), dim=2)
         
-        decoder_inputs = self.prenet(decoder_inputs)
+        decoder_inputs = self.prenet(decoder_inputs)# [T, B, C]
         
-        self.initialize_decoder_states(
-            memory, mask=~get_mask_from_lengths(memory_lengths), preserve=preserve_decoder)
+        decode_args = self.get_decoder_states(memory, preserve=preserve_decoder)
+#        attention_hidden, attention_cell, second_attention_hidden, second_attention_cell,\
+#        decoder_hidden,   decoder_cell,   second_decoder_hidden,   second_decoder_cell,\
+#        attention_context, attention_position, attention_weights, attention_weights_cum,\
+#        memory, processed_memory = decode_args
         
-        mel_outputs, gate_outputs, alignments, hidden_att_contexts = [], [], [], []
-        while len(mel_outputs) < decoder_inputs.size(0) - 1:
-            if teacher_force_till >= len(mel_outputs) or p_teacher_forcing >= torch.rand(1):
-                decoder_input = decoder_inputs[len(mel_outputs)] # use teacher forced input
+        mask = ~get_mask_from_lengths(memory_lengths)
+        
+        decode_chunksize         = self.decode_chunksize
+        self.output_tensor       = self.training and self.gradient_checkpoint
+        self.teacher_force_till  = teacher_force_till
+        self.p_teacher_forcing   = p_teacher_forcing
+        
+        n_frames = len(decoder_inputs)
+        n_frames_generated = 0
+        mel_outputs, gate_outputs, alignments = [], [], []
+        
+        hiddens = {}
+        attention_contexts    = [] if self.return_attention_contexts    else None
+        decoder_rnn_outputs   = [] if self.return_decoder_rnn_outputs   else None
+        attention_rnn_outputs = [] if self.return_attention_rnn_outputs else None
+        
+        while n_frames_generated < n_frames:
+            func_args = (decoder_inputs[n_frames_generated:n_frames_generated+decode_chunksize],
+                   memory_lengths, mel_outputs[-1].unsqueeze(0) if n_frames_generated else decoder_input,
+                   torch.tensor(n_frames_generated), mask, *decode_args)
+            if self.training and self.gradient_checkpoint:
+                out = checkpoint(self, *func_args)
             else:
-                decoder_input = self.prenet(mel_outputs[-1][:, :self.n_mel_channels]) # [B, n_mel] use last output for next input (like inference)
-            
-            mel_output, gate_output, attention_weights, decoder_hidden_attention_context = self.decode(decoder_input, memory_lengths)
-            
-            if self.dump_attention_weights:
-                attention_weights = attention_weights.cpu()
-            mel_outputs += [mel_output.squeeze(1)]
-            gate_outputs += [gate_output.squeeze(1)]
-            if not self.dump_attention_weights or len(mel_outputs) < 2:
-                alignments += [attention_weights]
-            if return_hidden_state:
-                hidden_att_contexts += [decoder_hidden_attention_context]
+                out = self(*func_args)
+            del func_args
+            mel_outputs.extend( out[0])
+            gate_outputs.extend(out[1])
+            alignments.extend(  out[2])
+            if self.return_attention_contexts:
+                attention_contexts.append(out.pop())
+            if self.return_decoder_rnn_outputs:
+                decoder_rnn_outputs.append(out.pop())
+            if self.return_attention_rnn_outputs:
+                attention_rnn_outputs.append(out.pop())
+            decode_args = out[3:]
+            n_frames_generated = len(mel_outputs)
         
-        mel_outputs, gate_outputs, alignments, hidden_att_contexts = self.parse_decoder_outputs(
-            mel_outputs, gate_outputs, alignments, hidden_att_contexts)
+        mel_outputs, gate_outputs, alignments = self.parse_decoder_outputs(
+            mel_outputs, gate_outputs, alignments)
         
-        return mel_outputs, gate_outputs, alignments, hidden_att_contexts, memory
+        if self.return_attention_contexts:
+            attention_contexts    = torch.cat(attention_contexts,    dim=2)# [B, C, mel_T]
+            hiddens['attention_contexts'] = attention_contexts
+        if self.return_decoder_rnn_outputs:
+            decoder_rnn_outputs   = torch.cat(decoder_rnn_outputs,   dim=2)# [B, C, mel_T]
+            hiddens['decoder_rnn_outputs'] = decoder_rnn_outputs
+        if self.return_attention_rnn_outputs:
+            attention_rnn_outputs = torch.cat(attention_rnn_outputs, dim=2)# [B, C, mel_T]
+            hiddens['attention_rnn_outputs'] = attention_rnn_outputs
+        
+        return mel_outputs, gate_outputs, alignments, memory, hiddens
     
     @torch.jit.export
-    def inference(self, memory,
-            memory_lengths: Tensor,
-            return_hidden_state: bool = False):
+    def inference(self, memory, memory_lengths: Tensor,):
         """ Decoder inference
         PARAMS
         ------
@@ -884,21 +1092,20 @@ class Decoder(nn.Module):
         
         decoder_input = self.get_go_frame(memory)
         
-        self.initialize_decoder_states(memory, mask=None if memory_lengths is None else ~get_mask_from_lengths(memory_lengths))
+        decode_args = self.get_decoder_states(memory)
+        mask = ~get_mask_from_lengths(memory_lengths)
         
         sig_max_gates = torch.zeros(decoder_input.size(0))
-        mel_outputs, gate_outputs, alignments, hidden_att_contexts, break_point = [], [], [], [], self.max_decoder_steps
+        mel_outputs, gate_outputs, alignments, break_point = [], [], [], self.max_decoder_steps
         for i in range(self.max_decoder_steps):
-            decoder_input = self.prenet(decoder_input[:, :self.n_mel_channels])
+            decoder_input = self.prenet(decoder_input)
             
-            mel_output, gate_output_gpu, alignment, decoder_hidden_attention_context = self.decode(decoder_input, memory_lengths)
+            mel_output, gate_output_gpu, alignment, decode_args = self.decode(decoder_input, memory_lengths, mask, *decode_args)
             
             mel_outputs += [mel_output.squeeze(1)]
             gate_output_cpu = gate_output_gpu.cpu().float() # small operations e.g min(), max() and sigmoid() are faster on CPU # also .float() because Tensor.min() doesn't work on half precision CPU
             gate_outputs += [gate_output_gpu.squeeze(1)]
             alignments += [alignment]
-            if return_hidden_state:
-                hidden_att_contexts += [decoder_hidden_attention_context]
             
             if self.attention_type == 1 and self.num_att_mixtures == 1:# stop when the attention location is out of the encoder_outputs
                 previous_location = self.previous_location
@@ -916,16 +1123,17 @@ class Decoder(nn.Module):
                 break
             
             decoder_input = mel_output
+            del decode_args[-2:]# delete attention_rnn_outputs and decoder_rnn_outputs from decoder_args
         else:
             print("Warning! Reached max decoder steps")
         
-        mel_outputs, gate_outputs, alignments, hidden_att_contexts = self.parse_decoder_outputs(
-            mel_outputs, gate_outputs, alignments, hidden_att_contexts)
+        mel_outputs, gate_outputs, alignments = self.parse_decoder_outputs(
+            mel_outputs, gate_outputs, alignments)
         
         # apply sigmoid to the GPU as well.
         gate_outputs = torch.sigmoid(gate_outputs)
         
-        return mel_outputs, gate_outputs, alignments, hidden_att_contexts
+        return mel_outputs, gate_outputs, alignments
 
 
 class Tacotron2(nn.Module):
@@ -938,9 +1146,9 @@ class Tacotron2(nn.Module):
         self.p_teacher_forcing = hparams.p_teacher_forcing
         self.teacher_force_till = hparams.teacher_force_till
         self.encoder_concat_speaker_embed = hparams.encoder_concat_speaker_embed
+        self.gradient_checkpoint = getattr(hparams, 'gradient_checkpoint', False)
         
-        self.embedding = nn.Embedding(
-            hparams.n_symbols, hparams.symbols_embedding_dim)
+        self.embedding = nn.Embedding(hparams.n_symbols, hparams.symbols_embedding_dim)
         std = sqrt(2.0 / (hparams.n_symbols + hparams.symbols_embedding_dim))
         val = sqrt(3.0) * std  # uniform bounds for std
         self.embedding.weight.data.uniform_(-val, val)
@@ -998,56 +1206,76 @@ class Tacotron2(nn.Module):
             if drop_frame_rate > 0. and self.training:
                 gt_mel = dropout_frame(gt_mel, self.global_mean, mel_lengths, drop_frame_rate)# [B, n_mel, mel_T]
         
+        gt_mel.requires_grad_()
+        
         memory = []
         
         # (Encoder) Text -> Encoder Outputs, pred_sylps
         embedded_text = self.embedding(text).transpose(1, 2) # [B, embed, txt_T]
-        encoder_outputs, hidden_state, pred_sylps = self.encoder(embedded_text, text_lengths, speaker_ids=speaker_id) # [B, txt_T, enc_dim]
+        if False and self.training and self.gradient_checkpoint:
+            encoder_outputs, hidden_state, pred_sylps = checkpoint(self.encoder, *(embedded_text, text_lengths, speaker_id)) # [B, txt_T, enc_dim]
+        else:
+            encoder_outputs, hidden_state, pred_sylps = self.encoder(embedded_text, text_lengths, speaker_ids=speaker_id) # [B, txt_T, enc_dim]
         memory.append(encoder_outputs)
         
         # (Speaker) speaker_id -> speaker_embed
         if hasattr(self, "speaker_embedding"):
-            speaker_embed = self.speaker_embedding(speaker_id)
-            memory.append( speaker_embed[:, None].repeat(1, encoder_outputs.size(1), 1) )
+            speaker_embed = self.speaker_embedding(speaker_id)# [B, embed]
+            memory.append( speaker_embed[:, None].expand(-1, encoder_outputs.size(1), -1) )
         
         # (SylpsNet) Sylps -> sylzu, mu, logvar
         sylzu, syl_mu, syl_logvar = self.sylps_net(gt_sylps)
-        memory.append( sylzu[:, None].repeat(1, encoder_outputs.size(1), 1) )
+        memory.append( sylzu[:, None].expand(-1, encoder_outputs.size(1), -1) )
         
         # (TorchMoji)
         if hasattr(self, 'tm_bn'):
             torchmoji_hdn = self.tm_bn(torchmoji_hdn).to(sylzu)# [B, hdn_dim]
         torchmoji_hdn = self.tm_linear(torchmoji_hdn)#       [B, hdn_dim] -> [B, crushed_dim]
-        torchmoji_hdn = torchmoji_hdn[:, None].repeat(1, encoder_outputs.size(1), 1)# [B, C] -> [B, txt_T, C]
+        torchmoji_hdn = torchmoji_hdn[:, None].expand(-1, encoder_outputs.size(1), -1)# [B, C] -> [B, txt_T, C]
         memory.append(torchmoji_hdn)
         
         # (Residual Encoder) gt_mel -> res_embed
         if hasattr(self, 'res_enc'):
             res_embed, zr, r_mu, r_logvar, r_mu_logvar = self.res_enc(gt_mel, mel_lengths)# -> [B, embed]
-            res_embed = res_embed[:, None].repeat(1, encoder_outputs.size(1), 1)# -> [B, txt_T, embed]
+            res_embed = res_embed[:, None].expand(-1, encoder_outputs.size(1), -1)# -> [B, txt_T, embed]
             memory.append(res_embed)
         
         # (Decoder/Attention) memory -> pred_mel
         memory = torch.cat(memory, dim=2)# concat along Embed dim # [B, txt_T, dim]
-        pred_mel, pred_gate_logits, alignments, hidden_att_contexts, memory = self.decoder(memory, gt_mel, memory_lengths=text_lengths, preserve_decoder=pres_prev_state,
-                                                   decoder_input=init_mel, teacher_force_till=teacher_force_till, p_teacher_forcing=p_teacher_forcing,
-                                                   return_hidden_state=return_hidden_state)
+        _ = self.decoder.forward_init(memory, gt_mel, memory_lengths=text_lengths, preserve_decoder=pres_prev_state, decoder_input=init_mel,
+                      teacher_force_till=teacher_force_till, p_teacher_forcing=p_teacher_forcing, return_hidden_state=return_hidden_state)
+        pred_mel, pred_gate_logits, alignments, memory, hiddens = _
+        assert not torch.isnan(pred_mel).any(), 'mel has NaNs'# debugging
+        assert not torch.isinf(pred_mel).any(), 'mel has Infs'# debugging
         
         # (Postnet) pred_mel -> pred_mel_postnet (learn a modifier for the output)
-        pred_mel_postnet = self.postnet(pred_mel) if hasattr(self, 'postnet') else None
+        if hasattr(self, 'postnet'):
+            if self.training and self.gradient_checkpoint:
+                pred_mel_postnet = checkpoint(self.postnet, pred_mel)
+            else:
+                pred_mel_postnet = self.postnet(pred_mel)
+        else:
+            pred_mel_postnet = None
         
+        # package into dict for output
         outputs = {
                    "pred_mel": pred_mel,           # [B, n_mel, mel_T]
            "pred_mel_postnet": pred_mel_postnet,   # [B, n_mel, mel_T]
            "pred_gate_logits": pred_gate_logits,   # [B, mel_T]
+              "speaker_embed": speaker_embed,      # [B, embed]
                  "pred_sylps": pred_sylps,         # [B]
               "pred_sylps_mu": syl_mu,             # [B]
           "pred_sylps_logvar": syl_logvar,         # [B]
                  "alignments": alignments,         # [B, mel_T, txt_T]
-        "hidden_att_contexts": hidden_att_contexts,# [B, hdn_dim, mel_T]
             "encoder_outputs": encoder_outputs,    # [B, txt_T, enc_dim]
                 "res_enc_pkg": [r_mu, r_logvar, r_mu_logvar,] if hasattr(self, 'res_enc') else None,# [B, n_tokens], [B, n_tokens], [B, 2*n_tokens]
         }
+        if self.decoder.return_attention_rnn_outputs or 'attention_rnn_output' in hiddens:
+            outputs['attention_rnn_output'] = hiddens['attention_rnn_outputs']# [B, 2ndAttRNNDim or 1stAttRNNDim, mel_T]
+        if self.decoder.return_decoder_rnn_outputs   or 'decoder_rnn_output'   in hiddens:
+            outputs['decoder_rnn_output'  ] = hiddens['decoder_rnn_outputs'  ]# [B, 2ndDecRNNDim or 1stDecRNNDim, mel_T]
+        if self.decoder.return_attention_contexts    or 'attention_contexts'   in hiddens:
+            outputs['attention_contexts'  ] = hiddens['attention_contexts'   ]# [B, memory_dim, mel_T]
         return outputs
     
     def update_device(self, **inputs):
@@ -1065,7 +1293,6 @@ class Tacotron2(nn.Module):
         return outputs
     
     def inference(self, text_seq, text_lengths, speaker_id, torchmoji_hdn, gt_sylps=None, gt_mel=None, return_hidden_state=False):# [B, enc_T], [B], [B], [B], [B, tm_dim]
-        
         memory = []
         
         # (Encoder) Text -> Encoder Outputs, pred_sylps
@@ -1076,17 +1303,17 @@ class Tacotron2(nn.Module):
         # (Speaker) speaker_id -> speaker_embed
         if hasattr(self, "speaker_embedding"):
             speaker_embed = self.speaker_embedding(speaker_id)
-            memory.append( speaker_embed[:, None].repeat(1, encoder_outputs.size(1), 1) )
+            memory.append( speaker_embed[:, None].expand(-1, encoder_outputs.size(1), -1) )
         
         # (SylpsNet) Sylps -> sylzu, mu, logvar
         sylzu = self.sylps_net.infer_auto(gt_sylps or pred_sylps, rand_sampling=False)
-        memory.append( sylzu[:, None].repeat(1, encoder_outputs.size(1), 1) )
+        memory.append( sylzu[:, None].expand(-1, encoder_outputs.size(1), -1) )
         
         # (TorchMoji)
         if hasattr(self, 'tm_bn'):
             torchmoji_hdn = self.tm_bn(torchmoji_hdn).to(sylzu)# [B, hdn_dim]
         torchmoji_hdn = self.tm_linear(torchmoji_hdn)#       [B, hdn_dim] -> [B, crushed_dim]
-        torchmoji_hdn = torchmoji_hdn[:, None].repeat(1, encoder_outputs.size(1), 1)# [B, C] -> [B, txt_T, C]
+        torchmoji_hdn = torchmoji_hdn[:, None].expand(-1, encoder_outputs.size(1), -1)# [B, C] -> [B, txt_T, C]
         memory.append(torchmoji_hdn)
         
         # (Residual Encoder) gt_mel -> res_embed
@@ -1095,12 +1322,12 @@ class Tacotron2(nn.Module):
                 res_embed, zr, r_mu, r_logvar = self.res_enc(gt_mel, rand_sampling=False)# -> [B, embed]
             else:
                 res_embed = self.res_enc.prior(encoder_outputs, std=0.0)# -> [B, embed]
-            res_embed = res_embed[:, None].repeat(1, encoder_outputs.size(1), 1)# -> [B, txt_T, embed]
+            res_embed = res_embed[:, None].expand(-1, encoder_outputs.size(1), -1)# -> [B, txt_T, embed]
             memory.append(res_embed)
         
         # (Decoder/Attention) memory -> pred_mel
         memory = torch.cat(memory, dim=2)# concat along Embed dim # [B, txt_T, dim]
-        pred_mel, pred_gate, alignments, hidden_att_contexts = self.decoder.inference(memory, memory_lengths=text_lengths, return_hidden_state=return_hidden_state)
+        pred_mel, pred_gate, alignments = self.decoder.inference(memory, memory_lengths=text_lengths)
         
         # (Postnet) pred_mel -> pred_mel_postnet (learn a modifier for the output)
         pred_mel_postnet = self.postnet(pred_mel) if hasattr(self, 'postnet') else mel_outputs
@@ -1114,14 +1341,14 @@ class Tacotron2(nn.Module):
         return outputs
 
 class ResBlock1d(nn.Module):
-    def __init__(self, input_dim, output_dim, n_layers, n_dim, kernel_w, bias=True, act_func=nn.LeakyReLU(negative_slope=0.1, inplace=True), dropout=0.0, res=False):
+    def __init__(self, input_dim, output_dim, n_layers, n_dim, kernel_w, bias=True, act_func=nn.LeakyReLU(negative_slope=0.2, inplace=True), dropout=0.0, stride=1, res=False):
         super(ResBlock1d, self).__init__()
         self.layers = nn.ModuleList()
         for i in range(n_layers):
             in_dim = input_dim if i == 0 else n_dim
             out_dim = output_dim if i+1 == n_layers else n_dim
             pad = (kernel_w - 1)//2
-            conv = nn.Conv1d(in_dim, out_dim, kernel_w, padding=pad, bias=bias)
+            conv = nn.Conv1d(in_dim, out_dim, kernel_w, padding=pad, stride=stride, bias=bias)
             self.layers.append(conv)
         self.act_func = act_func
         self.dropout = dropout
@@ -1130,8 +1357,10 @@ class ResBlock1d(nn.Module):
             assert input_dim == output_dim, 'residual connection requires input_dim and output_dim to match.'
     
     def forward(self, x): # [B, in_dim, T]
+        if len(x.shape) == 4 and x.shape[1] == 1:# if [B, 1, H, W]
+            x = x.squeeze(1)# [B, 1, H, W] -> [B, H, W]
         if len(x.shape) == 2:
-            x = x.unsqueeze(-1)
+            x = x.unsqueeze(-1)# [B, C] -> [B, C, 1]
         skip = x
         
         for i, layer in enumerate(self.layers):
@@ -1147,11 +1376,11 @@ class ResBlock1d(nn.Module):
 
 
 class ResBlock2d(nn.Module):
-    def __init__(self, input_dim, output_dim, n_layers, n_dim, kernel_h, kernel_w, stride=1, bias=True, act_func=nn.LeakyReLU(negative_slope=0.1, inplace=True), dropout=0.0, res=False):
+    def __init__(self, input_dim, output_dim, n_layers, n_dim, kernel_h, kernel_w, stride=1, bias=True, act_func=nn.LeakyReLU(negative_slope=0.2, inplace=True), dropout=0.0, res=False):
         super(ResBlock2d, self).__init__()
         self.layers = nn.ModuleList()
         for i in range(n_layers):
-            in_dim = input_dim if i == 0 else n_dim
+            in_dim  =  input_dim if i == 0 else n_dim
             out_dim = output_dim if i+1 == n_layers else n_dim
             pad_h = (kernel_h - 1)//2
             pad_w = (kernel_w - 1)//2
@@ -1186,22 +1415,64 @@ def reduce_tensor(tensor, n_gpus):
     rt /= n_gpus
     return rt
 
+class DebluraGANSubModule(nn.Module):# contains the actual Layers/Modules, does not contain any optimizers or saving/loading stuff
+    def __init__(self, hparams):
+        super(DebluraGANSubModule, self).__init__()
+        self.prenet = []
+        assert len(hparams.dbGAN_prenet_stride) == hparams.dbGAN_prenet_n_blocks, 'n_blocks != len(stride)'
+        viewed_prenet_dim = hparams.n_mel_channels
+        for i in range(hparams.dbGAN_prenet_n_blocks):
+            is_first_block = bool(i   == 0)
+            is_last_block  = bool(i+1 == hparams.dbGAN_prenet_n_blocks)
+            self.prenet.append(ResBlock2d(1 if is_first_block else hparams.dbGAN_prenet_dim, hparams.dbGAN_prenet_dim,
+                                          hparams.dbGAN_prenet_n_layers, hparams.dbGAN_prenet_dim,
+                                          kernel_h=hparams.dbGAN_prenet_kernel_h, kernel_w=hparams.dbGAN_prenet_kernel_w, stride=hparams.dbGAN_prenet_stride[i]))
+            for j in range(hparams.dbGAN_prenet_n_layers):
+                viewed_prenet_dim = ((viewed_prenet_dim +2*((hparams.dbGAN_prenet_kernel_h-1)//2) -1*(hparams.dbGAN_prenet_kernel_h-1) -1)//hparams.dbGAN_prenet_stride[i][0])+1
+        self.prenet = nn.Sequential(*self.prenet)
+        
+        viewed_prenet_dim *= hparams.dbGAN_prenet_dim
+        
+        self.postnet = []
+        for i in range(hparams.dbGAN_n_blocks):
+            is_first_block = bool(i   == 0)
+            is_last_block  = bool(i+1 == hparams.dbGAN_n_blocks)
+            self.postnet.append(ResBlock1d(viewed_prenet_dim+hparams.speaker_embedding_dim if is_first_block else hparams.dbGAN_dim, 1 if is_last_block else hparams.dbGAN_dim,
+                                           hparams.dbGAN_n_layers, hparams.dbGAN_dim, kernel_w=hparams.dbGAN_kernel_w, stride=hparams.dbGAN_stride))
+        self.postnet = nn.Sequential(*self.postnet)
+    
+    def forward(self, mels: Tensor, speaker_embed: Tensor):
+        assert not (torch.isnan(mels) | torch.isinf(mels)).any(), 'NaN or Inf value found in computation'
+        speaker_embed = speaker_embed.clone().detach()
+        mels = mels + 5.0
+        mels = mels + mels.clone().normal_(std=0.2)# add random noise to the input to force the discriminator to focus on all aspects of the input instead of just focusing on the really small bits it can reliably use.
+        
+        if len(speaker_embed.shape) == 2:
+            speaker_embed = speaker_embed.unsqueeze(-1)# -> [B, embed, 1]
+        B, embed_dim, *_ = speaker_embed.shape
+        
+        if len(mels.shape) == 3:
+            mels.unsqueeze(1)# [B, C, T] -> [B, 1, C, T]
+        
+        mels = self.prenet(mels)# [B, 1, C, T] -> [B, prenet_dim, C//4, T//4]
+        assert not (torch.isnan(mels) | torch.isinf(mels)).any(), 'NaN or Inf value found in computation'
+        B, *_, mel_T = mels.shape
+        mels = mels.view(B, -1, mel_T)# [B, prenet_dim, C//4, T//4] -> [B, prenet_dim*C//4, T//4]
+        mels = torch.cat((mels, speaker_embed.to(mels).expand(B, embed_dim, mels.shape[2])), dim=1)# [B, C//4, T//4] + [B, speaker_embed] -> [B, C//4+spkr_embed, T//4]
+        pred_fakeness = self.postnet(mels)# [B, C//4+spkr_embed, T//4] -> [B, 1, T//4]
+        assert not (torch.isnan(mels) | torch.isinf(mels)).any(), 'NaN or Inf value found in computation'
+        
+        pred_fakeness = pred_fakeness.squeeze(1)# [B, 1, T//4] -> [B, T//4]
+        return pred_fakeness# [B, (mel_T//prenet_stride^(prenet_n_blocks*prenet_n_layers))//(n_blocks*stride)]
 
 class DebluraGAN(nn.Module):# GAN loss on spectrogram to reduce blur from predicted outputs
     def __init__(self, hparams):
         super(DebluraGAN, self).__init__()
         self.optimizer     = None
-        self.discriminator = []
-        assert len(hparams.dbGAN_stride) == hparams.dbGAN_n_blocks
-        for i in range(hparams.dbGAN_n_blocks):
-            is_first_block = bool(i   == 0)
-            is_last_block  = bool(i+1 == hparams.dbGAN_n_blocks)
-            self.discriminator.append(ResBlock2d(1 if is_first_block else hparams.dbGAN_dis_dim, 1 if is_last_block else hparams.dbGAN_dis_dim,
-                                                 hparams.dbGAN_n_layers, hparams.dbGAN_dis_dim,
-                                                 kernel_h=hparams.dbGAN_kernel_h, kernel_w=hparams.dbGAN_kernel_w, stride=hparams.dbGAN_stride[i]))
-        self.discriminator = nn.Sequential(*self.discriminator)
+        self.discriminator = DebluraGANSubModule(hparams)
         self.fp16_run    = hparams.fp16_run
         self.n_gpus      = hparams.n_gpus
+        self.gradient_checkpoint = hparams.gradient_checkpoint
     
     def state_dict(self):
         dict_ = {
@@ -1224,26 +1495,33 @@ class DebluraGAN(nn.Module):# GAN loss on spectrogram to reduce blur from predic
         self.discriminator.load_state_dict(local_dict)
         del local_dict, new_dict
         
-        if n_missing_keys == 0:
+        if 1 and n_missing_keys == 0:
             self.optimizer.load_state_dict(dict_['optimzier_state_dict'])
     
     def forward(self, pred, gt, reduced_loss_dict, loss_dict, loss_scalars):
         assert self.optimizer is not None
         self.optimizer.zero_grad()
         
-        pred_mel         = pred['pred_mel_postnet'].unsqueeze(1)# [B, 1, n_mel, mel_T]
-        pred_mel_postnet = pred['pred_mel'].unsqueeze(1)        # [B, 1, n_mel, mel_T]
-        gt_mel           =   gt['gt_mel'].unsqueeze(1)          # [B, 1, n_mel, mel_T]
-        B, _, n_mel, mel_T = gt_mel.shape
-        mels = torch.cat((gt_mel, pred_mel, pred_mel_postnet), dim=0)# [3*B, 1, n_mel, mel_T]
-        pred_fakeness = self.discriminator(mels.detach()).squeeze(1)# -> [B, C, mel_T]
-        pred_fakeness = pred_fakeness.mean(dim=1)# -> [B, mel_T]
-        pred_fakeness = pred_fakeness.mean(dim=1)# -> [B]
-        gt_fakeness, pred_fakeness, postnet_fakeness = pred_fakeness.chunk(3, dim=0)
-        fake_label = torch.ones(B, device=gt_mel.device, dtype=gt_mel.dtype)     # [B]
-        real_label = torch.ones(B, device=gt_mel.device, dtype=gt_mel.dtype)*-1.0# [B]
+        tfB = pred['speaker_embed'].shape[0]
+        pred_mel         = pred['pred_mel_postnet'][:tfB].float().detach().unsqueeze(1)# [B, 1, n_mel, mel_T]
+        pred_mel_postnet = pred['pred_mel'        ][:tfB].float().detach().unsqueeze(1)# [B, 1, n_mel, mel_T]
+        gt_mel           =   gt['gt_mel'          ][:tfB].float().detach().unsqueeze(1)# [B, 1, n_mel, mel_T]
         
-        loss_dict['dbGAN_dLoss'] = F.mse_loss(real_label, gt_fakeness)*2 + F.mse_loss(fake_label, pred_fakeness) + F.mse_loss(fake_label, postnet_fakeness)
+        B, _, n_mel, mel_T = gt_mel.shape
+        mels = torch.cat((gt_mel, pred_mel, pred_mel_postnet), dim=0)# -> [3*B, 1, n_mel, mel_T]
+        assert not (torch.isnan(mels) | torch.isinf(mels)).any(), 'NaN or Inf value found in computation'
+        
+        #if self.training and self.gradient_checkpoint:
+        #    pred_fakeness = checkpoint(self.discriminator, mels, gt['speaker_id'].repeat(3)).squeeze(1)# -> [B, mel_T//?]
+        #else:
+        pred_fakeness = self.discriminator(mels, pred['speaker_embed'].repeat(3, 1)).squeeze(1)# -> [3*B, mel_T//?]
+        
+        gt_fakeness, pred_fakeness, postnet_fakeness = pred_fakeness.chunk(3, dim=0)# -> [B, mel_T//?], [B, mel_T//?], [B, mel_T//?]
+        B, mel_T = gt_fakeness.shape
+        fake_label = torch.ones(B, mel_T, device=gt_mel.device, dtype=gt_mel.dtype)     # [B, mel_T//?]
+        real_label = torch.ones(B, mel_T, device=gt_mel.device, dtype=gt_mel.dtype)*-1.0# [B, mel_T//?]
+        
+        loss_dict['dbGAN_dLoss'] = F.mse_loss(real_label, gt_fakeness)*0.5 + F.mse_loss(fake_label, pred_fakeness)*0.25 + F.mse_loss(fake_label, postnet_fakeness)*0.25
         loss = loss_dict['dbGAN_dLoss'] * loss_scalars['dbGAN_dLoss_weight']
         
         reduced_loss_dict['dbGAN_dLoss'] = reduce_tensor(loss_dict['dbGAN_dLoss'].data, self.n_gpus).item() if self.n_gpus > 1 else loss_dict['dbGAN_dLoss'].item()

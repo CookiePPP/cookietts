@@ -10,7 +10,7 @@
         "defaults": {
             "current_text"       : "",
             "background_text"    : "Enter text.",
-            "speaker"            : ["(Audiobook) Blizzard2011_Nancy"],
+            "speaker"            : ["Nancy"],
             "use_arpabet"        : "on",
             "cat_silence_s"      : 0.20,
             "batch_size"         : 256,
@@ -26,34 +26,51 @@
     "workers": {
         "devices": ["cpu", "cuda:0"],
         "sox_output_ext": "flac",
-        "working_directory": "/media/cookie/WD6TB/TTS/Audiobooks/2_unsorted_tmp",
-        "output_directory":  "/media/cookie/WD6TB/TTS/Audiobooks/1_unsorted",
+        "working_directory": "I:/TTS/Audiobooks/2_unsorted_tmp",
+        "output_directory":  "I:/TTS/Audiobooks/1_unsorted",
         "output_maxsize_gb": 0.01,
-        "dict_path": "/media/cookie/Samsung PM961/TwiBot/tacotron2/filelists/merged.dict_.txt",
+        "dict_path": "../../dict/merged.dict.txt",
         "TTM": {
-            "default_model": "MEL160C | Tacotron2 TM U3 V0 (Best Inference Attention Score)",
+            "default_model": "MEL160C | Tacotron2 TM U4 V19.3 0.0DFR 0.0DO (best_inf_attsc)",
             "models": {
-                "MEL160C | Tacotron2 TM U3 V0 (Best Inference Attention Score)": {
-                    "modelpath": "/media/cookie/Samsung PM961/TwiBot/CookiePPPTTS/CookieTTS/_2_ttm/tacotron2_tm/outdir_u3_debluraGAN/best_inf_attsc",
-                    "speaker_ids_file": "/media/cookie/WD6TB/TTS/HiFiDatasets/meta/speaker_info.txt",
+                "MEL160C | Tacotron2 TM U3 V0 (20K)": {
+                    "modelpath": "G:/TwiBot/CookiePPPTTS/CookieTTS/_2_ttm/tacotron2_tm/outdir_u3_debluraGAN/checkpoint_20000",
+                    "speaker_ids_file": "I:/TTS/HiFiDatasets/meta/speaker_info.txt",
+                    "use_speaker_ids_file_override": true
+                },
+                "MEL160C | Tacotron2 TM U4 V0 (15K)": {
+                    "modelpath": "G:/TwiBot/CookiePPPTTS/CookieTTS/_2_ttm/tacotron2_tm/outdir_u4_dbGAN_SprkEmb/checkpoint_15000",
+                    "speaker_ids_file": "I:/TTS/HiFiDatasets/meta/speaker_info.txt",
                     "use_speaker_ids_file_override": true
                 },
                 "MEL80C | Tacotron2 TM P3 0.5DFR 0.0DO (best_inf_attsc)": {
-                    "modelpath": "/media/cookie/Samsung PM961/TwiBot/CookiePPPTTS/CookieTTS/_2_ttm/tacotron2_tm/outdir_p3_2_0.5DFR_0.0Dropout/best_inf_attsc",
+                    "modelpath": "G:/TwiBot/CookiePPPTTS/CookieTTS/_2_ttm/tacotron2_tm/outdir_p3_2_0.5DFR_0.0Dropout/best_inf_attsc",
                     "speaker_ids_file": "/media/cookie/Samsung 860 QVO/ClipperDatasetV2/filelists/speaker_ids.txt",
                     "use_speaker_ids_file_override": true
+                },
+                "MEL160C | Tacotron2 TM U4 V19.3 0.0DFR 0.0DO (best_inf_attsc)": {
+                    "modelpath": "G:/TwiBot/CookiePPPTTS/CookieTTS/_2_ttm/tacotron2_tm/outdir_u4_19_3/best_inf_attsc",
+                    "speaker_ids_file": "I:/TTS/HiFiDatasets/meta/speaker_info.txt",
+                    "use_speaker_ids_file_override": true
+                },
+                "MEL160C | Tacotron2 TM U4 V19.3 0.0DFR 0.0DO (94.5K)": {
+                    "modelpath": "G:/TwiBot/CookiePPPTTS/CookieTTS/_2_ttm/tacotron2_tm/outdir_u4_19_3/checkpoint_94500",
+                    "speaker_ids_file": "I:/TTS/HiFiDatasets/meta/speaker_info.txt",
+                    "use_speaker_ids_file_override": true
                 }
-
             }
         },
         "MTW": {
-            "default_model": "MEL160C | HiFi-GAN V1.3 44Khz GT",
+            "default_model": "MEL160C | HiFi-GAN V1.3 44Khz FT",
             "models": {
                 "MEL80C | HiFi-GAN V1.3 44Khz FT": {
                     "modelpath": "../../_4_mtw/hifigan/cp_hifigan_universal44Khz_3/g_00247750"
                 },
                 "MEL160C | HiFi-GAN V1.3 44Khz GT": {
-                    "modelpath": "../../_4_mtw/hifigan/cp_hifigan_935universal44Khz_0/g_00020500"
+                    "modelpath": "../../_4_mtw/hifigan/cp_hifigan_935universal44Khz_0/g_00534500"
+                },
+                "MEL160C | HiFi-GAN V1.3 44Khz FT": {
+                    "modelpath": "../../_4_mtw/hifigan/cp_hifigan_935universal44Khz_0_ft/g_00163000"
                 }
             }
         }

@@ -4,10 +4,11 @@ import os
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+from torch.utils.checkpoint import checkpoint
 import torch.distributed as dist
 import numpy as np
 import math
-from CookieTTS.utils.model.utils import get_mask_from_lengths, alignment_metric, get_first_over_thresh
+from CookieTTS.utils.model.utils import get_mask_from_lengths, alignment_metric, get_first_over_thresh, freeze_grads
 from typing import Optional
 
 
@@ -115,7 +116,9 @@ def get_class_durations(text, alignment, n_symbols):
 class Tacotron2Loss(nn.Module):
     def __init__(self, hparams):
         super(Tacotron2Loss, self).__init__()
-        self.n_symbols = hparams.n_symbols
+        self.rank       = hparams.rank
+        
+        self.n_symbols  = hparams.n_symbols
         self.n_speakers = hparams.n_speakers
         
         # Gate Loss
@@ -131,7 +134,8 @@ class Tacotron2Loss(nn.Module):
         self.res_enc_kld_weight  = hparams.res_enc_kld_weight
         self.res_enc_gMSE_weight = hparams.res_enc_gMSE_weight
         
-        self.use_dbGAN = hparams.use_dbGAN
+        self.use_dbGAN  = hparams.use_dbGAN
+        self.use_InfGAN = hparams.use_InfGAN
         
         self.gate_loss_weight = hparams.gate_loss_weight
         
@@ -157,26 +161,27 @@ class Tacotron2Loss(nn.Module):
     
     def colate_losses(self, loss_dict, loss_scalars, loss=None):
         for k, v in loss_dict.items():
-            loss_scale = getattr(self, f'{k}_weight', 1.0)
-            loss_scale = loss_scalars[f'{k}_weight'] if (f'{k}_weight' in loss_scalars and loss_scalars[f'{k}_weight'] is not None) else loss_scale
-            if loss is not None:
-                loss += v*loss_scale
-            else:
-                loss = v*loss_scale
+            loss_scale = loss_scalars.get(f'{k}_weight', None)
+            if loss_scale is None:
+                loss_scale = getattr(self, f'{k}_weight', 1.0)
+                print(f'{k} is missing loss weight')
+            if loss_scale > 0.0:
+                if loss is not None:
+                    loss = loss + v*loss_scale
+                else:
+                    loss = v*loss_scale
+            if False and self.rank == 0:
+                print(f'{k:20} {loss_scale:05.2f} {loss:05.2f} {loss_scale*v:+010.6f}', v)
         loss_dict['loss'] = loss
         return loss_dict
     
-    def file_losses(self, loss_dict):
-        
-        return 
-    
-    def forward(self, pred, gt, loss_scalars, resGAN=None, dbGAN=None):
-        
+    def forward(self, model, pred, gt, loss_scalars, resGAN=None, dbGAN=None, infGAN=None):
         loss_dict = {}
         file_losses = {}# dict of {"audiofile": {"spec_MSE": spec_MSE, "avg_prob": avg_prob, ...}, ...}
         
         B, n_mel, mel_T = gt['gt_mel'].shape
-        for i in range(B):
+        tfB = B//(model.decoder.half_inference_mode+1)
+        for i in range(tfB):
             current_time = time.time()
             if gt['audiopath'][i] not in file_losses:
                 file_losses[gt['audiopath'][i]] = {'speaker_id_ext': gt['speaker_id_ext'][i], 'time': current_time}
@@ -186,72 +191,102 @@ class Tacotron2Loss(nn.Module):
             pred_mel         = pred['pred_mel']
             gt_mel           =   gt['gt_mel']
             mel_lengths      =   gt['mel_lengths']
-            B, n_mel, mel_T = gt_mel.shape
-            
-            teacher_force_till = loss_scalars.get('teacher_force_till', 9e9)
-            p_teacher_forcing  = loss_scalars.get('p_teacher_forcing' , 1.0)
-            if p_teacher_forcing == 0.0 and teacher_force_till > 1:
-                gt_mel           = gt_mel[:, :, :teacher_force_till]
-                pred_mel         = pred_mel[:, :, :teacher_force_till]
-                pred_mel_postnet = pred_mel_postnet[:, :, :teacher_force_till]
-                mel_lengths      = mel_lengths.clamp(max=teacher_force_till)
             
             mask = get_mask_from_lengths(mel_lengths)
             mask = mask.expand(gt_mel.size(1), *mask.shape).permute(1, 0, 2)
+            pred_mel_postnet.masked_fill_(~mask, 0.0)
+            pred_mel        .masked_fill_(~mask, 0.0)
+            
+            with torch.no_grad():
+                assert not torch.isnan(pred_mel).any(), 'mel has NaNs'
+                assert not torch.isinf(pred_mel).any(), 'mel has Infs'
+                assert not torch.isnan(pred_mel_postnet).any(), 'mel has NaNs'
+                assert not torch.isinf(pred_mel_postnet).any(), 'mel has Infs'
+            
+            if model.decoder.half_inference_mode:
+                pred_mel_postnet = pred_mel_postnet.chunk(2, dim=0)[0]
+                pred_mel         = pred_mel        .chunk(2, dim=0)[0]
+                gt_mel           = gt_mel          .chunk(2, dim=0)[0]
+                mel_lengths      = mel_lengths     .chunk(2, dim=0)[0]
+                mask             = mask            .chunk(2, dim=0)[0]
+            B, n_mel, mel_T = gt_mel.shape
+            
+            teacher_force_till = loss_scalars.get('teacher_force_till',   0)
+            p_teacher_forcing  = loss_scalars.get('p_teacher_forcing' , 1.0)
+            if p_teacher_forcing == 0.0 and teacher_force_till > 1:
+                gt_mel           = gt_mel          [:, :, :teacher_force_till]
+                pred_mel         = pred_mel        [:, :, :teacher_force_till]
+                pred_mel_postnet = pred_mel_postnet[:, :, :teacher_force_till]
+                mel_lengths      = mel_lengths.clamp(max=teacher_force_till)
             
             # spectrogram / decoder loss
-            pred_mel.masked_fill_(~mask, 0.0)
-            gt_mel.masked_fill_(~mask, 0.0)
             pred_mel_selected = torch.masked_select(pred_mel, mask)
-            gt_mel_selected   = torch.masked_select(gt_mel, mask)
+            gt_mel_selected   = torch.masked_select(gt_mel,   mask)
             spec_SE = nn.MSELoss(reduction='none')(pred_mel_selected, gt_mel_selected)
             loss_dict['spec_MSE'] = spec_SE.mean()
             
             losses = spec_SE.split([x*n_mel for x in mel_lengths.cpu()])
-            for i in range(B):
+            for i in range(tfB):
                 audiopath = gt['audiopath'][i]
                 file_losses[audiopath]['spec_MSE'] = losses[i].mean().item()
             
             # postnet
-            pred_mel_postnet.masked_fill_(~mask, 0.0)
             pred_mel_postnet_selected = torch.masked_select(pred_mel_postnet, mask)
             loss_dict['postnet_MSE'] = nn.MSELoss()(pred_mel_postnet_selected, gt_mel_selected)
             
             # squared by frame, mean postnet
-            mask = get_mask_from_lengths(mel_lengths).unsqueeze(-1)# -> [B, mel_T] -> [B, mel_T, 1]
+            mask = mask.transpose(1, 2)[:, :, :1]# [B, mel_T, n_mel] -> [B, mel_T, 1]
             
             spec_AE = nn.L1Loss(reduction='none')(pred_mel, gt_mel).transpose(1, 2)# -> [B, mel_T, n_mel]
-            spec_AE = spec_AE.masked_select(mask).view(mel_lengths.sum(), n_mel)# -> [B*mel_T, n_mel]
+            spec_AE = spec_AE.masked_select(mask).view(mel_lengths.sum(), n_mel)   # -> [B* mel_T, n_mel]
             loss_dict['spec_MFSE'] = (spec_AE * spec_AE.mean(dim=1, keepdim=True)).mean()# multiply by frame means (similar to square op from MSE) and get the mean of the losses
             
             post_AE = nn.L1Loss(reduction='none')(pred_mel_postnet, gt_mel).transpose(1, 2)# -> [B, mel_T, n_mel]
             post_AE = post_AE.masked_select(mask).view(mel_lengths.sum(), n_mel)# -> [B*mel_T, n_mel]
             loss_dict['postnet_MFSE'] = (post_AE * post_AE.mean(dim=1, keepdim=True)).mean()# multiply by frame means (similar to square op from MSE) and get the mean of the losses
+            del gt_mel, spec_AE, post_AE,#pred_mel_postnet, pred_mel
         
         if True: # gate/stop loss
-            gate_target =  gt['gt_gate_logits'].view(-1, 1)
-            gate_out = pred['pred_gate_logits'].view(-1, 1)
+            gate_target =   gt['gt_gate_logits'  ]
+            gate_out    = pred['pred_gate_logits']
+            if model.decoder.half_inference_mode:
+                gate_target = gate_target.chunk(2, dim=0)[0]
+                gate_out    = gate_out   .chunk(2, dim=0)[0]
+            gate_target = gate_target.view(-1, 1)
+            gate_out    =    gate_out.view(-1, 1)
+            
             loss_dict['gate_loss'] = nn.BCEWithLogitsLoss(pos_weight=self.pos_weight)(gate_out, gate_target)
             del gate_target, gate_out
         
         if True: # SylpsNet loss
             syl_mu     = pred['pred_sylps_mu']
             syl_logvar = pred['pred_sylps_logvar']
+            if model.decoder.half_inference_mode:
+                syl_logvar  = syl_logvar.chunk(2, dim=0)[0]
+                syl_mu      = syl_mu    .chunk(2, dim=0)[0]
             loss_dict['sylps_kld'] = -0.5 * (1 + syl_logvar - syl_logvar.exp() - syl_mu.pow(2)).sum()/B
             del syl_mu, syl_logvar
         
         if True: # Pred Sylps loss
             pred_sylps = pred['pred_sylps'].squeeze(1)# [B, 1] -> [B]
             sylps_target = gt['gt_sylps']
-            loss_dict['sylps_MAE'] = nn.L1Loss()(pred_sylps, sylps_target)
+            if model.decoder.half_inference_mode:
+                pred_sylps      = pred_sylps     .chunk(2, dim=0)[0]
+                sylps_target    = sylps_target   .chunk(2, dim=0)[0]
+            loss_dict['sylps_MAE'] =  nn.L1Loss()(pred_sylps, sylps_target)
             loss_dict['sylps_MSE'] = nn.MSELoss()(pred_sylps, sylps_target)
             del pred_sylps, sylps_target
         
         if True:# Diagonal Attention Guiding
             alignments     = pred['alignments']
-            text_lengths   = gt['text_lengths']
-            output_lengths = gt['mel_lengths']
-            pres_prev_state= gt['pres_prev_state']
+            text_lengths   =   gt['text_lengths']
+            output_lengths =   gt['mel_lengths']
+            pres_prev_state=   gt['pres_prev_state']
+            if model.decoder.half_inference_mode:
+                alignments      = alignments     .chunk(2, dim=0)[0]
+                text_lengths    = text_lengths   .chunk(2, dim=0)[0]
+                output_lengths  = output_lengths .chunk(2, dim=0)[0]
+                pres_prev_state = pres_prev_state.chunk(2, dim=0)[0]
             loss_dict['diag_att'] = self.guided_att(alignments[pres_prev_state==0.0],
                                                   text_lengths[pres_prev_state==0.0],
                                                 output_lengths[pres_prev_state==0.0])
@@ -283,19 +318,54 @@ class Tacotron2Loss(nn.Module):
             
             del mu, logvar, kl_loss, gt_speakers, gt_sym_durs, pred_sym_durs, pred_speakers
         
-        if self.use_dbGAN and dbGAN is not None:
-            pred_mel_postnet = pred['pred_mel_postnet'].unsqueeze(1)# -> [B, 1, n_mel, mel_T]
-            pred_mel         = pred['pred_mel'].unsqueeze(1)# -> [B, 1, n_mel, mel_T]
+        if 1 and model.training and self.use_dbGAN and dbGAN is not None:
+            pred_mel_postnet = pred['pred_mel_postnet'].unsqueeze(1)# -> [tfB, 1, n_mel, mel_T]
+            pred_mel         = pred['pred_mel']        .unsqueeze(1)# -> [tfB, 1, n_mel, mel_T]
+            speaker_embed    = pred['speaker_embed']
+            if model.decoder.half_inference_mode:
+                pred_mel_postnet = pred_mel_postnet.chunk(2, dim=0)[0]
+                pred_mel         = pred_mel        .chunk(2, dim=0)[0]
+                speaker_embed    = speaker_embed   .chunk(2, dim=0)[0]
             B, _, n_mel, mel_T = pred_mel.shape
+            mels = torch.cat((pred_mel, pred_mel_postnet), dim=0).float()# [2*B, 1, n_mel, mel_T]
+            with torch.no_grad():
+                assert not (torch.isnan(mels) | torch.isinf(mels)).any(), 'NaN or Inf value found in computation'
             
-            mels = torch.cat((pred_mel, pred_mel_postnet), dim=0)# [2*B, 1, n_mel, mel_T]
-            pred_fakeness = dbGAN.discriminator(mels).squeeze(1)# -> [B, C, mel_T]
-            pred_fakeness = pred_fakeness.mean(dim=1)# -> [B, mel_T]
-            pred_fakeness = pred_fakeness.mean(dim=1)# -> [B]
-            pred_fakeness, postnet_fakeness = pred_fakeness.chunk(2, dim=0)
-            real_label = torch.ones(B, device=gt_mel.device, dtype=gt_mel.dtype)*-1.0# [B]
+#            if False:
+#                pred_fakeness = checkpoint(dbGAN.discriminator, mels, speaker_id.repeat(2)).squeeze(1)# -> [2*B, mel_T//?]
+#            else:
+            pred_fakeness = dbGAN.discriminator(mels, speaker_embed.repeat(2, 1)).squeeze(1)# -> [2*B, mel_T//?]
+            pred_fakeness, postnet_fakeness = pred_fakeness.chunk(2, dim=0)# -> [B, mel_T//?], [B, mel_T//?]
             
-            loss_dict['dbGAN_gLoss'] = 2*(F.mse_loss(pred_fakeness, real_label) + F.mse_loss(postnet_fakeness, real_label))
+            tfB, post_mel_T = pred_fakeness.shape
+            real_label = torch.ones(tfB, post_mel_T, device=pred_mel.device, dtype=pred_mel.dtype)*-1.0# [B]
+            loss_dict['dbGAN_gLoss'] = F.mse_loss(pred_fakeness, real_label)*0.5 + F.mse_loss(postnet_fakeness, real_label)*0.5
+            with torch.no_grad():
+                assert not torch.isnan(loss_dict['dbGAN_gLoss']), 'dbGAN loss is NaN'
+                assert not torch.isinf(loss_dict['dbGAN_gLoss']), 'dbGAN loss is Inf'
+            del mels, real_label, pred_fakeness, postnet_fakeness, pred_mel, pred_mel_postnet, speaker_embed
+        
+        if self.use_InfGAN and infGAN is not None and model.decoder.half_inference_mode:
+            with torch.no_grad():
+                pred_gate = pred['pred_gate_logits'].chunk(2, dim=0)[1].sigmoid()
+                pred_gate[:, :5] = 0.0
+                # Get inference alignment scores
+                pred_mel_lengths = get_first_over_thresh(pred_gate, 0.5)
+                pred_mel_lengths.clamp_(max=mel_T)
+                pred['pred_mel_lengths'] = pred_mel_lengths
+                mask = get_mask_from_lengths(pred_mel_lengths, max_len=mel_T).unsqueeze(1)# [B, 1, mel_T]
+            
+            tfB = pred_gate.shape[0]
+            with freeze_grads(model.decoder.prenet):
+                args = infGAN.merge_inputs(model, pred, gt, tfB, mask)# [B/2, mel_T, embed]
+            
+            if infGAN.training and infGAN.gradient_checkpoint:
+                inf_infness = checkpoint(infGAN.discriminator, *args).squeeze(1)# -> [B/2, mel_T]
+            else:
+                inf_infness = infGAN.discriminator(*args).squeeze(1)# -> [B/2, mel_T]
+            
+            tf_label = torch.ones(tfB, device=pred_gate.device, dtype=pred_gate.dtype)[:, None].expand(tfB, mel_T)*-1.# [B/2]
+            loss_dict['InfGAN_gLoss'] = 2.*F.mse_loss(inf_infness, tf_label)
         
         #################################################################
         ## Colate / Merge the Losses into a single tensor with scalars ##
@@ -304,13 +374,13 @@ class Tacotron2Loss(nn.Module):
         
         with torch.no_grad():# get Avg Max Attention and Diagonality Metrics
             
-            atd = alignment_metric(pred['alignments'], gt['text_lengths'], gt['mel_lengths'])
+            atd = alignment_metric(pred['alignments'].detach().clone(), gt['text_lengths'], gt['mel_lengths'])
             diagonalitys, avg_prob, char_max_dur, char_min_dur, char_avg_dur, p_missing_enc = atd.values()
             
             loss_dict['diagonality']       = diagonalitys.mean()
             loss_dict['avg_max_attention'] = avg_prob.mean()
             
-            for i in range(B):
+            for i in range(tfB):
                 audiopath = gt['audiopath'][i]
                 file_losses[audiopath]['avg_max_attention'] =      avg_prob[i].cpu().item()
                 file_losses[audiopath]['att_diagonality']   =  diagonalitys[i].cpu().item()
@@ -330,11 +400,11 @@ class Tacotron2Loss(nn.Module):
             pred_gate[:, :5] = 0.0
             # Get inference alignment scores
             pred_mel_lengths = get_first_over_thresh(pred_gate, 0.7)
-            atd = alignment_metric(pred['alignments'], gt['text_lengths'], pred_mel_lengths)
+            atd = alignment_metric(pred['alignments'].detach().clone(), gt['text_lengths'], pred_mel_lengths)
             atd = {k: v.cpu() for k, v in atd.items()}
             diagonalitys, avg_prob, char_max_dur, char_min_dur, char_avg_dur, p_missing_enc = atd.values()
             scores = []
-            for i in range(B):
+            for i in range(tfB):
                 # factors that make up score
                 weighted_score = avg_prob[i].item() # general alignment quality
                 diagonality_punishment = max( diagonalitys[i].item()-1.10, 0) * 0.25 # speaking each letter at a similar pace.

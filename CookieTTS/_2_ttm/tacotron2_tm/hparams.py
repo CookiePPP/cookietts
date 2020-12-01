@@ -26,7 +26,7 @@ def create_hparams(hparams_string=None, verbose=False):
         dist_backend = "nccl",
         dist_url     = "tcp://127.0.0.1:54321",
         
-        cudnn_enabled   = True,
+        cudnn_enabled   =  True,
         cudnn_benchmark = False,
         seed = 1234,
         
@@ -50,17 +50,25 @@ def create_hparams(hparams_string=None, verbose=False):
         #################################
         batch_size    =32,# controls num of files processed in parallel per GPU
         val_batch_size=32,# for more precise comparisons between models, constant batch_size is useful
-        use_TBPTT  =False,# continue processing longer files into the next training iteration
-        max_segment_length=768,# max mel length till a segment is sliced.
-        max_chars_length  =192,# max text input till text is sliced. I use segment_length/4.
         
-        sort_text_len_decending = True,# IMPLEMENTED, NEEDS TO BE TESTED IN THE DISABLED POSITION
+        use_TBPTT  =False,# continue processing longer files into the next training iteration
+        max_segment_length=1024,# max mel length till a segment is sliced.
+        max_chars_length  =256,# max text input till text is sliced. I use segment_length/4.
+        
+        gradient_checkpoint      = False,# Saves forward pass states to recompute the gradients in chunks
+                                         # Will reduce VRAM usage significantly at the cost of running parts of the model twice.
+                                         # (The reduction in VRAM allows 4x batch size on an RTX 2080 Ti at the cost of 80% higher time-per-iter)
+        checkpoint_decode_chunksize=  32,# recommend the square root of max_segment_length or tune manually
+                                         # Changing this should have a large impact on VRAM usage when using gradient_checkpoint 
+                                         # and make no difference to anything when gradient_checkpoint is disabled.
+        
+        sort_text_len_decending = False,# IMPLEMENTED, NEEDS TO BE TESTED IN THE DISABLED POSITION
                                      # Should allow more flexibility with TBPTT and remove quite a few problems when disabled.
         
         min_avg_max_att       = 0.50 ,# files under this alignment strength are filtered out of the dataset during training.
         max_diagonality       = 1.16 ,# files  over this     diagonality    are filtered out of the dataset during training.
         max_spec_mse          = 1.00 ,# files  over this mean squared error are filtered out of the dataset during training.
-        min_avg_max_att_start = 40000,# when to start filtering out weak alignments.
+        min_avg_max_att_start = 30000,# when to start filtering out weak alignments.
                                       # (normally mis-labelled files or files that are too challenging to learn)
                                       # Only applies to training dataset.
                                       # Only updates at the end of each epoch.
@@ -83,22 +91,27 @@ def create_hparams(hparams_string=None, verbose=False):
         dataset_folder = '/media/cookie/WD6TB/TTS/HiFiDatasets',
         dataset_audio_filters= ['*.wav','*.flac',],
         dataset_audio_rejects= ['*_Noisy_*','*_Very Noisy_*',],
-        dataset_p_val = 0.005,# portion of dataset for Validation
-        dataset_min_duration = 1.1,# minimum duration in seconds for audio files to be added.
-        dataset_min_chars    =   7, # min number of letters/text that a transcript should have to be added to the audiofiles list.
-        dataset_max_chars    = 240, # min number of letters/text that a transcript should have to be added to the audiofiles list.
+        dataset_p_val = 0.005,# portion of dataset for Validation # default of 0.5% may be too small depending on the size of your dataset.
+        dataset_min_duration =  1.5,# minimum duration in seconds for audio files to be added.
+        dataset_max_duration = 30.0,# maximum duration in seconds for audio files being added.
+                                    # use max_segment_length to control how much of each audio file can be used to fill VRAM during training.
+        dataset_min_chars    =   16,# min number of letters/text that a transcript should have to be added to the audiofiles list.
+        dataset_max_chars    =  256,# min number of letters/text that a transcript should have to be added to the audiofiles list.
+                                    # use max_chars_length to control how much of text from each audio file can be used to fill VRAM during training.
+        
+        force_load  = True,# if a file fails to load, replace it with a random other file.
         
         inference_equally_sample_speakers=True,# Will change the 'inference' results to use the same number of files from each speaker.
                                                # This makes sense if the speakers you want to clone aren't the same as the speakers with the most audio data.
-        force_load  = True,# if a file fails to load, replace it with a random other file.
         
-        speaker_mse_sampling_start = 65000,# when True, instead of loading each audio file in order, load audio files
+        speaker_mse_sampling_start = 999999,# when True, instead of loading each audio file in order, load audio files
                                          #        randomly with higher probability given to more challenging speakers.
                                          # This must start after "min_avg_max_att_start" has started.
                                          #  - Without filtering out outlier files, this would just enchance the damage that mislablled files and noisy speakers do to the model.
+                                         # EDIT: After testing, this option does not seem to be beneficial for most cases
         speaker_mse_exponent       = 1.0,# Power for weighting speakers sampling chances.
                                          # 0.0 = All speakers are sampled equally often. error values also have no effect.
-                                         # 1.0 = Speakers are sampled proportionally to their spectrogram error,
+                                         # 1.0 = Speakers are sampled proportional to their spectrogram error,
                                          #     e.g: double MSE = double chance to appear in training set.
                                          # 2.0 = Speakers are sampled with weighting by the square of their errors,
                                          #     e.g: double MSE = quadrulple chance to appear in training set.
@@ -111,20 +124,20 @@ def create_hparams(hparams_string=None, verbose=False):
         p_arpabet=0.5, # probability to use ARPAbet / pronounciation dictionary on the text
         
         use_saved_speakers  = False,# use the speaker lookups saved inside the model instead of generating again
-        numeric_speaker_ids = True, # sort speaker_ids in filelist numerically, rather than alphabetically.
-                                   # e.g:
-                                   #    [10, 9, 8, 7, 6, 5, 4, 3, 2, 1, 0] -> [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10]
-                                   # instead of,
-                                   #    [10, 9, 8, 7, 6, 5, 4, 3, 2, 1, 0] -> [0, 1, 10, 2, 3, 4, 5, 6, 7, 8, 9]
-                                   # Mellotron repo has this off by default, but ON makes the most logical sense to me.
+        numeric_speaker_ids =  True,# sort speaker_ids in filelist numerically, rather than alphabetically.
+                                    # e.g:
+                                    #    [10, 9, 8, 7, 6, 5, 4, 3, 2, 1, 0] -> [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10]
+                                    # instead of,
+                                    #    [10, 9, 8, 7, 6, 5, 4, 3, 2, 1, 0] -> [0, 1, 10, 2, 3, 4, 5, 6, 7, 8, 9]
+                                    # Mellotron repo has this off by default, but ON makes the most logical sense to me.
         
-        check_files=True, # check all files exist, aren't corrupted, have text, good length, and other stuff before training.
+        check_files= True,# check all files exist, aren't corrupted, have text, good length, and other stuff before training.
                           # This can take a while as it has to load the entire dataset once.
         ##################################
         ## Audio Parameters             ##
         ##################################
-        sampling_rate=22050,
-        target_lufs  =-27.0,# Loudness each file is rescaled to, use None for original file loudness.
+        sampling_rate= 44100,
+        target_lufs  = -27.0,# Loudness each file is rescaled to, use None for original file loudness.
         
         trim_enable = True,# set to False to disable trimming completely
         trim_cache_audio = False,# save trimmed audio to disk to load later. Saves CPU usage, uses more disk space.
@@ -132,17 +145,17 @@ def create_hparams(hparams_string=None, verbose=False):
         trim_margin_left  = [0.0125]*3,
         trim_margin_right = [0.0125]*3,
         trim_ref          = ['amax']*3,
-        trim_top_db       = [48  ,46  ,46  ],
-        trim_window_length= [8192,2048,1024],
-        trim_hop_length   = [1024,256 ,128 ],
-        trim_emphasis_str = [0.0 ,0.0 ,0.0 ],
+        trim_top_db       = [   48,   46,   46],
+        trim_window_length= [16384, 4096, 2048],
+        trim_hop_length   = [ 2048, 1024,  512],
+        trim_emphasis_str = [  0.0,  0.0,  0.0],
         
         ##################################
         ## Spectrogram Parameters       ##
         ##################################
-        filter_length  =  1024,
-        hop_length     =   256,
-        win_length     =  1024,
+        filter_length  =  2048,
+        hop_length     =   512,
+        win_length     =  2048,
         n_mel_channels =   160,
         mel_fmin       =    20.0,
         mel_fmax       = 11025.0,
@@ -151,7 +164,7 @@ def create_hparams(hparams_string=None, verbose=False):
         cache_mel=False,# save spectrograms to disk to load later. Saves CPU usage, uses more disk space.
                         # modifications to params below do not apply to already cached files.
         
-        silence_value=-11.5129,
+        silence_value = -11.5129,# = ln(1e-5)
         silence_pad_start = 0,# frames to pad the start of each spectrogram
         silence_pad_end   = 0,# frames to pad the  end  of each spectrogram
                             # These frames will be added to the loss functions and Tacotron must predict and generate the padded silence.
@@ -181,8 +194,8 @@ def create_hparams(hparams_string=None, verbose=False):
         # (Encoder) Encoder parameters
         encoder_speaker_embed_dim    = 64, # speaker_embedding before encoder
         encoder_concat_speaker_embed = 'before_conv',# concat before encoder convs, or just before the LSTM inside decode. Options 'before_conv','before_lstm'
-        encoder_kernel_size     = 5,
-        encoder_n_convolutions  = 3,
+        encoder_kernel_size     =    5,
+        encoder_n_convolutions  =    3,
         encoder_conv_hidden_dim =  512,
         encoder_LSTM_dim        = 1024,
         
@@ -195,46 +208,81 @@ def create_hparams(hparams_string=None, verbose=False):
         # (Residual Encoder) Learns information related to anything that isn't related to Text or Speakers. (e.g: background noise)
         # https://openreview.net/pdf?id=Bkg9ZeBB37
         # THIS IS NOT WORKING CORRECTLY RIGHT NOW AND MAY BE REMOVED AT ANY TIME.
-        use_res_enc=False,
+        use_res_enc = False,
         res_enc_filters   = [32, 32, 64, 64, 128, 128],
         res_enc_gru_dim   = 128,
         res_enc_n_tokens  =   5,
         res_enc_embed_dim = 256,
-        
         res_enc_dis_dim  = 128,
         res_enc_n_layers =   3,
         
         # (DebluraGAN) GAN Spectrogram Loss
         # *Should* reduce the blur for generated spectrograms.
-        use_dbGAN      =True,
-        use_DecoderRNG =True,# highly recommended when using dbGAN!
-        DecoderRNG_dim =  96,# highly recommended when using dbGAN!
-        dbGAN_dis_dim  = 128,
-        dbGAN_kernel_h =   3,
+        use_dbGAN      = True,
+        dbGAN_prenet_dim      = 128,
+        dbGAN_prenet_kernel_h = 3,
+        dbGAN_prenet_kernel_w = 3,
+        dbGAN_prenet_stride   = [
+                                  [3, 3],
+                                  [1, 1],
+                                  [3, 3],
+                                ],
+        dbGAN_prenet_n_layers = 2,
+        dbGAN_prenet_n_blocks = 3,
+        
+        dbGAN_dim  = 128,
         dbGAN_kernel_w =   3,
-        dbGAN_stride   =  [
-                            [3, 3],
-                            [3, 3],
-                            [1, 1],
-                          ],
+        dbGAN_stride   =   1,# mel_T stride
         dbGAN_n_layers =   2,
-        dbGAN_n_blocks =   3,
+        dbGAN_n_blocks =   1,
+        
+        # Random Number Generator Input to Decoder, to allow the decoder to produce convincing random noise when required.
+        use_DecoderRNG = True,# highly recommended when using dbGAN!
+        DecoderRNG_dim =  160,# highly recommended when using dbGAN!
+        
+        # (InferenceGAN) TF/Inf GAN Loss
+        # Reduces the difference between Infernce and Training Results
+        # requires training 50% batch without teacher forcing
+        # recommened only late into training.
+        use_InfGAN = True,
+        InfGAN_use_speaker =  True,# speaker embeds
+        InfGAN_use_spect   = False,# decoder spectrogram
+        InfGAN_use_postnet = False,# postnet spectrogram
+        InfGAN_use_DecRNN  =  True,#   decoderRNN hidden state(s)
+        InfGAN_use_AttRNN  =  True,# AttentionRNN hidden state(s)
+        InfGAN_use_context =  True,# Attention Contexts <- the current encoder outputs the attention is focused on
+        
+        TemporalInfGAN = True,# True  = use Causal Temporal Convs
+                              # False = use Uni-Directional LSTMs
+        
+        # (InferenceGAN) If using TemporalConvInferenceGAN
+        InfGAN_n_channels     =   128,
+        InfGAN_n_layers       =     8,
+        InfGAN_kernel_size    =     3,
+        InfGAN_seperable_conv = False,
+        InfGAN_merge_res_skip = False,
+        InfGAN_res_skip       =  True,
+        InfGAN_n_layers_dilations_w=None,
+        # (InferenceGAN) If using LSTMInferenceGAN
+        InfGAN_LSTM_dim      = 256,
+        InfGAN_LSTM_n_layers =   2,
+        
         
         # (AuxEmotionNet) TorchMoji
         torchMoji_attDim     = 2304,# published model uses 2304
-        torchMoji_crushedDim = 32,
+        torchMoji_crushedDim =   32,
         torchMoji_BatchNorm  = True,
         
         # (Speaker) Speaker embedding
         n_speakers            = 2048,# maximum number of speakers the model can support.
-        speaker_embedding_dim = 256, # speaker embedding size # 128 baseline
+        speaker_embedding_dim =  256,# speaker embedding size # 128 baseline
         
         # (Decoder/Encoder) Bottleneck parameters
         # The outputs from the encoder, speaker, emotionnet and sylpsnet need to be mixed.
         # By default the information is mixed by the DecoderRNN, but this is repeated every spectrogram frame so likely wastes a massive amount of compute performing the same operations repeatedly.
         # Thus, this memory bottleneck can be used to mix the above mentioned outputs into a more compressed representation before decoding, allowing the DecoderRNN to be made smaller and more effective.
-        use_memory_bottleneck  = True,# False baseline
-        memory_bottleneck_dim  = 512,# new memory size. 512 would be equivalent to the original Tacotron2.
+        use_memory_bottleneck  =  True,# False baseline
+        memory_bottleneck_dim  =   512,# new memory size. 512 would be equivalent to the original Tacotron2.
         memory_bottleneck_bias = False,
         
         # (Decoder) Decoder parameters
@@ -242,75 +290,82 @@ def create_hparams(hparams_string=None, verbose=False):
         stop_token  = "",#"␤"
         hide_startstop_tokens=False, # trim first/last encoder output before feeding to attention.
         n_frames_per_step=1,# currently only 1 is supported
-        context_frames=1,   # TODO TODO TODO TODO TODO
+        context_frames   =1,# NOT IMPLEMENTED
         
         # (Decoder) Prenet
-        prenet_dim   =256,     # 256 baseline
-        prenet_layers=  2,     # 2 baseline
+        prenet_dim   = 512,    # 256 baseline
+        prenet_layers=   2,    # 2 baseline
         prenet_batchnorm=False,# False baseline
         prenet_bn_momentum=0.5,# Inverse smoothing factor, 0.1 = high smoothing, 0.9 = Almost no smoothing
         p_prenet_dropout  =0.5,# 0.5 baseline
         
         prenet_speaker_embed_dim=0,# speaker_embedding before encoder
-        prenet_noise   =0.05,# Add Gaussian Noise to Prenet inputs. std defined here.
+        prenet_noise   =0.00,# Add Gaussian Noise to Prenet inputs. std defined here.
         prenet_blur_min=0.00,# Apply random vertical blur between prenet_blur_min
         prenet_blur_max=0.00,#                                and prenet_blur_max
                              # Set max to False or Zero to disable
         
         # (Decoder) AttentionRNN
-        attention_rnn_dim          = 1280,  # 1024 baseline
+        attention_rnn_dim          =  1280,  # 1024 baseline
         AttRNN_hidden_dropout_type = 'dropout',# options ('dropout','zoneout')
-        p_AttRNN_hidden_dropout    = 0.10,  # 0.1 baseline
-        AttRNN_extra_decoder_input = True,  # False baseline # Feed DecoderRNN Hidden State into AttentionRNN
+        p_AttRNN_hidden_dropout    =  0.10,  # 0.1 baseline
+        AttRNN_extra_decoder_input =  True,  # False baseline # Feed DecoderRNN Hidden State into AttentionRNN
+        # Optional Second AttentionRNN
+        second_attention_rnn_dim=0,# 0 baseline # Extra AttentionRNN to learn more complex patterns # set to 0 to disable layer.
+        second_attention_rnn_residual_connection=True,# residual connections between the AttentionRNNs
+                                                      # requires the attention_rnn dims to match to activate/work.
         
         # (Decoder) DecoderRNN
-        decoder_rnn_dim            = 768,  # 1024 baseline
+        decoder_rnn_dim            =  512,  # 1024 baseline
         DecRNN_hidden_dropout_type = 'dropout',# options ('dropout','zoneout')
-        p_DecRNN_hidden_dropout    = 0.5, # 0.1 baseline
-        decoder_residual_connection= False,# residual connections with the AttentionRNN hidden state and Attention/Memory Context
-        # Optional Second Decoder
-        second_decoder_rnn_dim=768,# 0 baseline # Extra DecoderRNN to learn more complex patterns # set to 0 to disable layer.
+        p_DecRNN_hidden_dropout    =  0.20, # 0.1 baseline
+        decoder_residual_connection= False, # residual connections with the AttentionRNN hidden state and Attention/Memory Context
+        # Optional Second DecoderRNN
+        second_decoder_rnn_dim=512,# 0 baseline # Extra DecoderRNN to learn more complex patterns # set to 0 to disable layer.
         second_decoder_residual_connection=True,# residual connections between the DecoderRNNs
+        
+        # (Decoder) Misc
+        decoder_input_residual=True,# add the decoder_input to the outputs so to the rest of the decoder is only learning the modifier
         
         # (Decoder) Attention parameters
         attention_type=0,
         # 0 -> Hybrid Location-Based Attention (Vanilla Tacotron2)
         # 1 -> GMMAttention (Long-form Synthesis)
         # 1 -> Dynamic Convolution Attention (Long-form Synthesis)
-        attention_dim=192, # 128 Layer baseline # Used for Key-Query Dim
+        attention_dim=128, # 128 Layer baseline # Used for Key-Query Dim
         
         # (Decoder) Attention Type 0 Parameters
         windowed_attention_range = 16,# set to 0 to disable
                                      # will set the forward and back distance the model can attend to.
                                      # 2 will give the model 5 characters it can attend to at any one time.
                                      # This will also allow more stable generation with extremely long text inputs and save VRAM during inference.
-        windowed_att_pos_offset  = 1.25,# Offset the current_pos by this amount.
-        windowed_att_pos_learned = True,
+        windowed_att_pos_offset  =  0.00,# Offset the current_pos by this amount.
+        windowed_att_pos_learned = False,
         attention_learned_temperature=False,# add temperature param to alignments for softmax.
         
         # (Decoder) Attention Type 0 (and 2) Parameters
-        attention_location_n_filters=32,  # 32 baseline
+        attention_location_n_filters  =32,# 32 baseline
         attention_location_kernel_size=31,# 31 baseline
         
         # (Decoder) Attention Type 1 Parameters
         num_att_mixtures=1,# 5 baseline
         attention_layers=1,# 1 baseline
-        delta_offset=0.005,    # 0 baseline, values around 0.005 will push the model forwards. Since we're using the sigmoid function caution is suggested.
-        delta_min_limit=0.0, # 0 baseline, values around 0.010 will force the model to move forward, in this example, the model cannot spend more than 100 steps on the same encoder output.
+        delta_offset   = 0.005,    # 0 baseline, values around 0.005 will push the model forwards. Since we're using the sigmoid function caution is suggested.
+        delta_min_limit= 0.0, # 0 baseline, values around 0.010 will force the model to move forward, in this example, the model cannot spend more than 100 steps on the same encoder output.
         lin_bias=False, # I need to figure out what that layer is called.
         initial_gain='relu', # initial weight distribution 'tanh','relu','sigmoid','linear'
-        normalize_attention_input=True, # False baseline
-        normalize_AttRNN_output=False,  # True baseline
+        normalize_attention_input=  True,# False baseline
+        normalize_AttRNN_output  = False,# True baseline
         
         # (Decoder) Attention Type 2 Parameters
         dynamic_filter_num=128,# 8 baseline
-        dynamic_filter_len=21, # 21 baseline # currently only 21 is supported
+        dynamic_filter_len= 21, # 21 baseline # currently only 21 is supported
         
         # (Postnet) Mel-post processing network parameters
         use_postnet=True,
-        postnet_embedding_dim=512,
-        postnet_kernel_size=5,
-        postnet_n_convolutions=6,
+        postnet_embedding_dim = 512,
+        postnet_kernel_size   =   5,
+        postnet_n_convolutions=   6,
         postnet_residual_connections=3,# False baseline, int > 0 == n_layers in each residual block
         
         ##################################

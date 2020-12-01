@@ -117,23 +117,23 @@ def load_TextGrid(path, quote=None):
                 "words": [
                     {
                         "start": start_of_this_first_word,
-                        "end": end_of_this_first_word,
-                        "start": name_of_this_first_word,
+                        "end":   end_of_this_first_word,
+                        "text":  name_of_this_first_word,
                     }, {
                         "start": start_of_this_2nd_word,
-                        "end": end_of_this_2nd_word,
-                        "start": name_of_this_2nd_word,
+                        "end":   end_of_this_2nd_word,
+                        "text":  name_of_this_2nd_word,
                     }
                 ],
                 "phones": [
                     {
                         "start": start_of_this_1st_phoneme,
-                        "end": end_of_this_1st_phoneme,
-                        "start": name_of_this_1st_phoneme,
+                        "end":   end_of_this_1st_phoneme,
+                        "text":  name_of_this_1st_phoneme,
                     }, {
                         "start": start_of_this_2nd_phoneme,
-                        "end": end_of_this_2nd_phoneme,
-                        "start": name_of_this_2nd_phoneme,
+                        "end":   end_of_this_2nd_phoneme,
+                        "text":  name_of_this_2nd_phoneme,
                     }
                 ]
             }
@@ -272,7 +272,7 @@ def force_align_path_quote_pairs(path_quotes, working_directory, dictionary_path
         print(' ---- ############# ---- ')
     
     missing_vocab = [x for x in open(os.path.join(output_directory, 'oovs_found.txt'), 'r').read() if len(x)]
-     
+    
     # (optional) dump missing vocab to file
     if dump_missing_vocab:
         with open(dump_missing_vocab, 'a') as f:

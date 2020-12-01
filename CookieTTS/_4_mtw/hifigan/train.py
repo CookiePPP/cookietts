@@ -53,7 +53,7 @@ def train(rank, a, h):
         generator.load_state_dict(gsd)
         del gsd, state_dict_g
     
-    if cp_do is None or len(missing_keys):
+    if cp_do is None or len(missing_keys) or a.from_zero:
         state_dict_do = None
         last_epoch = -1
     else:
@@ -249,14 +249,15 @@ def main():
     parser.add_argument('--checkpoint_path',  default='cp_hifigan')
     parser.add_argument('--config',           default='')
     parser.add_argument('--training_epochs',  default=3100, type=int)
-    parser.add_argument('--stdout_interval',  default=5, type=int)
-    parser.add_argument('--validation_interval', default=1000, type=int)
-    parser.add_argument('--checkpoint_interval', default=5000, type=int)
-    parser.add_argument('--n_models_to_keep', default=2,  type=int)
+    parser.add_argument('--stdout_interval',  default=5, type=int)# how often to print to terminal
+    parser.add_argument('--validation_interval', default=1000, type=int)# how often to test the model on the val set
+    parser.add_argument('--checkpoint_interval', default=5000, type=int)# how often to save the model state to disk
+    parser.add_argument('--n_models_to_keep', default=2,  type=int)# how many copies of the model can be saved to the disk at the same time, old checkpoints will be replaced with new checkpoints when the limit is reach.
     parser.add_argument('--summary_interval', default=20, type=int)
     parser.add_argument('--skip_file_checks', action='store_true')
-    parser.add_argument('--trim_non_voiced',  action='store_true')
-    parser.add_argument('--fine_tuning',      action='store_true')
+    parser.add_argument('--trim_non_voiced',  action='store_true')# trim start/end of audio where pitch is 0
+    parser.add_argument('--fine_tuning',      action='store_true')# load predicted spectrograms as inputs, will increase audio quality of generated samples when using in end-to-end fashion.
+    parser.add_argument('--from_zero',      action='store_true')# when loading checkpoints, reset the iteration and epoch counters.
     
     a = parser.parse_args()
     

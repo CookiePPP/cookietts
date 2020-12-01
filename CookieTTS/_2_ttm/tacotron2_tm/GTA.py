@@ -9,6 +9,7 @@ import numpy as np
 import torch
 import torch.nn.functional as F
 from distributed import DistributedDataParallel
+from torch.utils.data import DataLoader
 import torch.distributed as dist
 from torch.nn import DataParallel
 
@@ -68,7 +69,6 @@ def GTA_Synthesis(hparams, args, extra_info='', audio_offset=0):
     
     if args.use_validation_files:
         filelisttype = "val"
-        hparams.training_files = hparams.validation_files
     else:
         filelisttype = "train"
     
@@ -96,6 +96,12 @@ def GTA_Synthesis(hparams, args, extra_info='', audio_offset=0):
     # define datasets/dataloaders
     train_loader, valset, collate_fn, train_sampler, trainset, *_ = prepare_dataloaders(hparams, model_args, args, None, audio_offset=audio_offset)
     
+    if args.use_validation_files:
+        train_loader = DataLoader(valset, shuffle=False, sampler=train_sampler,
+                              num_workers=hparams.num_workers,# prefetch_factor=hparams.prefetch_factor,
+                              batch_size=hparams.batch_size, pin_memory=False,
+                              drop_last=False, collate_fn=collate_fn)
+    
     # load and/or generate global_mean
     if args.use_training_mode and hparams.drop_frame_rate > 0.:
         if rank != 0: # if global_mean not yet calcuated, wait for main thread to do it
@@ -104,7 +110,7 @@ def GTA_Synthesis(hparams, args, extra_info='', audio_offset=0):
     
     # ================ MAIN TRAINNIG LOOP! ===================
     os.makedirs(os.path.join(args.output_directory), exist_ok=True)
-    f = open(os.path.join(args.output_directory, f'map_{filelisttype}_gpu{rank}.txt'),'w', encoding='utf-8')
+    f = open(os.path.join(args.output_directory, f'map_{filelisttype}_gpu{rank}.txt'), 'w', encoding='utf-8')
     
     processed_files = 0
     failed_files = 0
@@ -173,12 +179,13 @@ def GTA_Synthesis(hparams, args, extra_info='', audio_offset=0):
     # merge all generated filelists from every GPU
     filenames = [f'map_{filelisttype}_gpu{j}.txt' for j in range(n_gpus)]
     if rank == 0:
-        with open(os.path.join(args.output_directory, f'map_{filelisttype}.txt'), 'w') as outfile:
+        with open(os.path.join(args.output_directory, f'map_{filelisttype}.txt'), 'w', encoding='utf-8') as outfile:
             for fname in filenames:
-                with open(os.path.join(args.output_directory, fname)) as infile:
-                    for line in infile:
+                with open(os.path.join(args.output_directory, fname), 'r', encoding='utf-8') as infile:
+                    lines = infile.read().split("\n")
+                    for line in lines:
                         if len(line.strip()):
-                            outfile.write(line)
+                            outfile.write(line.strip()+'\n')
 
 
 if __name__ == '__main__':
@@ -187,8 +194,8 @@ if __name__ == '__main__':
     In the output_directory will be a filelist that can be used to train WaveGlow/WaveFlow on the aligned tacotron outputs, which will increase audio quality when generating new text.
     
     Example:
-    CUDA_VISIBLE_DEVICES=0,1,2 python3 -m multiproc GTA.py -o "GTA_flist" -c "outdir/checkpoint_300000" --fp16_save --max_mse 0.40
-    CUDA_VISIBLE_DEVICES=0,1,2 python3 -m multiproc GTA.py -o "GTA_flist" -c "outdir/checkpoint_300000" --fp16_save --max_mse 0.40 --use_validation_files
+    CUDA_VISIBLE_DEVICES=0,1,2 python3 -m multiproc GTA.py -o "GTA_flist" -c "outdir/checkpoint_300000" --fp16_save --max_mse 0.35
+    CUDA_VISIBLE_DEVICES=0,1,2 python3 -m multiproc GTA.py -o "GTA_flist" -c "outdir/checkpoint_300000" --fp16_save --max_mse 0.35 --use_validation_files
     
      - In this example, CUDA_VISIBLE_DEVICES selects the 1st, 2nd and 3rd GPUs
      - '-o GTA_flist' is the location that the new filelist(s) will be saved
@@ -244,6 +251,8 @@ if __name__ == '__main__':
     
     hparams = create_hparams(args.hparams)
     hparams.n_gpus = args.n_gpus
+    if hparams.n_gpus == 1:
+        hparams.distributed_run = False
     hparams.rank   = args.rank
     hparams.num_workers = args.num_workers
     hparams.use_TBPTT = False # remove limit

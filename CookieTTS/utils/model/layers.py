@@ -329,18 +329,19 @@ class LSTMCellWithZoneout(RNNCellBase):
                          torch.mm(hx, weight_hh.t()) + bias_hh)
             ingate, forgetgate, cellgate, outgate = gates.chunk(4, 1)
             
-            ingate     = ingate.sigmoid()
-            forgetgate = forgetgate.sigmoid()
-            cellgate   = cellgate.tanh()
-            outgate    = outgate.sigmoid()
+            ingate     = ingate    .float().sigmoid().to(ingate.dtype)
+            forgetgate = forgetgate.float().sigmoid().to(forgetgate.dtype)
+            cellgate   = cellgate  .tanh()
+            outgate    = outgate   .float().sigmoid().to(outgate.dtype)
             
             cy = (forgetgate * cx).add_(ingate * cellgate)
             hy = outgate * torch.tanh(cy)
             
-            hy = torch.nn.functional.dropout(hy, p=dropout, training=training, inplace=True)
+            if dropout > 0.0:
+                hy = torch.nn.functional.dropout(hy, p=dropout, training=training, inplace=True)
             
-            c_mask = torch.empty_like(cy).bernoulli_(p=zoneout).byte()
-            h_mask = torch.empty_like(hy).bernoulli_(p=zoneout).byte()
+            c_mask = torch.empty_like(cy).bernoulli_(p=zoneout)
+            h_mask = torch.empty_like(hy).bernoulli_(p=zoneout)
             hy = torch.where(h_mask, old_h, hy)
             cy = torch.where(c_mask, old_c, cy)
         else:
@@ -351,15 +352,16 @@ class LSTMCellWithZoneout(RNNCellBase):
                          torch.mm(hx, weight_hh.t()) + bias_hh)
             ingate, forgetgate, cellgate, outgate = gates.chunk(4, 1)
             
-            ingate     = ingate.sigmoid()
-            forgetgate = forgetgate.sigmoid()
-            cellgate   = cellgate.tanh()
-            outgate    = outgate.sigmoid()
+            ingate     = ingate    .float().sigmoid().to(ingate.dtype)
+            forgetgate = forgetgate.float().sigmoid().to(forgetgate.dtype)
+            cellgate   = cellgate  .tanh()
+            outgate    = outgate   .float().sigmoid().to(outgate.dtype)
             
             cy = (forgetgate * cx).add_(ingate * cellgate)
             hy = outgate * torch.tanh(cy)
             
-            hy = torch.nn.functional.dropout(hy, p=dropout, training=training, inplace=True)
+            if dropout > 0.0:
+                hy = torch.nn.functional.dropout(hy, p=dropout, training=training, inplace=True)
         
         return (hy, cy)
     

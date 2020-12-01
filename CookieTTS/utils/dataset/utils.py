@@ -17,11 +17,13 @@ def load_wav_to_torch(full_path, target_sr=None, min_sr=None, remove_dc_offset=T
             raise ex
     
     if min_sr is not None:
+        if return_empty_on_exception and not (min_sr < sampling_rate):
+            return [], sampling_rate or target_sr or 48000
         assert min_sr < sampling_rate, f'Expected sampling_rate greater than or equal to {min_sr:.0f}, got {sampling_rate:.0f}.\nPath = "{full_path}"'
     
-    if len(data.shape) > 1:
-        data = data[:, 0]
-        assert len(data) > 2# check duration of audio file is > 2 samples (because otherwise the slice operation was on the wrong dimension)
+    if len(data.shape) > 1: # if audio has more than 1 channels,
+        data = data[:, 0]   # extract/use the first channel.
+        assert len(data) > 2# Also check duration of audio file is > 2 samples (because otherwise the slice operation was probably on the wrong dimension)
     
     if np.issubdtype(data.dtype, np.integer): # if audio data is type int
         max_mag = -np.iinfo(data.dtype).min # maximum magnitude = min possible value of intXX

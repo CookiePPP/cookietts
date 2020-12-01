@@ -4,6 +4,21 @@ import torch
 from typing import Optional
 
 
+class freeze_grads():
+    def __init__(self, submodule):
+        self.submodule = submodule
+    
+    def __enter__(self):
+        self.require_grads = []
+        for param in self.submodule.parameters():
+            self.require_grads.append(param.requires_grad)
+            param.requires_grad = False
+    
+    def __exit__(self, type, value, traceback):
+        for i, param in enumerate(self.submodule.parameters()):
+            param.requires_grad = self.require_grads[i]
+
+
 @torch.jit.script
 def get_mask_from_lengths(lengths: torch.Tensor, max_len:int = 0):
     if max_len == 0:

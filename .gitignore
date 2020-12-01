@@ -21,13 +21,17 @@ ipython_config.py
 /CookieTTS/_2_ttm/tacotron2_tm/global_mean.npy
 
 # Model Checkpoints
+outdir*/
+cp_*/
+checkpoints
 /CookieTTS/_2_ttm/flowtts/outdir/
 /CookieTTS/_2_ttm/untts/outdir/
+/CookieTTS/_2_ttm/untts/outdir/
+/CookieTTS/_2_ttm/untts/outdir_framef0/
 /CookieTTS/_2_ttm/tacotron2/outdir/
 /CookieTTS/_4_mtw/waveglow/outdir/
-/CookieTTS/_2_ttm/tacotron2_ssvae/checkpoints/
-/CookieTTS/_2_ttm/tacotron2_ssvae/NewCPs/
-/CookieTTS/_2_ttm/tacotron2_tm/outdir/
+/CookieTTS/_2_ttm/tacotron2_*/NewCPs*/
+/CookieTTS/_2_ttm/tacotron2_*/GTA*/
 /CookieTTS/_4_mtw/waveglow/checkpoints/
 /CookieTTS/_4_mtw/waveglow/checkpoints/
 /CookieTTS/_4_mtw/hifigan/cp_hifigan/
@@ -35,11 +39,8 @@ ipython_config.py
 /CookieTTS/_4_mtw/hifigan/cp_hifigan_universal44Khz/
 
 # Model logs
-/CookieTTS/_2_ttm/flowtts/logs/
-/CookieTTS/_2_ttm/untts/logs/
+logs
 /CookieTTS/_2_ttm/untts/old_logs/
-/CookieTTS/_2_ttm/tacotron2/logs/
-/CookieTTS/_2_ttm/tacotron2/GTA_flist/
 GPU_?.log
 
 # megatools folders
@@ -61,7 +62,9 @@ megatools-*-git-*-linux-x86_64.tar.gz
 /CookieTTS/utils/dataset/montreal-forced-aligner_win64.zip
 /CookieTTS/utils/dataset/montreal-forced-aligner_linux.tar.gz
 
-# WADA Signal-to-Noise Ratio tool
+# Scripts/Misc
+/CookieTTS/scripts/*.pt
+/CookieTTS/scripts/iso226/
 /CookieTTS/scripts/WadaSNR/
 /CookieTTS/scripts/WadaSNR.tar.gz
 

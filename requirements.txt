@@ -4,12 +4,13 @@ scipy
 librosa
 tensorboardX==1.1
 Unidecode
+text_unidecode
 nltk
 tqdm
 gdown
 soundfile
 py7zr
 syllables
-pyworld
-pyloudnorm
 emoji
+pyloudnorm
+pyworld

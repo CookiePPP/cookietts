@@ -63,7 +63,7 @@ def texttospeech():
         
         MTW_current = result.get('input_MTW_current') # current mel-to-wave
         ttm_current = result.get('input_ttm_current') # current text-to-mel
-        print(result)
+        print("#"*79+f'\n{result}\n'+"#"*79)
         
         # update Text-to-mel model if needed
         if t2s.ttm_current != ttm_current:
@@ -130,47 +130,51 @@ def texttospeech():
                                 rtf         = f'{tts_outdict["rtf"]:.2f}',
                                 fail_rate   = f'{tts_outdict["fail_rate"]*100.:.1f}',
                               )
+        
+    else:
+        return show_entries()
 
 #Route to render GUI
 @app.route('/')
 def show_entries():
-    return render_template('main.html',
-                            voice=None,
-                            
-                            use_localhost    = conf['webpage']['localhost'],
-                            max_input_length = conf['webpage']['max_input_len'],
-                            
-                            tacotron_conf=tacotron_conf,
-                            ttm_current=conf['workers']['TTM']['default_model'],
-                            ttm_len=len(tacotron_conf),
-                            
-                            vocoder_conf=vocoder_conf,
-                            MTW_current=conf['workers']['MTW']['default_model'],
-                            MTW_len=len(vocoder_conf),
-                            
-                            sp_len=len(speakers),
-                            speakers_available_short=[sp.split("_")[-1] for sp in speakers],
-                            speakers_available=speakers,
-                            
-                            current_text        = conf['webpage']['defaults']['current_text'],
-                            sample_text         = conf['webpage']['defaults']['background_text'],
-                            speaker             = conf['webpage']['defaults']['speaker'],
-                            use_arpabet         = conf['webpage']['defaults']['use_arpabet'],
-                            cat_silence_s       = conf['webpage']['defaults']['cat_silence_s'],
-                            batch_size          = conf['webpage']['defaults']['batch_size'],
-                            max_attempts        = conf['webpage']['defaults']['max_attempts'],
-                            max_duration_s      = conf['webpage']['defaults']['max_duration_s'],
-                            dyna_max_duration_s = conf['webpage']['defaults']['dyna_max_duration_s'],
-                            textseg_len_target  = conf['webpage']['defaults']['textseg_len_target'],
-                            split_nl            = conf['webpage']['defaults']['split_nl'],
-                            split_quo           = conf['webpage']['defaults']['split_quo'],
-                            multispeaker_mode   = conf['webpage']['defaults']['multispeaker_mode'],
-                            gen_time   = "",
-                            gen_dur    = "",
-                            total_specs= "",
-                            n_passes   = "",
-                            avg_score  = "",
-                            fail_rate  = "",)
+    return render_template(
+        'main.html',
+        voice=None,
+        
+        use_localhost    = conf['webpage']['localhost'],
+        max_input_length = conf['webpage']['max_input_len'],
+        
+        tacotron_conf=tacotron_conf,
+        ttm_current=conf['workers']['TTM']['default_model'],
+        ttm_len=len(tacotron_conf),
+        
+        vocoder_conf=vocoder_conf,
+        MTW_current=conf['workers']['MTW']['default_model'],
+        MTW_len=len(vocoder_conf),
+        
+        sp_len=len(speakers),
+        speakers_available_short=[sp.split("_")[-1] for sp in speakers],
+        speakers_available=speakers,
+        
+        current_text        = conf['webpage']['defaults']['current_text'],
+        sample_text         = conf['webpage']['defaults']['background_text'],
+        speaker             = conf['webpage']['defaults']['speaker'],
+        use_arpabet         = conf['webpage']['defaults']['use_arpabet'],
+        cat_silence_s       = conf['webpage']['defaults']['cat_silence_s'],
+        batch_size          = conf['webpage']['defaults']['batch_size'],
+        max_attempts        = conf['webpage']['defaults']['max_attempts'],
+        max_duration_s      = conf['webpage']['defaults']['max_duration_s'],
+        dyna_max_duration_s = conf['webpage']['defaults']['dyna_max_duration_s'],
+        textseg_len_target  = conf['webpage']['defaults']['textseg_len_target'],
+        split_nl            = conf['webpage']['defaults']['split_nl'],
+        split_quo           = conf['webpage']['defaults']['split_quo'],
+        multispeaker_mode   = conf['webpage']['defaults']['multispeaker_mode'],
+        gen_time   = "",
+        gen_dur    = "",
+        total_specs= "",
+        n_passes   = "",
+        avg_score  = "",
+        fail_rate  = "",)
 
 #Route to stream audio
 @app.route('/<voice>', methods=['GET'])

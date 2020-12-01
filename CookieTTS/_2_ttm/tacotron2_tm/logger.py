@@ -22,8 +22,13 @@ class Tacotron2Logger(SummaryWriter):
             tag = tag.replace('.', '/')
             self.add_histogram(tag, value.data.cpu().numpy(), iteration)
     
-    def log_training(self, reduced_loss_dict, expavg_loss_dict, best_loss_dict, grad_norm, learning_rate, duration,
+    def log_training(self, model, reduced_loss_dict, expavg_loss_dict, best_loss_dict, grad_norm, learning_rate, duration,
                      iteration, teacher_force_till, p_teacher_forcing, drop_frame_rate):
+        # plot distribution of parameters
+        if iteration==1 or (iteration%500 == 0 and iteration > 1 and iteration < 4000) or (iteration%5000 == 0 and iteration > 4999 and iteration < 50000) or (iteration%25000 == 0 and iteration > 49999):
+            print("Plotting Params. This may take open a bit.")
+            self.plot_model_params(model, iteration)
+        
         prepend = 'training'
         
         if iteration%20 == 0:
@@ -52,10 +57,6 @@ class Tacotron2Logger(SummaryWriter):
     
     def log_validation(self, reduced_loss_dict, reduced_bestval_loss_dict, model, y, y_pred, iteration, val_teacher_force_till, val_p_teacher_forcing):
         prepend = 'validation'
-        
-        # plot distribution of parameters
-        if iteration%20000 == 0:
-            self.plot_model_params(model, iteration)
         
         # plot datapoints/graphs
         self.plot_loss_dict(reduced_loss_dict,         iteration, f'{prepend}')
