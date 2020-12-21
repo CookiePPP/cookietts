@@ -79,6 +79,11 @@
                             <input style="width: 3em;" class="form-control" type="checkbox" {{"checked" if use_arpabet else ""}} name="input_use_arpabet" >
                         </div>
                         <div class="form-group">
+                            <label for="select">Seed</label>
+                            <label style="zoom: 0.7;">(Seed used to generate audio, it is applied to Tacotron, therefore you can also swap vocoders and compare them by using the same seed.)</label>
+                            <input style="width: -webkit-fill-available;" class="form-control" value="{{seed}}" name="input_seed">
+                        </div>
+                        <div class="form-group">
                             <label for="select">Silence between clips (Seconds)</label>
                             <input style="width: -webkit-fill-available;" class="form-control" value="{{cat_silence_s}}" type="number" min="0.0" step="0.01" name="input_cat_silence_s">
                         </div>
@@ -123,6 +128,11 @@
                                 <option value="interleaved" {{ 'selected' if multispeaker_mode == 'interleaved' else '' }}>Interleaved (seperate speaker for each text segment, going from top to bottom)</option>
                                 <option value="not_interleaved" {{ 'selected' if multispeaker_mode == 'not_interleaved' else '' }}>Non-Interleaved (speaker going from top to bottom per clip attempt)</option>
                             </select></div>
+                        <div class="form-group">
+                            <label for="select">Zoneout Power / Slowness</label>
+                            <label style="zoom: 0.7;">(Controls Zoneout Strength, at high values the speaking rate will degrade a lot. 100.0 Will break the model, 0.0 is Disabled.)</label>
+                            <input style="width: -webkit-fill-available;" class="form-control" value="{{zoneout_power}}" type="number" min="0.00" max="100.0" step="0.1" name="input_zoneout_power">
+                        </div>
                     </div>
                 <div class="form-group">
                     <label for="select">Speaker(s)</label>

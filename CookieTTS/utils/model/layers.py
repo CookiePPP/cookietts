@@ -319,8 +319,8 @@ class LSTMCellWithZoneout(RNNCellBase):
         hx, cx = state
         
         if training and zoneout > 0.0:
-            old_h = hx.clone()
-            old_c = cx.clone()
+            old_h = hx#.clone()
+            old_c = cx#.clone()
             
             if bias_ih is None or bias_hh is None:
                 gates = (torch.mm(input, weight_ih.t()) + torch.mm(hx, weight_hh.t()))
@@ -329,21 +329,23 @@ class LSTMCellWithZoneout(RNNCellBase):
                          torch.mm(hx, weight_hh.t()) + bias_hh)
             ingate, forgetgate, cellgate, outgate = gates.chunk(4, 1)
             
-            ingate     = ingate    .float().sigmoid().to(ingate.dtype)
-            forgetgate = forgetgate.float().sigmoid().to(forgetgate.dtype)
+            ingate     = ingate    .sigmoid().to(ingate.dtype)
+            forgetgate = forgetgate.sigmoid().to(forgetgate.dtype)
             cellgate   = cellgate  .tanh()
-            outgate    = outgate   .float().sigmoid().to(outgate.dtype)
+            outgate    = outgate   .sigmoid().to(outgate.dtype)
             
-            cy = (forgetgate * cx).add_(ingate * cellgate)
-            hy = outgate * torch.tanh(cy)
+            cy_ = (forgetgate * cx).add_(ingate * cellgate)
+            
+            c_mask = torch.empty_like(cy_, dtype=torch.bool).bernoulli_(p=zoneout)
+            cy = torch.where(c_mask, old_c, cy_)
+            
+            hy = outgate * cy_.tanh_()
             
             if dropout > 0.0:
                 hy = torch.nn.functional.dropout(hy, p=dropout, training=training, inplace=True)
             
-            c_mask = torch.empty_like(cy).bernoulli_(p=zoneout)
-            h_mask = torch.empty_like(hy).bernoulli_(p=zoneout)
+            h_mask = torch.empty_like(hy, dtype=torch.bool).bernoulli_(p=zoneout)
             hy = torch.where(h_mask, old_h, hy)
-            cy = torch.where(c_mask, old_c, cy)
         else:
             if bias_ih is None or bias_hh is None:
                 gates = (torch.mm(input, weight_ih.t()) + torch.mm(hx, weight_hh.t()))
@@ -352,13 +354,13 @@ class LSTMCellWithZoneout(RNNCellBase):
                          torch.mm(hx, weight_hh.t()) + bias_hh)
             ingate, forgetgate, cellgate, outgate = gates.chunk(4, 1)
             
-            ingate     = ingate    .float().sigmoid().to(ingate.dtype)
-            forgetgate = forgetgate.float().sigmoid().to(forgetgate.dtype)
+            ingate     = ingate    .sigmoid().to(ingate.dtype)
+            forgetgate = forgetgate.sigmoid().to(forgetgate.dtype)
             cellgate   = cellgate  .tanh()
-            outgate    = outgate   .float().sigmoid().to(outgate.dtype)
+            outgate    = outgate   .sigmoid().to(outgate.dtype)
             
             cy = (forgetgate * cx).add_(ingate * cellgate)
-            hy = outgate * torch.tanh(cy)
+            hy = outgate * cy.tanh()
             
             if dropout > 0.0:
                 hy = torch.nn.functional.dropout(hy, p=dropout, training=training, inplace=True)
@@ -434,7 +436,7 @@ class LinearNorm(torch.nn.Module):
 
 class ConvNorm(torch.nn.Module):
     def __init__(self, in_channels, out_channels, kernel_size=1, stride=1,
-                 padding=None, dilation=1, bias=True, w_init_gain='linear', dropout=0.):
+                 padding=None, dilation=1, bias=True, w_init_gain='linear', dropout=0., causal=False):
         super(ConvNorm, self).__init__()
         if padding is None:
             assert(kernel_size % 2 == 1)
@@ -444,13 +446,22 @@ class ConvNorm(torch.nn.Module):
         
         self.conv = torch.nn.Conv1d(in_channels, out_channels,
                                     kernel_size=kernel_size, stride=stride,
-                                    padding=padding, dilation=dilation,
-                                    bias=bias)
+                                    padding=0 if causal else padding,
+                                    dilation=dilation, bias=bias)
         torch.nn.init.xavier_uniform_(
             self.conv.weight, gain=torch.nn.init.calculate_gain(w_init_gain))
+        self.causal_pad = (kernel_size-1)*dilation if causal else 0
+    
+    def maybe_pad(self, signal, pad_right=False):
+        if self.causal_pad:
+            if pad_right:
+                signal = F.pad(signal, (0, self.causal_pad))
+            else:
+                signal = F.pad(signal, (self.causal_pad, 0))
+        return signal
     
     def forward(self, signal):
-        conv_signal = self.conv(signal)
+        conv_signal = self.conv(self.maybe_pad(signal))
         if self.training and self.dropout > 0.:
             conv_signal = F.dropout(conv_signal, p=self.dropout)
         return conv_signal

@@ -111,7 +111,7 @@ class MelDataset(torch.utils.data.Dataset):
         self.device = device
         self.fine_tuning = fine_tuning
         self.trim_non_voiced = trim_non_voiced
-
+    
     def get_pitch(self, audio):
         # Extract Pitch/f0 from raw waveform using PyWORLD
         audio = audio.numpy().astype(np.float64)

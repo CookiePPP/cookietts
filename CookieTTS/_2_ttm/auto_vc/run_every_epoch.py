@@ -10,7 +10,7 @@ current_iteration = iteration
 ##    ╚═╝   ╚═╝  ╚═╝ ╚═════╝ ╚═════╝    ╚═╝   ╚═╝  ╚═╝ ╚═════╝ ╚═╝  ╚═══╝  ╚══════╝ ##
 ##                                                                                  ##
 ######################################################################################
-## Tacotron2 ##
+## AutoVC ##
 ###############
 param_interval = 1# how often this file is ran
 dump_filelosses_interval = 1000# how often to update file_losses.cvs
@@ -35,8 +35,8 @@ warmup_end   = warmup_start + (A_-warmup_start_lr)*1e5 # warmup will linearly in
 
 best_model_margin = 0.01 # training loss margin
 
-validation_interval = 125 if iteration < 2000 else (250 if iteration < 8000 else 250)
-checkpoint_interval = 2000
+validation_interval = 125 if iteration < 2000 else (250 if iteration < 8000 else 1000)
+checkpoint_interval = 5000
 
 # Loss Scalars (set to None to load from hparams.py)
 code_L1_weight      = 1.0

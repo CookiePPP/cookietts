@@ -30,6 +30,7 @@ def process_rq_result(result):
     assert result.get('input_text'), "No input_text found in request form!"
     
     text                       =       result.get(    'input_text'           )
+    out['seed']                =       result.get(    'input_seed'           )
     out['speaker']             =       result.getlist('input_speaker'        )# list of speaker(s)
     out['use_arpabet']         = True if result.get(  'input_use_arpabet'    ) == "on" else False
     out['cat_silence_s']       = float(result.get(    'input_cat_silence_s'  ))
@@ -41,6 +42,7 @@ def process_rq_result(result):
     out['split_nl']            = True if result.get('input_split_nl'         ) == "on" else False
     out['split_quo']           = True if result.get('input_split_quo'        ) == "on" else False
     out['multispeaker_mode']   =       result.get(  'input_multispeaker_mode')
+    out['zoneout_power']       = float(result.get(  'input_zoneout_power'    ))
     
     # (Text) CRLF to LF
     text = text.replace('\r\n','\n')
@@ -70,8 +72,8 @@ def texttospeech():
             t2s.update_tt(ttm_current)
         
         # update Mel-to-Wav model if needed
-        #if t2s.MTW_current != MTW_current:
-        #    t2s.update_wg(MTW_current)
+        if t2s.MTW_current != MTW_current:
+            t2s.update_hifigan(MTW_current)
         
         if False:
             # (Text) Split into segments and send to worker(s)
@@ -111,6 +113,7 @@ def texttospeech():
                                 sample_text   =conf['webpage']['defaults']['background_text'],
                                 speaker=tts_dict['speaker'][0],
                                 
+                                seed                = tts_dict['seed'],
                                 use_arpabet         = tts_dict['use_arpabet'],
                                 cat_silence_s       = tts_dict['cat_silence_s'],
                                 batch_size          = tts_dict['batch_size'],
@@ -121,6 +124,7 @@ def texttospeech():
                                 split_nl            = tts_dict['split_nl'],
                                 split_quo           = tts_dict['split_quo'],
                                 multispeaker_mode   = tts_dict['multispeaker_mode'],
+                                zoneout_power       = tts_dict['zoneout_power'],
                                 
                                 gen_time    = f'{tts_outdict["time_to_gen"]:.1f}',
                                 gen_dur     = f'{tts_outdict["audio_seconds_generated"]:.1f}',
@@ -156,6 +160,7 @@ def show_entries():
         speakers_available_short=[sp.split("_")[-1] for sp in speakers],
         speakers_available=speakers,
         
+        seed                = conf['webpage']['defaults']['seed'],
         current_text        = conf['webpage']['defaults']['current_text'],
         sample_text         = conf['webpage']['defaults']['background_text'],
         speaker             = conf['webpage']['defaults']['speaker'],
@@ -169,6 +174,7 @@ def show_entries():
         split_nl            = conf['webpage']['defaults']['split_nl'],
         split_quo           = conf['webpage']['defaults']['split_quo'],
         multispeaker_mode   = conf['webpage']['defaults']['multispeaker_mode'],
+        zoneout_power       = conf['webpage']['defaults']['zoneout_power'],
         gen_time   = "",
         gen_dur    = "",
         total_specs= "",

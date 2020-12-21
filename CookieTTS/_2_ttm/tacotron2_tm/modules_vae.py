@@ -35,7 +35,7 @@ class ReferenceEncoder(nn.Module):
         self.bns = nn.ModuleList([nn.BatchNorm2d(num_features=hparams.res_enc_filters[i]) for i in range(K)])
         
         out_channels = self.calculate_channels(hparams.n_mel_channels, 3, 2, 1, K)
-        self.gru = nn.GRU(input_size=hparams.res_enc_filters[-1] * out_channels,
+        self.gru = nn.GRU(input_size=hparams.res_enc_filters[-1]*out_channels + hparams.speaker_embedding_dim,
                           hidden_size=hparams.res_enc_gru_dim,
                           batch_first=True)
         self.n_mels   = hparams.n_mel_channels
@@ -43,7 +43,7 @@ class ReferenceEncoder(nn.Module):
         self.post_fc  = nn.Linear(hparams.res_enc_gru_dim,    hparams.res_enc_n_tokens*2)
         self.embed_fc = nn.Linear(hparams.res_enc_n_tokens, hparams.res_enc_embed_dim )
     
-    def forward(self, inputs, input_lengths=None, rand_sampling=True):
+    def forward(self, inputs, input_lengths=None, speaker_embed=None, rand_sampling=True):
         B = inputs.size(0)
         out = inputs.contiguous().view(B, 1, -1, self.n_mels)  # [B, 1, Ty, n_mels]
         for conv, bn in zip(self.convs, self.bns):
@@ -52,15 +52,14 @@ class ReferenceEncoder(nn.Module):
             out = F.leaky_relu(out, negative_slope=0.05, inplace=True)  # [B, 128, Ty//2^K, n_mels//2^K]
         
         out = out.transpose(1, 2)  # [B, Ty//2^K, 128, n_mels//2^K]
-        T = out.size(1)
-        B = out.size(0)
+        B, T, *_ = out.shape
         out = out.contiguous().view(B, T, -1)  # [B, Ty//2^K, 128*n_mels//2^K]
+        out = torch.cat((out, speaker_embed[:, None, :].expand(B, T, -1)), dim=2)# [B, -1, embed]
         
-        if False and input_lengths is not None:
-            # pytorch tensor are not reversible, hence the conversion
-            input_lengths = input_lengths.cpu().numpy()
-            out = nn.utils.rnn.pack_padded_sequence(out, input_lengths, batch_first=True, enforce_sorted=False)
-            # [B, T, C]
+        if True and input_lengths is not None:# pytorch tensor are not reversible, hence the conversion
+            input_lengths = input_lengths.cpu()
+            input_lengths = (input_lengths.float()*(float(T)/input_lengths.max().float())).ceil().clamp(min=1.0, max=out.shape[1]).long()
+            out = nn.utils.rnn.pack_padded_sequence(out, input_lengths.numpy(), batch_first=True, enforce_sorted=False)# [B, T, C]
         
         out = self.gru(out)[1].squeeze(0)# -> [1, B, C]
         

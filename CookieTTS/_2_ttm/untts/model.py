@@ -331,7 +331,17 @@ class MaskedBatchNorm1d(nn.BatchNorm1d):
         else:
             y = super(MaskedBatchNorm1d, self).forward(x)# [B, C, T] -> [B*T, C] -> [B, C, T]
             if not self.eval_only_momentum and ( self.iters_ > 2.0/self.momentum_eps ):
-                y  = (x-self.running_mean.detach())/self.running_var.detach().sqrt()
+                mean = self.running_mean.detach().squeeze()
+                std  = self.running_var .detach().squeeze().sqrt()
+                if len(x.shape) == 3:
+                    if   len(mean.shape) == 1: mean = mean[None, :, None]# [1, C, 1]
+                    elif len(mean.shape) == 2: mean = mean[:, :, None]   # [1, C, 1]
+                    if   len( std.shape) == 1: std  =  std[None, :, None]# [1, C, 1]
+                    elif len( std.shape) == 2: std  =  std[:, :, None]   # [1, C, 1]
+                elif len(x.shape) == 2:
+                    if len(mean.shape) == 1: mean = mean[None, :]# [1, C]
+                    if len( std.shape) == 1: std  =  std[None, :]# [1, C]
+                y = (x-mean)/std # ([B, C, T]-[1, C, 1])/[1, C, 1]
         with torch.no_grad():
             self.iters_ += 1
         return y# [B, C, T] or [B, C]

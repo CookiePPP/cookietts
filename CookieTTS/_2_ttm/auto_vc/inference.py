@@ -40,9 +40,13 @@ def load_checkpoint(checkpoint_path, model):
     return model, iteration
 
 
-# speaker encoder
-from CookieTTS.utils.dataset.autovc_speaker_encoder.make_metadata import get_speaker_encoder    
-speaker_encoder = get_speaker_encoder()
+# 256C speaker encoder
+#from CookieTTS.utils.dataset.autovc_speaker_encoder.make_metadata import get_speaker_encoder
+#speaker_encoder = get_speaker_encoder()
+
+# 768C speaker encoder
+from CookieTTS.utils.dataset.resem.voice_encoder import VoiceEncoder
+speaker_encoder = VoiceEncoder()
 
 def get_speaker_embed(path):
     if path.endswith('.pt'):# if pytorch file
@@ -50,7 +54,7 @@ def get_speaker_embed(path):
     elif path.endswith('.npy'):# if numpy file
         return torch.from_numpy(np.load(path)).float()
     else:
-        return speaker_encoder.get_embed_from_path(path).float()
+        return speaker_encoder.get_embed_from_path(path).data.float()
 
 def get_hifi_gan(checkpoint_path):
     assert os.path.exists(checkpoint_path), f'HiFi-GAN Checkpoint at "{checkpoint_path}" does not exist!'
@@ -163,8 +167,8 @@ if __name__ == '__main__':
     
    
     args = parser.parse_args()
-    global hparams
-    hparams = create_hparams()
+    #global hparams
+    #hparams = create_hparams()
     
     assert os.path.exists(args.test_list) or os.path.exists(args.test_dir), '--text_list or --text_dir must be specified and exist!'
     

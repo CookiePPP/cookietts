@@ -48,27 +48,32 @@ def create_hparams(hparams_string=None, verbose=False):
         #################################
         ## Batch Size / Segment Length ##
         #################################
-        batch_size    =32,# controls num of files processed in parallel per GPU
-        val_batch_size=32,# for more precise comparisons between models, constant batch_size is useful
+        batch_size    =24,# controls num of files processed in parallel per GPU
+        val_batch_size=24,# for more precise comparisons between models, constant batch_size is useful
         
-        use_TBPTT  =False,# continue processing longer files into the next training iteration
-        max_segment_length=1024,# max mel length till a segment is sliced.
-        max_chars_length  =256,# max text input till text is sliced. I use segment_length/4.
+        use_TBPTT = True,# continue processing longer files into the next training iteration.
+                         # allows very large inputs to be learned from
+                         # and a large speedup in training speed by decreasing max_segment_length and increasing batch_size.
+        
+        max_segment_length=384,# max mel length till a segment is sliced.
+        max_chars_length  =192,# max text input till text is sliced. I use segment_length/4.
+                               # text slicing is ignored when using TBPTT
         
         gradient_checkpoint      = False,# Saves forward pass states to recompute the gradients in chunks
                                          # Will reduce VRAM usage significantly at the cost of running parts of the model twice.
                                          # (The reduction in VRAM allows 4x batch size on an RTX 2080 Ti at the cost of 80% higher time-per-iter)
-        checkpoint_decode_chunksize=  32,# recommend the square root of max_segment_length or tune manually
+        checkpoint_decode_chunksize=2048,# recommend the square root of max_segment_length or tune manually
                                          # Changing this should have a large impact on VRAM usage when using gradient_checkpoint 
                                          # and make no difference to anything when gradient_checkpoint is disabled.
         
-        sort_text_len_decending = False,# IMPLEMENTED, NEEDS TO BE TESTED IN THE DISABLED POSITION
-                                     # Should allow more flexibility with TBPTT and remove quite a few problems when disabled.
+        sort_text_len_decending = False,# This is legacy, leave disabled
         
-        min_avg_max_att       = 0.50 ,# files under this alignment strength are filtered out of the dataset during training.
-        max_diagonality       = 1.16 ,# files  over this     diagonality    are filtered out of the dataset during training.
-        max_spec_mse          = 1.00 ,# files  over this mean squared error are filtered out of the dataset during training.
-        min_avg_max_att_start = 30000,# when to start filtering out weak alignments.
+        min_avg_max_att       =  0.45,# files under this alignment strength are filtered out of the dataset during training.
+        max_diagonality       =  1.25,# files  over this     diagonality    are filtered out of the dataset during training.
+        max_spec_mse          =  1.00,# files  over this mean squared error are filtered out of the dataset during training.
+        p_missing_enc         =  0.08,# 
+        
+        min_avg_max_att_start =110000,# when to start filtering out weak alignments.
                                       # (normally mis-labelled files or files that are too challenging to learn)
                                       # Only applies to training dataset.
                                       # Only updates at the end of each epoch.
@@ -92,10 +97,10 @@ def create_hparams(hparams_string=None, verbose=False):
         dataset_audio_filters= ['*.wav','*.flac',],
         dataset_audio_rejects= ['*_Noisy_*','*_Very Noisy_*',],
         dataset_p_val = 0.005,# portion of dataset for Validation # default of 0.5% may be too small depending on the size of your dataset.
-        dataset_min_duration =  1.5,# minimum duration in seconds for audio files to be added.
+        dataset_min_duration =  0.9,# minimum duration in seconds for audio files to be added.
         dataset_max_duration = 30.0,# maximum duration in seconds for audio files being added.
                                     # use max_segment_length to control how much of each audio file can be used to fill VRAM during training.
-        dataset_min_chars    =   16,# min number of letters/text that a transcript should have to be added to the audiofiles list.
+        dataset_min_chars    =   12,# min number of letters/text that a transcript should have to be added to the audiofiles list.
         dataset_max_chars    =  256,# min number of letters/text that a transcript should have to be added to the audiofiles list.
                                     # use max_chars_length to control how much of text from each audio file can be used to fill VRAM during training.
         
@@ -139,13 +144,15 @@ def create_hparams(hparams_string=None, verbose=False):
         sampling_rate= 44100,
         target_lufs  = -27.0,# Loudness each file is rescaled to, use None for original file loudness.
         
-        trim_enable = True,# set to False to disable trimming completely
-        trim_cache_audio = False,# save trimmed audio to disk to load later. Saves CPU usage, uses more disk space.
-                                 # modifications to params below do not apply to already cached files.
-        trim_margin_left  = [0.0125]*3,
-        trim_margin_right = [0.0125]*3,
+        trim_enable      = True,# set to False to disable trimming completely
+        trim_cache_audio = True,# save trimmed audio to disk to load later. Saves CPU usage, uses more disk space.
+        filt_min_freq =    60.,# low freq
+        filt_max_freq = 18000.,# top freq
+        filt_order    =     6 ,# filter strength/agressiveness/whatever - don't set too high or things will break
+        trim_margin_left  = [0.125, 0.05, 0.0375],
+        trim_margin_right = [0.125, 0.05, 0.0375],
         trim_ref          = ['amax']*3,
-        trim_top_db       = [   48,   46,   46],
+        trim_top_db       = [   36,   41,   46],# volume/dB under reference that should be trimmed
         trim_window_length= [16384, 4096, 2048],
         trim_hop_length   = [ 2048, 1024,  512],
         trim_emphasis_str = [  0.0,  0.0,  0.0],
@@ -208,37 +215,42 @@ def create_hparams(hparams_string=None, verbose=False):
         # (Residual Encoder) Learns information related to anything that isn't related to Text or Speakers. (e.g: background noise)
         # https://openreview.net/pdf?id=Bkg9ZeBB37
         # THIS IS NOT WORKING CORRECTLY RIGHT NOW AND MAY BE REMOVED AT ANY TIME.
-        use_res_enc = False,
+        use_res_enc = True,
         res_enc_filters   = [32, 32, 64, 64, 128, 128],
         res_enc_gru_dim   = 128,
-        res_enc_n_tokens  =   5,
-        res_enc_embed_dim = 256,
+        res_enc_n_tokens  =   4,
+        res_enc_embed_dim =  64,
+        
+        use_res_enc_dis = False,# Enable/Disable Discriminator
         res_enc_dis_dim  = 128,
         res_enc_n_layers =   3,
         
         # (DebluraGAN) GAN Spectrogram Loss
         # *Should* reduce the blur for generated spectrograms.
         use_dbGAN      = True,
+        
+        # Conv2d Blocks
         dbGAN_prenet_dim      = 128,
         dbGAN_prenet_kernel_h = 3,
         dbGAN_prenet_kernel_w = 3,
         dbGAN_prenet_stride   = [
                                   [3, 3],
-                                  [1, 1],
                                   [3, 3],
                                 ],
         dbGAN_prenet_n_layers = 2,
-        dbGAN_prenet_n_blocks = 3,
+        dbGAN_prenet_n_blocks = 2,
         
+        # Conv1d Blocks
         dbGAN_dim  = 128,
         dbGAN_kernel_w =   3,
         dbGAN_stride   =   1,# mel_T stride
         dbGAN_n_layers =   2,
-        dbGAN_n_blocks =   1,
+        dbGAN_n_blocks =   2,
         
         # Random Number Generator Input to Decoder, to allow the decoder to produce convincing random noise when required.
-        use_DecoderRNG = True,# highly recommended when using dbGAN!
-        DecoderRNG_dim =  160,# highly recommended when using dbGAN!
+        use_DecoderRNG =  True,# highly recommended when using dbGAN!
+        DecoderRNG_dim =   160,# highly recommended when using dbGAN! # predict random numbers for the speech part of the decoder to use
+        noise_projector = True,# highly recommended when using dbGAN! # predict a scalar for white-noise to add to each element.
         
         # (InferenceGAN) TF/Inf GAN Loss
         # Reduces the difference between Infernce and Training Results
@@ -256,8 +268,8 @@ def create_hparams(hparams_string=None, verbose=False):
                               # False = use Uni-Directional LSTMs
         
         # (InferenceGAN) If using TemporalConvInferenceGAN
-        InfGAN_n_channels     =   128,
-        InfGAN_n_layers       =     8,
+        InfGAN_n_channels     =   384,
+        InfGAN_n_layers       =     7,
         InfGAN_kernel_size    =     3,
         InfGAN_seperable_conv = False,
         InfGAN_merge_res_skip = False,
@@ -276,6 +288,33 @@ def create_hparams(hparams_string=None, verbose=False):
         # (Speaker) Speaker embedding
         n_speakers            = 2048,# maximum number of speakers the model can support.
         speaker_embedding_dim =  256,# speaker embedding size # 128 baseline
+        
+        # (Variational Encoder)
+        # Gives slightly random inputs into the decoder that contain information about the target frame.
+        # This acts kinda like a cheat-sheet for tacotron, where it gets to pick up a small amount of information about it's target
+        # As such, using the Variational Encoder will have a large impact on spec and postnet losses without actually making tacotron more accurate.
+        # The reason this is useful is because tacotron produces less blurry outputs when it has a cheat sheet,
+        # however, since we can't use a cheat-sheet when generating new audio, when generating new audio we feed tacotron completely random cheat sheets.
+        # The theory is that tacotron will produce clear outputs using the cheat sheet, and since the cheat sheet is soo small, tacotron will only use the cheat-sheet for really important things it can't already predict.
+        # and thus, using random cheat-sheets should only add randomness to things like the background noise and the higher harmonics, where randomness is acceptable anyway.
+        # - What i'm saying is, keep the VE_KLD loss quite low, or tacotron will start to use it's cheat sheet instead of thinking for itself.
+        #   The cheat sheet should only be informative enough to contain small bits of information that tacotron can't predict.
+        #   Any more informative and tacotron would stop trying to learn and just use the cheat sheet for everything.
+        
+        use_ve = False,# True/False - use Variational Encoder?
+        ve_lstm_dim = 768,# - width/dim of each lstm.
+        ve_n_lstm   =   1,# - number of lstm layers.
+        ve_n_tokens =  20,# n_tokens is the size of the cheat sheet. Too small and tacotron will act like normal (i.e: Blurry outputs)
+                          #                                          Too large and tacotron will start becoming very random and unstable as it relies on the cheat sheet for things it shouldn't.
+                          # Also keep in mind the VE_KLD loss, VE_KLD is basically how "not random" or "precise" every token is.
+                                                     # VE_KLD =  0.0 means the tokens are all just random number generators and contain no information.
+                                                     # VE_KLD = 99.0 means the tokens are extremely precise and contain far too much information.
+                                                     # I don't know the best value, but between 0.5 and 2.0 is quite common.
+                                                     # Use VE_KLD_weight in 'run_every_epoch.py' to influence the VE_KLD.
+                                                     # higher VE_KLD_weight = tokens are forced to be more random
+                                                     # when you start training, VE_KLD_weight should be kept low so tacotron can build it's cheat sheet and figure out what it wants to put in the cheat sheet.
+                                                     # Once VE_KLD starts shooting up that means tacotron has figured out what it wants in the cheat sheet, at that point you need to increase VE_KLD_weight to bring it back down to about 1.0-ish.
+        ve_embed_dim = 160,# - dimension to expand the n_tokens to before adding back to the model
         
         # (Decoder/Encoder) Bottleneck parameters
         # The outputs from the encoder, speaker, emotionnet and sylpsnet need to be mixed.
@@ -299,30 +338,37 @@ def create_hparams(hparams_string=None, verbose=False):
         prenet_bn_momentum=0.5,# Inverse smoothing factor, 0.1 = high smoothing, 0.9 = Almost no smoothing
         p_prenet_dropout  =0.5,# 0.5 baseline
         
-        prenet_speaker_embed_dim=0,# speaker_embedding before encoder
+        prenet_speaker_embed=True,# True/False - use speaker_embedding before encoder
         prenet_noise   =0.00,# Add Gaussian Noise to Prenet inputs. std defined here.
         prenet_blur_min=0.00,# Apply random vertical blur between prenet_blur_min
         prenet_blur_max=0.00,#                                and prenet_blur_max
                              # Set max to False or Zero to disable
+        prenet_use_code_loss=True,# L1 Loss between prenet outputs with GT and Pred inputs
+                                  # Forces Tacotron to produce reasonable latents from it's own outputs
         
         # (Decoder) AttentionRNN
-        attention_rnn_dim          =  1280,  # 1024 baseline
-        AttRNN_hidden_dropout_type = 'dropout',# options ('dropout','zoneout')
-        p_AttRNN_hidden_dropout    =  0.10,  # 0.1 baseline
-        AttRNN_extra_decoder_input =  True,  # False baseline # Feed DecoderRNN Hidden State into AttentionRNN
+        AttRNN_extra_decoder_input =  True,# False baseline # Feed DecoderRNN Hidden State into AttentionRNN
         # Optional Second AttentionRNN
+        AttRNN_use_global_cond     =  True,# Add speaker_embed, emotion_embed, speaking rate,
+        
+        attention_rnn_dim          =  1280,  # 1024 baseline
+        AttRNN_hidden_dropout_type = 'zoneout',# options ('dropout','zoneout')
+        p_AttRNN_hidden_dropout    =  0.10,  # 0.1 baseline
         second_attention_rnn_dim=0,# 0 baseline # Extra AttentionRNN to learn more complex patterns # set to 0 to disable layer.
         second_attention_rnn_residual_connection=True,# residual connections between the AttentionRNNs
                                                       # requires the attention_rnn dims to match to activate/work.
         
         # (Decoder) DecoderRNN
-        decoder_rnn_dim            =  512,  # 1024 baseline
-        DecRNN_hidden_dropout_type = 'dropout',# options ('dropout','zoneout')
-        p_DecRNN_hidden_dropout    =  0.20, # 0.1 baseline
+        decoder_rnn_dim            = 1024,  # 1024 baseline
+        DecRNN_hidden_dropout_type = 'zoneout',# options ('dropout','zoneout')
+        p_DecRNN_hidden_dropout    =  0.10, # 0.1 baseline
         decoder_residual_connection= False, # residual connections with the AttentionRNN hidden state and Attention/Memory Context
         # Optional Second DecoderRNN
-        second_decoder_rnn_dim=512,# 0 baseline # Extra DecoderRNN to learn more complex patterns # set to 0 to disable layer.
+        second_decoder_rnn_dim=1024,# 0 baseline # Extra DecoderRNN to learn more complex patterns # set to 0 to disable layer.
         second_decoder_residual_connection=True,# residual connections between the DecoderRNNs
+        # Optional Third! DecoderRNN
+        third_decoder_rnn_dim =1024,# 0 baseline # Extra DecoderRNN to learn more complex patterns # set to 0 to disable layer.
+        third_decoder_residual_connection=True,# residual connections between the DecoderRNNs
         
         # (Decoder) Misc
         decoder_input_residual=True,# add the decoder_input to the outputs so to the rest of the decoder is only learning the modifier
@@ -368,13 +414,30 @@ def create_hparams(hparams_string=None, verbose=False):
         postnet_n_convolutions=   6,
         postnet_residual_connections=3,# False baseline, int > 0 == n_layers in each residual block
         
+        # (Very Experimental) HiFi-GAN Latent Inputs
+        # - NOT IMPLEMENTED
+        HiFiGAN_enable    = True,
+        HiFiGAN_cp_folder = '../../_4_mtw/hifigan/cp_hifigan_935universal44Khz_0_latent_ft',
+        
+        # used for reconstruction loss, not input
+        HiFiGAN_filter_length = 2048,
+        HiFiGAN_hop_length    =  512,
+        HiFiGAN_win_length    = 2048,
+        HiFiGAN_n_mel_channels=  160,
+        HiFiGAN_clamp_val     = 1e-5,
+        
+        HiFiGAN_batch_size  =     4,# affects VRAM usage
+        HiFiGAN_segment_size= 32768,# affects VRAM usage
+        HiFiGAN_learning_rate= 1e-4,# overriden by 'run_every_epoch.py'
+        HiFiGAN_lr_half_life =30000,# overriden by 'run_every_epoch.py'
+        
         ##################################
         ## Optimization Hyperparameters ##
         ##################################
         use_saved_learning_rate=False,
-        learning_rate = 0.1e-5,# overriden by 'run_every_epoch.py'
-        grad_clip_thresh=1.0,  # overriden by 'run_every_epoch.py'
-        weight_decay  = 1e-6,
+        learning_rate   = 0.1e-5,# overriden by 'run_every_epoch.py'
+        grad_clip_thresh= 1.0,   # overriden by 'run_every_epoch.py'
+        weight_decay    = 1.0e-6,
         
         mask_padding  = True,#mask values by setting them to the same values in target and predicted
         masked_select = True,#mask values by removing them from the calculation

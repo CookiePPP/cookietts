@@ -1,16 +1,17 @@
 import time
 import os
+import random
 
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from torch.utils.checkpoint import checkpoint
 import torch.distributed as dist
+from typing import Optional
 import numpy as np
 import math
 from CookieTTS.utils.model.utils import get_mask_from_lengths, alignment_metric, get_first_over_thresh, freeze_grads
-from typing import Optional
-
+from CookieTTS._2_ttm.untts.model import MaskedBatchNorm1d
 
 # https://github.com/gothiswaysir/Transformer_Multi_encoder/blob/952868b01d5e077657a036ced04933ce53dcbf4c/nets/pytorch_backend/e2e_tts_tacotron2.py#L28-L156
 class GuidedAttentionLoss(torch.nn.Module):
@@ -131,20 +132,32 @@ class Tacotron2Loss(nn.Module):
         self.masked_select = hparams.masked_select
         
         self.use_res_enc         = hparams.use_res_enc
+        self.use_res_enc_dis     = hparams.use_res_enc_dis
         self.res_enc_kld_weight  = hparams.res_enc_kld_weight
         self.res_enc_gMSE_weight = hparams.res_enc_gMSE_weight
         
         self.use_dbGAN  = hparams.use_dbGAN
         self.use_InfGAN = hparams.use_InfGAN
         
+        self.prenet_use_code_loss = getattr(hparams, 'prenet_use_code_loss')#, False)
+        if self.prenet_use_code_loss:
+            self.prenet_dim = hparams.prenet_dim
+            self.gt_code_bn = MaskedBatchNorm1d(hparams.prenet_dim, momentum=0.05, eval_only_momentum=False, affine=False).cuda()
+            self.pr_code_bn = MaskedBatchNorm1d(hparams.prenet_dim, momentum=0.05, eval_only_momentum=False, affine=False).cuda()
+        
         self.gate_loss_weight = hparams.gate_loss_weight
         
-        self.sylps_kld_weight = hparams.sylps_kld_weight # SylNet KDL Weight
+        self.sylps_kld_weight = hparams.sylps_kld_weight # SylNet KLD Weight
         self.sylps_MSE_weight = hparams.sylps_MSE_weight
         self.sylps_MAE_weight = hparams.sylps_MAE_weight
         
         self.diag_att_weight  = hparams.diag_att_weight
         self.guided_att = GuidedAttentionLoss(sigma=hparams.DiagonalGuidedAttention_sigma)
+        
+        self.HiFiGAN_enable       = getattr(hparams, 'HiFiGAN_enable',       False)
+        self.HiFiGAN_segment_size = getattr(hparams, 'HiFiGAN_segment_size', 16384)
+        self.HiFiGAN_batch_size   = getattr(hparams, 'HiFiGAN_batch_size'  ,     2)
+        self.hop_length           = hparams.hop_length
     
     def vae_kl_anneal_function(self, anneal_function, lag, step, k, x0, upper):
         if anneal_function == 'logistic': # https://www.desmos.com/calculator/neksnpgtmz
@@ -175,7 +188,7 @@ class Tacotron2Loss(nn.Module):
         loss_dict['loss'] = loss
         return loss_dict
     
-    def forward(self, model, pred, gt, loss_scalars, resGAN=None, dbGAN=None, infGAN=None):
+    def forward(self, model, pred, gt, loss_scalars, resGAN=None, dbGAN=None, infGAN=None, hifiGAN=None,):
         loss_dict = {}
         file_losses = {}# dict of {"audiofile": {"spec_MSE": spec_MSE, "avg_prob": avg_prob, ...}, ...}
         
@@ -278,19 +291,22 @@ class Tacotron2Loss(nn.Module):
             del pred_sylps, sylps_target
         
         if True:# Diagonal Attention Guiding
-            alignments     = pred['alignments']
+            alignments     = pred['alignments'  ]
             text_lengths   =   gt['text_lengths']
-            output_lengths =   gt['mel_lengths']
-            pres_prev_state=   gt['pres_prev_state']
+            output_lengths =   gt['mel_lengths' ]
+            not_truncated  = ~(gt['pres_prev_state'] | gt['cont_next_iter'])
             if model.decoder.half_inference_mode:
-                alignments      = alignments     .chunk(2, dim=0)[0]
-                text_lengths    = text_lengths   .chunk(2, dim=0)[0]
-                output_lengths  = output_lengths .chunk(2, dim=0)[0]
-                pres_prev_state = pres_prev_state.chunk(2, dim=0)[0]
-            loss_dict['diag_att'] = self.guided_att(alignments[pres_prev_state==0.0],
-                                                  text_lengths[pres_prev_state==0.0],
-                                                output_lengths[pres_prev_state==0.0])
-            del alignments, text_lengths, output_lengths, pres_prev_state
+                alignments      = alignments    .chunk(2, dim=0)[0]
+                text_lengths    = text_lengths  .chunk(2, dim=0)[0]
+                output_lengths  = output_lengths.chunk(2, dim=0)[0]
+                not_truncated   = not_truncated .chunk(2, dim=0)[0]
+            if not_truncated.sum():
+                loss_dict['diag_att'] = self.guided_att(alignments[not_truncated],
+                                                      text_lengths[not_truncated],
+                                                    output_lengths[not_truncated])
+            else:
+                loss_dict['diag_att'] = alignments.new_tensor(0.028)
+            del alignments, text_lengths, output_lengths, not_truncated
         
         if self.use_res_enc and resGAN is not None:# Residual Encoder KL Divergence Loss
             mu, logvar, mulogvar = pred['res_enc_pkg']
@@ -298,25 +314,27 @@ class Tacotron2Loss(nn.Module):
             kl_loss = -0.5 * torch.sum(1 + logvar - mu.pow(2) - logvar.exp())
             loss_dict['res_enc_kld'] = kl_loss
             
-            # discriminator attempts to predict the letters and speakers using the residual latent space,
-            #  the generator attempts to increase the discriminators loss so the latent space will lose speaker and dur info
-            #   making it more likely the latent contains information relating to background noise conditions and
-            #    other features more relavent to human interests.
-            with torch.no_grad():
-                gt_speakers   = gt['speaker_id_onehot'].float() # [B, n_speakers]
-                gt_sym_durs   = get_class_durations(gt['text'], pred['alignments'].detach(), self.n_symbols)# [B, n_symbols]
-            out = resGAN.discriminator(mulogvar)# learns to predict the speaker and
-            B = out.shape[0]
-            pred_sym_durs, pred_speakers = out.squeeze(-1).split([self.n_symbols, self.n_speakers], dim=1) # amount of 'a','b','c','.', etc sounds that are in the audio.
-                                                                      # if there isn't a 'd' sound in the transcript, then d will be 0.0
-                                                                      # if there are multiple 'a' sounds, their durations are summed.
-            pred_speakers = torch.nn.functional.softmax(pred_speakers, dim=1)
-            loss_dict['res_enc_gMSE'] = (nn.MSELoss(reduction='sum')(pred_sym_durs, gt_sym_durs.mean(dim=1, keepdim=True))*0.0001 + nn.MSELoss(reduction='sum')(pred_speakers, gt_speakers.mean(dim=1, keepdim=True)))/B
+            if self.use_res_enc_dis:
+                # discriminator attempts to predict the letters and speakers using the residual latent space,
+                #  the generator attempts to increase the discriminators loss so the latent space will lose speaker and dur info
+                #   making it more likely the latent contains information relating to background noise conditions and
+                #    other features more relavent to human interests.
+                with torch.no_grad():
+                    gt_speakers   = gt['speaker_id_onehot'].float() # [B, n_speakers]
+                    gt_sym_durs   = get_class_durations(gt['text'], pred['alignments'].detach(), self.n_symbols)# [B, n_symbols]
+                out = resGAN.discriminator(mulogvar)# learns to predict the speaker and
+                B = out.shape[0]
+                pred_sym_durs, pred_speakers = out.squeeze(-1).split([self.n_symbols, self.n_speakers], dim=1) # amount of 'a','b','c','.', etc sounds that are in the audio.
+                                                                          # if there isn't a 'd' sound in the transcript, then d will be 0.0
+                                                                          # if there are multiple 'a' sounds, their durations are summed.
+                pred_speakers = torch.nn.functional.softmax(pred_speakers, dim=1)
+                loss_dict['res_enc_gMSE'] = (nn.MSELoss(reduction='sum')(pred_sym_durs, gt_sym_durs.mean(dim=1, keepdim=True))*0.0001 + nn.MSELoss(reduction='sum')(pred_speakers, gt_speakers.mean(dim=1, keepdim=True)))/B
+                
+                resGAN.gt_speakers = gt_speakers
+                resGAN.gt_sym_durs = gt_sym_durs
+                del gt_speakers, gt_sym_durs, pred_sym_durs, pred_speakers
             
-            resGAN.gt_speakers = gt_speakers
-            resGAN.gt_sym_durs = gt_sym_durs
-            
-            del mu, logvar, kl_loss, gt_speakers, gt_sym_durs, pred_sym_durs, pred_speakers
+            del mu, logvar, kl_loss, mulogvar
         
         if 1 and model.training and self.use_dbGAN and dbGAN is not None:
             pred_mel_postnet = pred['pred_mel_postnet'].unsqueeze(1)# -> [tfB, 1, n_mel, mel_T]
@@ -367,13 +385,71 @@ class Tacotron2Loss(nn.Module):
             tf_label = torch.ones(tfB, device=pred_gate.device, dtype=pred_gate.dtype)[:, None].expand(tfB, mel_T)*-1.# [B/2]
             loss_dict['InfGAN_gLoss'] = 2.*F.mse_loss(inf_infness, tf_label)
         
+        if "var_mu" in pred:# KLD for Variational Encoder
+            mu, logvar = pred["var_mu"], pred["var_logvar"]
+            loss_dict['VE_KLD'] = -0.5 * torch.sum(1 + logvar - mu.pow(2) - logvar.exp())
+        
+        if self.prenet_use_code_loss:# Encoded Prenet Loss
+            dtype = next(model.decoder.prenet.parameters()).dtype
+            if model.decoder.half_inference_mode:
+                pred_mel         = pred['pred_mel'     ].chunk(2, dim=0)[0].to(dtype)
+                gt_mel           =   gt['gt_mel'       ].chunk(2, dim=0)[0].to(dtype)
+                mel_lengths      =   gt['mel_lengths'  ].chunk(2, dim=0)[0].long()
+                speaker_embed    = pred['speaker_embed'].chunk(2, dim=0)[0].to(dtype)
+            else:
+                pred_mel         = pred['pred_mel'     ].to(dtype)
+                gt_mel           =   gt['gt_mel'       ].to(dtype)
+                mel_lengths      =   gt['mel_lengths'  ].long()
+                speaker_embed    = pred['speaker_embed'].to(dtype)
+            
+            mask = get_mask_from_lengths(mel_lengths, max_len=gt_mel.shape[2]).transpose(0, 1).unsqueeze(-1)# -> [mel_T, B, 1]
+            tfB, n_mel, mel_T = gt_mel.shape
+            with freeze_grads(model.decoder.prenet):
+                with torch.no_grad():
+                    with torch.random.fork_rng(devices=[0,]):
+                        gt_pn_code = model.decoder.prenet(gt_mel.permute(2, 0, 1), speaker_embed, disable_dropout=True).detach()# [B, n_mel, mel_T] -> [mel_T, B, prenet_dim]
+                    gt_pn_code = torch.masked_select(gt_pn_code, mask).view(-1, self.prenet_dim, 1)# [mel_T*B, n_mel, 1]
+                    gt_pn_code = self.gt_code_bn(gt_pn_code)# [mel_T, B, prenet_dim]
+            with torch.random.fork_rng(devices=[0,]):
+                pred_pn_code = model.decoder.prenet(pred_mel.permute(2, 0, 1), speaker_embed, disable_dropout=True)# [B, n_mel, mel_T] -> [mel_T, B, prenet_dim]
+            pred_pn_code = torch.masked_select(pred_pn_code, mask).view(-1, self.prenet_dim, 1)# [mel_T*B, n_mel, 1]
+            pred_pn_code = self.pr_code_bn(pred_pn_code)
+            loss_dict['prenet_code_MAE'] = F.l1_loss(gt_pn_code, pred_pn_code)
+        
+        if self.HiFiGAN_enable:
+            # get (indexes) items in batch to use for HiFiGAN
+            # items much have length greater than hifigan segment length
+            # items must have native sampling rate higher than 38KHz
+            mel_seg_len = (self.HiFiGAN_segment_size//self.hop_length)+1
+            indexes = (gt['mel_lengths'] >= mel_seg_len) & (gt['sampling_rate'] >= hifiGAN.STFT.mel_fmax*2.)
+            indexes = indexes & (indexes.cumsum(dim=0) <= self.HiFiGAN_batch_size)
+            
+            pred['hifigan_indexes'] = indexes # save for later
+            if indexes.sum() >= self.HiFiGAN_batch_size:
+                mel_lengths = gt['mel_lengths'][indexes]
+                max_start = mel_lengths.min()-mel_seg_len
+                start_ind = 0
+                if max_start:
+                    start_ind = random.randint(0, max_start)
+                
+                #pred['hifigan_inputs'] = pred['pred_mel_postnet'] # debug, please ignore/delete/tell me if this gets commited after 25th Dec
+                pred['hifigan_inputs'  ] = pred['hifigan_inputs'][indexes][:, :,              start_ind:(start_ind+mel_seg_len)]
+                gt[  'hifigan_gt_audio'] =   gt['gt_audio'      ][indexes][:, self.hop_length*start_ind:(start_ind+mel_seg_len)*self.hop_length].unsqueeze(1)
+                
+                pred['hifigan_pred_audio'] = hifiGAN.generator(pred['hifigan_inputs'])
+                pred['hifigan_pred_mel'  ] = hifiGAN.STFT.mel_spectrogram(pred['hifigan_pred_audio'].squeeze(1))
+                with torch.no_grad():
+                    gt['hifigan_gt_mel'  ] = hifiGAN.STFT.mel_spectrogram(  gt['hifigan_gt_audio'  ].squeeze(1))
+                
+                hifiGAN.generator_loss(gt['hifigan_gt_audio'], pred['hifigan_pred_audio'],
+                                       gt['hifigan_gt_mel'  ], pred['hifigan_pred_mel'  ], loss_dict)
+        
         #################################################################
         ## Colate / Merge the Losses into a single tensor with scalars ##
         #################################################################
         loss_dict = self.colate_losses(loss_dict, loss_scalars)
         
         with torch.no_grad():# get Avg Max Attention and Diagonality Metrics
-            
             atd = alignment_metric(pred['alignments'].detach().clone(), gt['text_lengths'], gt['mel_lengths'])
             diagonalitys, avg_prob, char_max_dur, char_min_dur, char_avg_dur, p_missing_enc = atd.values()
             
@@ -405,19 +481,25 @@ class Tacotron2Loss(nn.Module):
             diagonalitys, avg_prob, char_max_dur, char_min_dur, char_avg_dur, p_missing_enc = atd.values()
             scores = []
             for i in range(tfB):
+                audiopath = gt['audiopath'][i]
+                
                 # factors that make up score
                 weighted_score = avg_prob[i].item() # general alignment quality
                 diagonality_punishment = max( diagonalitys[i].item()-1.10, 0) * 0.25 # speaking each letter at a similar pace.
                 max_dur_punishment     = max( char_max_dur[i].item()-60.0, 0) * 0.005# getting stuck on same letter for 0.5s
                 min_dur_punishment     = max(0.00-char_min_dur[i].item(),  0) * 0.5  # skipping single enc outputs
                 avg_dur_punishment     = max(3.60-char_avg_dur[i].item(),  0)        # skipping most enc outputs
-                mis_dur_punishment     = max(p_missing_enc[i].item()-0.08, 0) if gt['text_lengths'][i] > 12 and gt['mel_lengths'][i] < gt['mel_lengths'].max()*0.75 else 0.0 # skipping some percent of the text
+                mis_dur_punishment     = max(p_missing_enc[i].item()-0.08, 0)        # skipping some percent of the text
                 
-                weighted_score -= (diagonality_punishment+max_dur_punishment+min_dur_punishment+avg_dur_punishment+mis_dur_punishment)
+                if True:
+                    weighted_score -= max_dur_punishment
+                if gt['text_lengths'][i] > 12 and gt['mel_lengths'][i] < gt['mel_lengths'].max()*0.75:
+                    weighted_score -= mis_dur_punishment
+                if not (gt['pres_prev_state'][i] or gt['cont_next_iter'][i]):
+                    weighted_score -= (diagonality_punishment+min_dur_punishment+avg_dur_punishment)
                 scores.append(weighted_score)
                 file_losses[audiopath]['att_score'] = weighted_score
             scores = torch.tensor(scores)
-            scores[torch.isnan(scores)] = scores[~torch.isnan(scores)].mean()
             loss_dict['weighted_score'] = scores.to(pred['alignments'].device).mean()
         
         return loss_dict, file_losses

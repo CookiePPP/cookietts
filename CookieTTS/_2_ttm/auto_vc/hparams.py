@@ -115,7 +115,7 @@ def create_hparams(hparams_string=None, verbose=False):
         filter_length  =  2048,
         hop_length     =   512,
         win_length     =  2048,
-        n_mel_channels =   80,
+        n_mel_channels =   160,
         mel_fmin       =    20.0,
         mel_fmax       = 11025.0,
         stft_clamp_val = 1e-5,# 1e-5 = original
@@ -145,18 +145,17 @@ def create_hparams(hparams_string=None, verbose=False):
         ##################################
         ## Model Parameters             ##
         ##################################
-        
         # (Misc)
         use_causal_convs=False,# this will remove the ability for any conv layers to use information from the future
                               # which will roughly half the inference latency of this network, but may negatively affect audio quality
         
         # (Encoder) Encoder parameters
-        speaker_encoder_dim = 256,# <- don't change this
+        speaker_encoder_dim = 768,# <- don't change this
         
         enc_conv_dim = 512,
         n_enc_layers =   3,
         
-        bottleneck_dim = 32,# the quantity of information the encoder is able to give.
+        bottleneck_dim = 8,# the quantity of information the encoder is able to give.
                             # Must be very restrictive to force the network to seperate the speaker and content internally.
                             # Too low will cause the model outputs to be very blurred and unintelligible
                             # Too high will allow the model to ignore the speaker encoder and the model will not attempt to change it's speaker during inference.

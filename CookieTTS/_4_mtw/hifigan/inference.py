@@ -56,7 +56,7 @@ def inference(a, STFT):
             audio = audio * (2**15)
             audio = audio.cpu().numpy().astype('int16')
             
-            output_file = os.path.join(a.output_dir, os.path.splitext(filname)[0][:20] + '_gen_Universal.wav')
+            output_file = os.path.join(a.output_dir, os.path.splitext(filname)[0][:20] + '_generated.wav')
             write(output_file, h.sampling_rate, audio)
             
             output_file = os.path.join(a.output_dir, os.path.splitext(filname)[0][:20] + '_original.wav')

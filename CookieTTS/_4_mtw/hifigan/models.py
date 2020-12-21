@@ -153,10 +153,10 @@ class DiscriminatorP(torch.nn.Module):
         self.period = period
         norm_f = weight_norm if use_spectral_norm == False else spectral_norm
         self.convs = nn.ModuleList([
-            norm_f(Conv2d(1, 32, (kernel_size, 1), (stride, 1), padding=(get_padding(5, 1), 0))),
-            norm_f(Conv2d(32, 128, (kernel_size, 1), (stride, 1), padding=(get_padding(5, 1), 0))),
-            norm_f(Conv2d(128, 512, (kernel_size, 1), (stride, 1), padding=(get_padding(5, 1), 0))),
-            norm_f(Conv2d(512, 1024, (kernel_size, 1), (stride, 1), padding=(get_padding(5, 1), 0))),
+            norm_f(Conv2d(   1,   32, (kernel_size, 1), (stride, 1), padding=(get_padding(5, 1), 0))),
+            norm_f(Conv2d(  32,  128, (kernel_size, 1), (stride, 1), padding=(get_padding(5, 1), 0))),
+            norm_f(Conv2d( 128,  512, (kernel_size, 1), (stride, 1), padding=(get_padding(5, 1), 0))),
+            norm_f(Conv2d( 512, 1024, (kernel_size, 1), (stride, 1), padding=(get_padding(5, 1), 0))),
             norm_f(Conv2d(1024, 1024, (kernel_size, 1), 1, padding=(2, 0))),
         ])
         self.conv_post = norm_f(Conv2d(1024, 1, (3, 1), 1, padding=(1, 0)))
@@ -190,7 +190,7 @@ class MultiPeriodDiscriminator(torch.nn.Module):
         self.discriminators = nn.ModuleList()
         for period in self.periods:
             self.discriminators.append(DiscriminatorP(period))
-
+    
     def forward(self, y, y_hat):
         y_d_rs = []
         y_d_gs = []
@@ -203,7 +203,7 @@ class MultiPeriodDiscriminator(torch.nn.Module):
             fmap_rs.append(fmap_r)
             y_d_gs.append(y_d_g)
             fmap_gs.append(fmap_g)
-
+        
         return y_d_rs, y_d_gs, fmap_rs, fmap_gs
 
 
@@ -212,13 +212,13 @@ class DiscriminatorS(torch.nn.Module):
         super(DiscriminatorS, self).__init__()
         norm_f = weight_norm if use_spectral_norm == False else spectral_norm
         self.convs = nn.ModuleList([
-            norm_f(Conv1d(1, 128, 15, 1, padding=7)),
-            norm_f(Conv1d(128, 128, 41, 2, groups=4, padding=20)),
-            norm_f(Conv1d(128, 256, 41, 2, groups=16, padding=20)),
-            norm_f(Conv1d(256, 512, 41, 4, groups=16, padding=20)),
-            norm_f(Conv1d(512, 1024, 41, 4, groups=16, padding=20)),
+            norm_f(Conv1d(   1,  128, 15, 1,            padding= 7)),
+            norm_f(Conv1d( 128,  128, 41, 2, groups= 4, padding=20)),
+            norm_f(Conv1d( 128,  256, 41, 2, groups=16, padding=20)),
+            norm_f(Conv1d( 256,  512, 41, 4, groups=16, padding=20)),
+            norm_f(Conv1d( 512, 1024, 41, 4, groups=16, padding=20)),
             norm_f(Conv1d(1024, 1024, 41, 1, groups=16, padding=20)),
-            norm_f(Conv1d(1024, 1024, 5, 1, padding=2)),
+            norm_f(Conv1d(1024, 1024,  5, 1,            padding= 2)),
         ])
         self.conv_post = norm_f(Conv1d(1024, 1, 3, 1, padding=1))
 
@@ -263,7 +263,7 @@ class MultiScaleDiscriminator(torch.nn.Module):
             fmap_rs.append(fmap_r)
             y_d_gs.append(y_d_g)
             fmap_gs.append(fmap_g)
-
+        
         return y_d_rs, y_d_gs, fmap_rs, fmap_gs
 
 
