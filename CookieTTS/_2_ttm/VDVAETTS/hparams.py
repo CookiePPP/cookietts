@@ -247,7 +247,7 @@ def create_hparams(hparams_string=None, verbose=False):
         # quite a large modification to the main network!
         # When enabled, the decoder will predict pitch and latents for the postnet.
         # The postnet is a conditional VAE that uses spectrograms as input/output and pitch for conditioning.
-        pitch_postnet_enable=False,
+        pitch_postnet_enable=True,
         postnet_latent_dim = 160,
         postnet_n_blocks   =   3,
         

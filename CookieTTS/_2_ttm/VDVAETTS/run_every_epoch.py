@@ -42,7 +42,7 @@ checkpoint_interval = 1000
 
 # Loss Scalars (set to None to load from hparams.py)
 decoder_MAE_weight = 0.00
-decoder_MSE_weight = 1.00
+decoder_MSE_weight = 0.50
 decoder_KLD_weight = 0.12
 
 margin = 0#param_interval
@@ -54,9 +54,9 @@ if iteration < 50000 and not about_to_val:
 
 # Pitch Postnet
 postnet_f0_MAE_weight     = 0.00# prior outputs
-postnet_f0_MSE_weight     = 1.00# prior outputs
+postnet_f0_MSE_weight     = 0.25# prior outputs
 postnet_voiced_MAE_weight = 0.00# prior outputs
-postnet_voiced_BCE_weight = 1.00# prior outputs
+postnet_voiced_BCE_weight = 0.25# prior outputs
 
 postnet_MAE_weight        = 0.00# decoder outputs
 postnet_MSE_weight        = 1.00# decoder outputs
