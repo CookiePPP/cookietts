@@ -258,7 +258,7 @@ def main():
     parser.add_argument('--skip_file_checks', action='store_true')
     parser.add_argument('--trim_non_voiced',  action='store_true')# trim start/end of audio where pitch is 0
     parser.add_argument('--fine_tuning',      action='store_true')# load predicted spectrograms as inputs, will increase audio quality of generated samples when using in end-to-end fashion.
-    parser.add_argument('--from_zero',      action='store_true')# when loading checkpoints, reset the iteration and epoch counters.
+    parser.add_argument('--from_zero',        action='store_true')# when loading checkpoints, reset the iteration and epoch counters.
     
     a = parser.parse_args()
     

@@ -177,110 +177,122 @@ def prepare_directories_and_logger(hparams, args):
     return logger
 
 
-def warm_start_force_model(checkpoint_path, model, resGAN, dbGAN, infGAN):
-    assert os.path.isfile(checkpoint_path)
-    print(f"Warm starting model from checkpoint '{checkpoint_path}'")
+def warm_start_force_model(checkpoint_paths, model, resGAN, dbGAN, infGAN):
+    if type(checkpoint_paths) is str:
+        checkpoint_paths = [checkpoint_paths,]
     
-    if resGAN is not None and os.path.exists(checkpoint_path+'_resdis'):
-        resGAN.load_state_dict_from_file(checkpoint_path+'_resdis')
-    
-    if dbGAN is not None and os.path.exists(checkpoint_path+'_dbDis'):
-        dbGAN.load_state_dict_from_file(checkpoint_path+'_dbDis')
-    
-    if infGAN is not None and os.path.exists(checkpoint_path+'_InfGAN'):
-        infGAN.load_state_dict_from_file(checkpoint_path+'_InfGAN')
-    
-    checkpoint_dict = torch.load(checkpoint_path, map_location='cpu')
-    pretrained_dict = checkpoint_dict['state_dict']
-    model_dict = model.state_dict()
-    # Fiter out unneccessary keys
-    filtered_dict = {k: v for k,v in pretrained_dict.items() if k in model_dict and pretrained_dict[k].shape == model_dict[k].shape}
-    model_dict_missing = {k: v for k,v in pretrained_dict.items() if k not in model_dict}
-    model_dict_mismatching = {k: v for k,v in pretrained_dict.items() if k in model_dict and pretrained_dict[k].shape != model_dict[k].shape}
-    pretrained_missing = {k: v for k,v in model_dict.items() if k not in pretrained_dict}
-    if model_dict_missing: print(list(model_dict_missing.keys()),'does not exist in the current model and is being ignored')
-    if model_dict_mismatching: print(list(model_dict_mismatching.keys()),"is the wrong shape and has been reset")
-    if pretrained_missing: print(list(pretrained_missing.keys()),"doesn't have pretrained weights and has been reset")
-    model_dict.update(filtered_dict)
-    model.load_state_dict(model_dict)
-    
-    iteration = 0
-    iteration = checkpoint_dict.get('iteration', 0)
-    
-    saved_lookup = checkpoint_dict['speaker_id_lookup'] if 'speaker_id_lookup' in checkpoint_dict.keys() else None
+    for checkpoint_path in checkpoint_paths:
+        assert os.path.isfile(checkpoint_path)
+        print(f"Warm starting model from checkpoint '{checkpoint_path}'")
+        
+        if resGAN is not None and os.path.exists(checkpoint_path+'_resdis'):
+            resGAN.load_state_dict_from_file(checkpoint_path+'_resdis')
+        
+        if dbGAN is not None and os.path.exists(checkpoint_path+'_dbDis'):
+            dbGAN.load_state_dict_from_file(checkpoint_path+'_dbDis')
+        
+        if infGAN is not None and os.path.exists(checkpoint_path+'_InfGAN'):
+            infGAN.load_state_dict_from_file(checkpoint_path+'_InfGAN')
+        
+        checkpoint_dict = torch.load(checkpoint_path, map_location='cpu')
+        pretrained_dict = checkpoint_dict['state_dict']
+        model_dict = model.state_dict()
+        # Fiter out unneccessary keys
+        filtered_dict = {k: v for k,v in pretrained_dict.items() if k in model_dict and pretrained_dict[k].shape == model_dict[k].shape}
+        model_dict_missing = {k: v for k,v in pretrained_dict.items() if k not in model_dict}
+        model_dict_mismatching = {k: v for k,v in pretrained_dict.items() if k in model_dict and pretrained_dict[k].shape != model_dict[k].shape}
+        pretrained_missing = {k: v for k,v in model_dict.items() if k not in pretrained_dict}
+        if model_dict_missing: print(list(model_dict_missing.keys()),'does not exist in the current model and is being ignored')
+        if model_dict_mismatching: print(list(model_dict_mismatching.keys()),"is the wrong shape and has been reset")
+        if pretrained_missing: print(list(pretrained_missing.keys()),"doesn't have pretrained weights and has been reset")
+        model_dict.update(filtered_dict)
+        model.load_state_dict(model_dict)
+        
+        iteration = 0
+        iteration = checkpoint_dict.get('iteration', 0)
+        
+        saved_lookup = checkpoint_dict['speaker_id_lookup'] if 'speaker_id_lookup' in checkpoint_dict.keys() else None
     return model, iteration, saved_lookup
 
 
-def warm_start_model(checkpoint_path, model, resGAN, dbGAN, infGAN, ignore_layers):
-    assert os.path.isfile(checkpoint_path)
-    print("Warm starting model from checkpoint '{}'".format(checkpoint_path))
+def warm_start_model(checkpoint_paths, model, resGAN, dbGAN, infGAN, ignore_layers):
+    if type(checkpoint_paths) is str:
+        checkpoint_paths = [checkpoint_paths,]
     
-    if resGAN is not None and os.path.exists(checkpoint_path+'_resdis'):
-        resGAN.load_state_dict_from_file(checkpoint_path+'_resdis')
-    
-    if dbGAN is not None and os.path.exists(checkpoint_path+'_dbDis'):
-        dbGAN.load_state_dict_from_file(checkpoint_path+'_dbDis')
-    
-    if infGAN is not None and os.path.exists(checkpoint_path+'_InfGAN'):
-        infGAN.load_state_dict_from_file(checkpoint_path+'_InfGAN')
-    
-    checkpoint_dict = torch.load(checkpoint_path, map_location='cpu')
-    model_dict = checkpoint_dict['state_dict']
-    if len(ignore_layers) > 0:
-        model_dict = {k: v for k, v in model_dict.items()
-                      if k not in ignore_layers}
-        dummy_dict = model.state_dict()
-        dummy_dict.update(model_dict)
-        model_dict = dummy_dict
-    model.load_state_dict(model_dict)
-    
-    iteration = 0
-    #iteration = checkpoint_dict.get('iteration', 0)
-    
-    saved_lookup = checkpoint_dict['speaker_id_lookup'] if 'speaker_id_lookup' in checkpoint_dict.keys() else None
+    for checkpoint_path in checkpoint_paths:
+        assert os.path.isfile(checkpoint_path)
+        print("Warm starting model from checkpoint '{}'".format(checkpoint_path))
+        
+        if resGAN is not None and os.path.exists(checkpoint_path+'_resdis'):
+            resGAN.load_state_dict_from_file(checkpoint_path+'_resdis')
+        
+        if dbGAN is not None and os.path.exists(checkpoint_path+'_dbDis'):
+            dbGAN.load_state_dict_from_file(checkpoint_path+'_dbDis')
+        
+        if infGAN is not None and os.path.exists(checkpoint_path+'_InfGAN'):
+            infGAN.load_state_dict_from_file(checkpoint_path+'_InfGAN')
+        
+        checkpoint_dict = torch.load(checkpoint_path, map_location='cpu')
+        model_dict = checkpoint_dict['state_dict']
+        if len(ignore_layers) > 0:
+            model_dict = {k: v for k, v in model_dict.items()
+                          if k not in ignore_layers}
+            dummy_dict = model.state_dict()
+            dummy_dict.update(model_dict)
+            model_dict = dummy_dict
+        model.load_state_dict(model_dict)
+        
+        iteration = 0
+        #iteration = checkpoint_dict.get('iteration', 0)
+        
+        saved_lookup = checkpoint_dict['speaker_id_lookup'] if 'speaker_id_lookup' in checkpoint_dict.keys() else None
     return model, iteration, saved_lookup
 
 
-def load_checkpoint(checkpoint_path, model, optimizer, resGAN, dbGAN, infGAN, best_val_loss_dict, best_loss_dict, best_validation_loss=1e3, best_inf_attsc=-99.):
-    assert os.path.isfile(args.checkpoint_path)
-    print("Loading checkpoint '{}'".format(args.checkpoint_path))
+def load_checkpoint(checkpoint_paths, model, optimizer, resGAN, dbGAN, infGAN, best_val_loss_dict, best_loss_dict, best_validation_loss=1e3, best_inf_attsc=-99.):
+    if type(checkpoint_paths) is str:
+        checkpoint_paths = [checkpoint_paths,]
     
-    if resGAN is not None and os.path.exists(checkpoint_path+'_resdis'):
-        resGAN.load_state_dict_from_file(checkpoint_path+'_resdis')
-    
-    if dbGAN is not None and os.path.exists(checkpoint_path+'_dbDis'):
-        dbGAN.load_state_dict_from_file(checkpoint_path+'_dbDis')
-    
-    if infGAN is not None and os.path.exists(checkpoint_path+'_InfGAN'):
-        infGAN.load_state_dict_from_file(checkpoint_path+'_InfGAN')
-    
-    checkpoint_dict = torch.load(args.checkpoint_path, map_location='cpu')
-    
-    model.load_state_dict(checkpoint_dict['state_dict'])# load model weights
-    
-    if 'optimizer' in checkpoint_dict.keys():
-        optimizer.load_state_dict(checkpoint_dict['optimizer'])# load optimizer state
-    #if 'amp' in checkpoint_dict.keys() and amp is not None:
-    #    amp.load_state_dict(checkpoint_dict['amp']) # load AMP (fp16) state.
-    if 'learning_rate' in checkpoint_dict.keys():
-        learning_rate = checkpoint_dict['learning_rate']
-    #if 'hparams' in checkpoint_dict.keys():
-    #    hparams = checkpoint_dict['hparams']
-    if 'best_validation_loss' in checkpoint_dict.keys():
-        best_validation_loss = checkpoint_dict['best_validation_loss']
-    if 'best_inf_attsc' in checkpoint_dict.keys():
-        best_inf_attsc = checkpoint_dict['best_inf_attsc']
-    if 'best_val_loss_dict' in checkpoint_dict.keys():
-        best_val_loss_dict = checkpoint_dict['best_val_loss_dict']
-    if 'best_loss_dict' in checkpoint_dict.keys():
-        best_loss_dict = checkpoint_dict['best_loss_dict']
-    if 'average_loss' in checkpoint_dict.keys():
-        average_loss = checkpoint_dict['average_loss']
-	
-    iteration = 0 if start_from_checkpoints_from_zero else checkpoint_dict['iteration']
-    saved_lookup = checkpoint_dict['speaker_id_lookup'] if 'speaker_id_lookup' in checkpoint_dict.keys() else None
-    
-    print(f"Loaded checkpoint '{args.checkpoint_path}' from iteration {iteration}")
+    for checkpoint_path in checkpoint_paths:
+        assert os.path.isfile(checkpoint_path)
+        print("Loading checkpoint '{}'".format(checkpoint_path))
+        
+        if resGAN is not None and os.path.exists(checkpoint_path+'_resdis'):
+            resGAN.load_state_dict_from_file(checkpoint_path+'_resdis')
+        
+        if dbGAN is not None and os.path.exists(checkpoint_path+'_dbDis'):
+            dbGAN.load_state_dict_from_file(checkpoint_path+'_dbDis')
+        
+        if infGAN is not None and os.path.exists(checkpoint_path+'_InfGAN'):
+            infGAN.load_state_dict_from_file(checkpoint_path+'_InfGAN')
+        
+        checkpoint_dict = torch.load(checkpoint_path, map_location='cpu')
+        
+        model.load_state_dict(checkpoint_dict['state_dict'])# load model weights
+        
+        if 'optimizer' in checkpoint_dict.keys():
+            optimizer.load_state_dict(checkpoint_dict['optimizer'])# load optimizer state
+        #if 'amp' in checkpoint_dict.keys() and amp is not None:
+        #    amp.load_state_dict(checkpoint_dict['amp']) # load AMP (fp16) state.
+        if 'learning_rate' in checkpoint_dict.keys():
+            learning_rate = checkpoint_dict['learning_rate']
+        #if 'hparams' in checkpoint_dict.keys():
+        #    hparams = checkpoint_dict['hparams']
+        if 'best_validation_loss' in checkpoint_dict.keys():
+            best_validation_loss = checkpoint_dict['best_validation_loss']
+        if 'best_inf_attsc' in checkpoint_dict.keys():
+            best_inf_attsc = checkpoint_dict['best_inf_attsc']
+        if 'best_val_loss_dict' in checkpoint_dict.keys():
+            best_val_loss_dict = checkpoint_dict['best_val_loss_dict']
+        if 'best_loss_dict' in checkpoint_dict.keys():
+            best_loss_dict = checkpoint_dict['best_loss_dict']
+        if 'average_loss' in checkpoint_dict.keys():
+            average_loss = checkpoint_dict['average_loss']
+        
+        iteration = 0 if start_from_checkpoints_from_zero else checkpoint_dict['iteration']
+        saved_lookup = checkpoint_dict['speaker_id_lookup'] if 'speaker_id_lookup' in checkpoint_dict.keys() else None
+        
+        print(f"Loaded checkpoint '{checkpoint_path}' from iteration {iteration}")
     return model, optimizer, learning_rate, iteration, best_validation_loss, best_inf_attsc, saved_lookup, best_val_loss_dict, best_loss_dict
 
 
@@ -503,17 +515,30 @@ def validate(hparams, args, file_losses, model, criterion, resGAN, dbGAN, infGAN
                 y_pred = force(model, valid_kwargs=model_args, **{**y, "teacher_force_till": val_teacher_force_till, "p_teacher_forcing": val_p_teacher_forcing})
             
             val_loss_scalars = {
+                "spec_MSAE_weight": 0.00,
                  "spec_MSE_weight": 0.00,
-                "spec_MFSE_weight": 1.00,
+                "spec_MFSE_weight": 0.00,
+             "spec_MSAE_MF_weight": 1.00,
+              "spec_MSE_MF_weight": 0.00,
+             "spec_MFSE_MF_weight": 0.00,
+             "postnet_MSAE_weight": 1.00,
               "postnet_MSE_weight": 0.00,
-             "postnet_MFSE_weight": 1.00,
+             "postnet_MFSE_weight": 0.00,
+               "specs_MSAE_weight": 0.00,
+                "specs_MSE_weight": 0.00,
+                "spec_SSIM_weight": 0.00,
+             "postnet_SSIM_weight": 0.00,
                 "gate_loss_weight": 1.00,
+               "MF_CE_loss_weight": 0.00,
                 "sylps_kld_weight": 0.00,
                 "sylps_MSE_weight": 0.00,
                 "sylps_MAE_weight": 0.05,
              "res_enc_gMSE_weight": 0.00,
              "res_enc_dMSE_weight": 0.00,
               "res_enc_kld_weight": 0.00,
+                 "mdn_loss_weight": 0.00,
+                 "dur_loss_weight": 0.00,
+             "gt_align_mse_weight": 0.00,
                  "diag_att_weight": 0.00,
           "prenet_code_MAE_weight": 0.00,
                    "VE_KLD_weight": 0.00,
@@ -843,31 +868,7 @@ def train(args, rank, group_name, hparams):
         y = model.parse_batch(batch) # move batch to GPU (async)
         y_pred = force(model, valid_kwargs=model_args, **{**y, "teacher_force_till": 0, "p_teacher_forcing": 0.0, "drop_frame_rate": 0.1})        
         loss_scalars = {
-                    "spec_MSE_weight": 1e-6,
-                   "spec_MFSE_weight": 1e-6,
-                 "postnet_MSE_weight": 1e-6,
-                "postnet_MFSE_weight": 1e-6,
-                   "gate_loss_weight": 1e-6,
-                   "sylps_kld_weight": 1e-6,
-                   "sylps_MSE_weight": 1e-6,
-                   "sylps_MAE_weight": 1e-6,
-                "res_enc_gMSE_weight": 1e-6,
-                "res_enc_dMSE_weight": 1e-6,
-                 "res_enc_kld_weight": 1e-6,
-                    "diag_att_weight": 1e-6,
-             "prenet_code_MAE_weight": 1e-6,
-                      "VE_KLD_weight": 1e-6,
-                 "dbGAN_gLoss_weight": 1e-6,
-                 "dbGAN_dLoss_weight": 1e-6,
-                "InfGAN_gLoss_weight": 1e-6,
-                "InfGAN_dLoss_weight": 1e-6,
-         "HiFiGAN_g_msd_class_weight": 1e-6,
-         "HiFiGAN_g_mpd_class_weight": 1e-6,
-         "HiFiGAN_g_all_class_weight": 1e-6,
-    "HiFiGAN_g_msd_featuremap_weight": 1e-6,
-    "HiFiGAN_g_mpd_featuremap_weight": 1e-6,
-    "HiFiGAN_g_all_featuremap_weight": 1e-6,
-       "HiFiGAN_g_all_mel_mae_weight": 1e-6,
+                  "all_losses": 1e-6,
           "teacher_force_till": 0,
            "p_teacher_forcing": 1.0,
         }
@@ -901,7 +902,8 @@ def train(args, rank, group_name, hparams):
             param_group['lr'] = 0.0
         #optimizer.step()
         optimizer.zero_grad()
-        hifiGAN.g_optimizer.zero_grad()
+        if hparams.HiFiGAN_enable:
+            hifiGAN.g_optimizer.zero_grad()
         del grad_norm, reduced_loss, loss_dict, file_losses_batch, y, y_pred, batch, loss_scalars
     print("Finished Pre-Allocating VRAM.")
     
@@ -994,17 +996,30 @@ def train(args, rank, group_name, hparams):
                     y_pred = force(model, valid_kwargs=model_args, **{**y, "teacher_force_till": teacher_force_till, "p_teacher_forcing": p_teacher_forcing, "drop_frame_rate": drop_frame_rate})
                     
                     loss_scalars = {
-                         "spec_MSE_weight": spec_MSE_weight,
-                        "spec_MFSE_weight": spec_MFSE_weight,
-                      "postnet_MSE_weight": postnet_MSE_weight,
-                     "postnet_MFSE_weight": postnet_MFSE_weight,
+                          "spec_MSAE_weight":    spec_MSAE_weight,
+                          "spec_MSAE_MF_weight": spec_MSAE_MF_weight,
+                       "postnet_MSAE_weight": postnet_MSAE_weight,
+                          "spec_MSE_weight":     spec_MSE_weight,
+                          "spec_MSE_MF_weight":  spec_MSE_MF_weight,
+                       "postnet_MSE_weight":  postnet_MSE_weight,
+                         "specs_MSAE_weight":   specs_MSAE_weight,
+                         "specs_MSE_weight":    specs_MSE_weight,
+                         "spec_MFSE_weight":     spec_MFSE_weight,
+                         "spec_MFSE_MF_weight":  spec_MFSE_MF_weight,
+                      "postnet_MFSE_weight":  postnet_MFSE_weight,
+                        "spec_SSIM_weight": spec_SSIM_weight,
+                     "postnet_SSIM_weight": postnet_SSIM_weight,
                         "gate_loss_weight": gate_loss_weight,
+                       "MF_CE_loss_weight": MF_CE_loss_weight,
                         "sylps_kld_weight": sylps_kld_weight,
                         "sylps_MSE_weight": sylps_MSE_weight,
                         "sylps_MAE_weight": sylps_MAE_weight,
                      "res_enc_gMSE_weight": res_enc_gMSE_weight,
                      "res_enc_dMSE_weight": res_enc_dMSE_weight,
                       "res_enc_kld_weight": res_enc_kld_weight,
+                         "mdn_loss_weight": mdn_loss_weight,
+                         "dur_loss_weight": dur_loss_weight,
+                     "gt_align_mse_weight": gt_align_mse_weight,
                          "diag_att_weight": diag_att_weight,
                   "prenet_code_MAE_weight": pn_code_MAE_weight,
                            "VE_KLD_weight": VE_KLD_weight,

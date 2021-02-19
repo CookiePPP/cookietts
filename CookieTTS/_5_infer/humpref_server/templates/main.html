@@ -1,0 +1,209 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+	
+    <link rel="stylesheet" href="https://stackpath.bootstrapcdn.com/bootstrap/4.3.1/css/bootstrap.min.css"
+        integrity="sha384-ggOyR0iXCbMQv3Xipma34MD+dH/1fQ784/j6cY/iJTQUOhcWr7x9JvoRxT2MZw1T" crossorigin="anonymous">
+    <title>The Text to Speech App</title>
+    <link rel="shortcut icon" href="{{ url_for('static', filename='favicon.ico') }}">
+    <style>
+    .collapsible {
+      background-color: #777;
+      color: white;
+      cursor: pointer;
+      padding: 10px;
+      width: 100%;
+      border: none;
+      text-align: left;
+      outline: none;
+      font-size: 15px;
+    }
+
+    .active, .collapsible:hover {
+      background-color: #555;
+    }
+
+    .collapsible:after {
+      content: '\002B';
+      color: white;
+      font-weight: bold;
+      float: right;
+      margin-left: 5px;
+    }
+
+    .active:after {
+      content: "\2212";
+    }
+
+    .content {
+      padding: 0 18px;
+      max-height: 0;
+      overflow: hidden;
+      transition: max-height 0.2s ease-out;
+      background-color: #f1f1f1;
+    }
+    </style>
+</head>
+
+<body>
+    <div class="w-50 p-3 ml-3" style="margin: auto auto!important;">
+        <a href="/">Home/Reset</a>
+        <div style="float: right;">Send Feedback to <a href="https://github.com/CookiePPP/cookietts/issues">GitHub</a> or <a href="mailto:cookietriplep@gmail.com" title="You can send whatever to this email, I reply to about 50% of what comes in.">cookietriplep@gmail.com</a></div>
+        
+        <div id="content" class="jumbotron">
+            <h1 class="display-4">Clip Comparison Site</h1>
+            <p class="lead">Please click on the audio file that sounds best.</p>
+            <hr class="my-4">
+            <form id="input_form" name="input_form" method="POST" action="/tts">
+                <div class="form-group">
+                    <label for="select">Spectrogram --> Waveform Model</label>
+                    <select name="input_MTW_current" class="form-control">
+                        {%for i in range(0, MTW_len)%}
+                        <option value='{{vocoder_conf[i][0][9:] if "[MISSING]" in vocoder_conf[i][0] else vocoder_conf[i][0]}}' {{ 'selected' if MTW_current == vocoder_conf[i][0] else '' }} {{'disabled' if '[MISSING]' in vocoder_conf[i][0] else ''}}>{{vocoder_conf[i][0]}}</option>
+                        {%endfor%}
+                    </select></div>
+                <button class="collapsible" type="button">Advanced Options</button>
+                    <div class="form-group content" style="box-shadow: #777777 0px 0px 0px 3px inset;">
+                        <div class="form-group" style="margin-top: 1em;">
+                            <label for="select">Always compare audio files from the same speaker.</label>
+                            <input style="width: 3em;" class="form-control" type="checkbox" {{"checked" if same_speaker else ""}} name="input_same_speaker" >
+                        </div>
+                        <div class="form-group" style="margin-top: 1em;">
+                            <label for="select">Always compare audio files with the same transcript.</label>
+                            <input style="width: 3em;" class="form-control" type="checkbox" {{"checked" if same_transcript else ""}} name="input_same_transcript" >
+                        </div>
+                        <div class="form-group">
+                            <label for="select">Number of Audio files to show at once</label>
+                            <input style="width: -webkit-fill-available;" class="form-control" value="{{samples_to_compare}}" type="number" min="2" step="1" name="input_samples_to_compare">
+                        </div>
+                        {% if audiopaths|length > 0 %}
+                        <div class="form-group">
+                            <label for="select">Audio Paths JSON</label>
+                            <textarea readonly="readonly" style="width: -webkit-fill-available;" id="text_area" class="form-control" name="input_audiopaths">{{audiopaths_str}}</textarea>
+                        </div>
+                        {% endif %}
+                    </div>
+				{% if audiopaths |length > 0 %}
+                <div class="form-group">
+                    <label for="select">Whitelist Speaker(s)</label>
+                    <label style="zoom: 0.6;">(You can select more than one using shift)</label>
+                    <select name="input_speaker" class="form-control" style="height: 15em; resize: vertical;" multiple>
+                        {%for i in range(0, speakers_available|length)%}
+                        <option value='{{speakers_available[i]}}' {{ 'selected' if speakers_available[i] in speakers_selected else '' }}>{{speakers_available_short[i]}}</option>
+                        {%endfor%}
+                    </select>
+				</div>
+                {% endif %}
+                <div id="btns" class="form-group">
+                    <input id="btn" type="submit" class="btn btn-primary mb-2" value="Generate" />
+                </div>
+            <hr class="my-4">
+			{% if audiopaths |length > 0 %}
+			{%for i in range(0, audiopaths|length)%}
+			<div id="transcript transcript{{i}}">{{transcripts[i]}}</div>
+			<div id="waveform{{i}}"></div>
+			<div class="controls{{i}}">
+			  <button type="button" class="btn btn-secondary" data-action="back">Backward</button>
+			  <button type="button" class="btn btn-primary" data-action="play">Play / Pause</button>
+			  <button type="button" class="btn btn-secondary" data-action="forward">Forward</button>
+			  <button type="button" class="btn btn-secondary" data-action="mute">Toggle Mute</button>
+			  <input class="btn btn-primary" type="submit" name="input_best_audio" value="Audio #{{i+1}} is better"/>
+			</div>
+            <hr class="my-4">
+			{%endfor%}
+			{% endif %}
+            <hr class="my-4">
+            </form>
+        </div>
+        <script>
+        // https://www.w3schools.com/howto/tryit.asp?filename=tryhow_js_collapsible_symbol
+        let coll = document.getElementsByClassName("collapsible");
+        
+        for (let i = 0; i < coll.length; i++) {
+          coll[i].addEventListener("click", function() {
+            this.classList.toggle("active");
+            var content = this.nextElementSibling;
+            if (content.style.maxHeight){
+              content.style.maxHeight = null;
+            } else {
+              content.style.maxHeight = content.scrollHeight + "px";
+            } 
+          });
+        }
+        </script>
+        <script type="text/javascript" src="http://ajax.googleapis.com/ajax/libs/jquery/1.6.2/jquery.min.js"></script>
+        <script type="text/javascript" src="https://unpkg.com/wavesurfer.js"></script>
+        <script type="text/javascript">
+            $(document).ready(() => {
+                $("#btns").prepend('<div id="loading" style="display : none;" ><button class="btn btn-primary" type="button" disabled><span class="spinner-grow spinner-grow-sm" role="status" aria-hidden="true"></span>Loading...</button></div>')
+            });
+
+            $("#input_form").submit(() => {
+                var pass = true;
+                if (pass == false) {
+                    return true
+                }
+                
+                //if (!$("#text_area").val()) {
+                //    $('#warning').show();
+                //    return false;
+                //} else {
+                //    $("#loading").show();
+                //    $("#btn").hide()
+                //    $('#warning').hide();
+                //    return true;
+                //}
+				
+				$("#loading").show();
+				$("#btn").hide()
+				$('#warning').hide();
+				return true;
+            });
+        </script>
+        <script type="text/javascript">
+			{%for i in range(0, audiopaths|length)%}
+			
+			$('.controls{{i}} .btn').live('click', function(){
+			  var action = $(this).data('action');
+			  console.log(action);
+			  switch (action) {
+				case 'play':
+				  wavesurfer{{i}}.playPause();
+				  break;
+				case 'back':
+				  wavesurfer{{i}}.skipBackward();
+				  break;
+				case 'forward':
+				  wavesurfer{{i}}.skipForward();
+				  break;
+				case 'mute':
+				  wavesurfer{{i}}.toggleMute();
+				  break;
+			  }
+			});
+			
+			var wavesurfer{{i}} = WaveSurfer.create({
+			  container: '#waveform{{i}}',
+			  scrollParent: true
+			});
+			wavesurfer{{i}}.load('{{audiopaths[i]}}');
+			
+			{%endfor%}
+        </script>
+        <script src="https://code.jquery.com/jquery-3.3.1.slim.min.js"
+            integrity="sha384-q8i/X+965DzO0rT7abK41JStQIAqVgRVzpbzo5smXKp4YfRvH+8abtTE1Pi6jizo"
+            crossorigin="anonymous"></script>
+        <script src="https://cdnjs.cloudflare.com/ajax/libs/popper.js/1.14.7/umd/popper.min.js"
+            integrity="sha384-UO2eT0CpHqdSJQ6hJty5KVphtPhzWj9WO1clHTMGa3JDZwrnQq4sF86dIHNDz0W1"
+            crossorigin="anonymous"></script>
+        <script src="https://stackpath.bootstrapcdn.com/bootstrap/4.3.1/js/bootstrap.min.js"
+            integrity="sha384-JjSmVgyd0p3pXB1rRibZUAYoIIy6OrQ6VrjIEaFf/nJGzIxFDsf4x0xIM+B07jRM"
+            crossorigin="anonymous"></script>
+
+
+</body>
+
+</html>

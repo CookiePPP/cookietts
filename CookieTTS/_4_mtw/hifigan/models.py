@@ -3,30 +3,30 @@ import json
 from CookieTTS._4_mtw.hifigan.env import AttrDict
 
 import torch
-import torch.nn.functional as F
 import torch.nn as nn
+import torch.nn.functional as F
+from torch.utils.checkpoint import checkpoint
 from torch.nn import Conv1d, ConvTranspose1d, AvgPool1d, Conv2d
 from torch.nn.utils import weight_norm, remove_weight_norm, spectral_norm
 from CookieTTS._4_mtw.hifigan.utils import init_weights, get_padding
 
 LRELU_SLOPE = 0.1
 
-def load_model(model_path, device='cuda'):
+def load_model(model_path, device='cuda', latent_dim=None):
     config_file = os.path.join(os.path.split(model_path)[0], 'config.json')
     with open(config_file) as f:
         data = f.read()
-    
     global h
     json_config = json.loads(data)
     h = AttrDict(json_config)
     
-    generator = Generator(h).to(device)
-    
     cp_dict = torch.load(model_path)
+    h.uses_latent_input = bool('ft_steps' in cp_dict)
+    
+    generator = Generator(h, input_dim=latent_dim if h.uses_latent_input else None).to(device)
     generator.load_state_dict(cp_dict['generator'])
     generator.eval()
     generator.remove_weight_norm()
-    del cp_dict
     return generator, h
 
 
@@ -95,12 +95,12 @@ class ResBlock2(torch.nn.Module):
 
 
 class Generator(torch.nn.Module):
-    def __init__(self, h):
+    def __init__(self, h, input_dim=None):
         super(Generator, self).__init__()
         self.h = h
         self.num_kernels = len(h.resblock_kernel_sizes)
         self.num_upsamples = len(h.upsample_rates)
-        self.conv_pre = weight_norm(Conv1d(h.num_mels, h.upsample_initial_channel, 7, 1, padding=3))
+        self.conv_pre = weight_norm(Conv1d(input_dim or h.num_mels, h.upsample_initial_channel, 7, 1, padding=3))
         resblock = ResBlock1 if h.resblock == '1' else ResBlock2
 
         self.ups = nn.ModuleList()
@@ -177,10 +177,10 @@ class DiscriminatorP(torch.nn.Module):
             x = F.leaky_relu(x, LRELU_SLOPE)
             fmap.append(x)
         x = self.conv_post(x)
-        fmap.append(x)
         x = torch.flatten(x, 1, -1)
+        fmap.append(x)
 
-        return x, fmap
+        return tuple(fmap)
 
 
 class MultiPeriodDiscriminator(torch.nn.Module):
@@ -197,8 +197,10 @@ class MultiPeriodDiscriminator(torch.nn.Module):
         fmap_rs = []
         fmap_gs = []
         for i, d in enumerate(self.discriminators):
-            y_d_r, fmap_r = d(y)
-            y_d_g, fmap_g = d(y_hat)
+            fmap_r = checkpoint(d.__call__, *(y,))
+            y_d_r = fmap_r[-1]
+            fmap_g = checkpoint(d.__call__, *(y_hat,))
+            y_d_g = fmap_g[-1]
             y_d_rs.append(y_d_r)
             fmap_rs.append(fmap_r)
             y_d_gs.append(y_d_g)
@@ -221,7 +223,7 @@ class DiscriminatorS(torch.nn.Module):
             norm_f(Conv1d(1024, 1024,  5, 1,            padding= 2)),
         ])
         self.conv_post = norm_f(Conv1d(1024, 1, 3, 1, padding=1))
-
+    
     def forward(self, x):
         fmap = []
         for l in self.convs:
@@ -229,10 +231,10 @@ class DiscriminatorS(torch.nn.Module):
             x = F.leaky_relu(x, LRELU_SLOPE)
             fmap.append(x)
         x = self.conv_post(x)
-        fmap.append(x)
         x = torch.flatten(x, 1, -1)
-
-        return x, fmap
+        fmap.append(x)
+        
+        return tuple(fmap)
 
 
 class MultiScaleDiscriminator(torch.nn.Module):
@@ -247,7 +249,7 @@ class MultiScaleDiscriminator(torch.nn.Module):
             AvgPool1d(4, 2, padding=2),
             AvgPool1d(4, 2, padding=2)
         ])
-
+    
     def forward(self, y, y_hat):
         y_d_rs = []
         y_d_gs = []
@@ -257,8 +259,10 @@ class MultiScaleDiscriminator(torch.nn.Module):
             if i != 0:
                 y = self.meanpools[i-1](y)
                 y_hat = self.meanpools[i-1](y_hat)
-            y_d_r, fmap_r = d(y)
-            y_d_g, fmap_g = d(y_hat)
+            fmap_r = checkpoint(d.__call__, *(y,))
+            y_d_r = fmap_r[-1]
+            fmap_g = checkpoint(d.__call__, *(y_hat,))
+            y_d_g = fmap_g[-1]
             y_d_rs.append(y_d_r)
             fmap_rs.append(fmap_r)
             y_d_gs.append(y_d_g)
@@ -271,8 +275,8 @@ def feature_loss(fmap_r, fmap_g):
     loss = 0
     for dr, dg in zip(fmap_r, fmap_g):
         for rl, gl in zip(dr, dg):
-            loss += torch.mean(torch.abs(rl - gl))
-
+            loss += F.l1_loss(rl, gl)#torch.mean(torch.abs(rl - gl))
+    
     return loss*2
 
 

@@ -1,0 +1,35 @@
+{
+    "terminal": {
+        "show_inference_progress": true
+    },
+    "webpage": {
+        "defaults": {
+            "samples_to_compare": 2,
+            "same_speaker"      : false,
+			"same_transcript"   : false
+        }
+    },
+    "workers": {
+        "datasets": [
+			"I:/TTS/TT2Datasets/generated"
+		],
+        "output_directory":  "output",
+        "MTW": {
+            "default_model": "MEL160C | HiFi-GAN V1.3 44Khz FT2",
+            "models": {
+                "MEL80C | HiFi-GAN V1.3 44Khz FT": {
+                    "modelpath": "../../_4_mtw/hifigan/cp_hifigan_universal44Khz_3/g_00247750"
+                },
+                "MEL160C | HiFi-GAN V1.3 44Khz GT": {
+                    "modelpath": "../../_4_mtw/hifigan/cp_hifigan_935universal44Khz_0/g_00534500"
+                },
+                "MEL160C | HiFi-GAN V1.3 44Khz FT": {
+                    "modelpath": "../../_4_mtw/hifigan/cp_hifigan_935universal44Khz_0_ft/g_00212500"
+                },
+                "MEL160C | HiFi-GAN V1.3 44Khz FT2": {
+                    "modelpath": "../../_4_mtw/hifigan/cp_hifigan_935universal44Khz_0_ft2/g_00035500 - Copy"
+                }
+            }
+        }
+    }
+}

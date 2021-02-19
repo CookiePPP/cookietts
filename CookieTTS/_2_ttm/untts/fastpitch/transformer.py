@@ -282,7 +282,7 @@ class TransformerLayer(nn.Module):
 
 class FFTransformer(nn.Module):
     def __init__(self, n_layer, n_head, d_model, d_head, d_inner, kernel_size,
-                 dropout, dropatt, dropemb=0.0, embed_input=True, d_embed=None,
+                 dropout, dropatt, dropemb=0.0, embed_input=False, d_embed=None,
                  pre_lnorm=False):
         super(FFTransformer, self).__init__()
         self.d_model = d_model
@@ -309,16 +309,16 @@ class FFTransformer(nn.Module):
     def forward(self, dec_inp, seq_lens=None):
         if self.word_emb is None:
             inp = dec_inp
-            mask = get_mask_from_lengths(seq_lens).unsqueeze(2)
+            mask = get_mask_from_lengths(seq_lens).unsqueeze(2)# [B, L, 1]
         else:
             inp = self.word_emb(dec_inp)
             # [bsz x L x 1]
             mask = (dec_inp != pad_idx).unsqueeze(2)
 
         pos_seq = torch.arange(inp.size(1), device=inp.device, dtype=inp.dtype)
-        pos_emb = self.pos_emb(pos_seq) * mask
+        pos_emb = self.pos_emb(pos_seq) * mask# [B, L, embed] * [B, L, 1]
         out = self.drop(inp + pos_emb)
-
+        
         for layer in self.layers:
             out = layer(out, mask=mask)
 

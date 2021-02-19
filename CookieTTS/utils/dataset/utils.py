@@ -42,12 +42,15 @@ def load_wav_to_torch(full_path, target_sr=None, min_sr=None, remove_dc_offset=T
             return [], sampling_rate or target_sr or 48000
         assert not (torch.isinf(data) | torch.isnan(data)).any(), f'Inf or NaN found after resampling audio\n"{full_path}"'
         
-        if remove_dc_offset:
-            data = data - data.mean()
-        abs_max = data.abs().max()
-        if abs_max > 1.0:
-            data /= abs_max
         sampling_rate = target_sr
+    
+    if remove_dc_offset:
+        data -= data.mean()
+        assert not (torch.isinf(data) | torch.isnan(data)).any(), f'Inf or NaN found after removing DC offset\n"{full_path}"'
+    
+    abs_max = data.abs().max()
+    if abs_max > 1.0:
+        data /= abs_max
         assert not (torch.isinf(data) | torch.isnan(data)).any(), f'Inf or NaN found after inf-norm rescaling audio\n"{full_path}"'
     
     return data, sampling_rate

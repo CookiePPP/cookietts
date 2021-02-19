@@ -45,12 +45,41 @@
       transition: max-height 0.2s ease-out;
       background-color: #f1f1f1;
     }
+	
+    .dark-mode body{
+      background-color: #282828;
+      color: #FFF;
+    }
+    
+    .dark-mode #content {
+      background-color: #444;
+      color: #FFF;
+    }
+
+    .dark-mode .form-control {
+      background-color: #555 !important;
+      color: #FFF !important;
+    }
+    
+    .dark-mode .collapsible {
+      background-color: #555 !important;
+      color: #FFF !important;
+    }
+    
+    .dark-mode .form-group {
+      background-color: #444 !important;
+    }
+    
+    .dark-mode label {
+      color: #FFF;
+    }
     </style>
 </head>
 
 <body>
     <div class="w-50 p-3 ml-3" style="margin: auto auto!important;">
         <a href="/">Home/Reset</a>
+		<a onclick="toggleDarkMode();" href="#" style="padding: 0 20px;">Toggle Dark Mode</a>
         <div style="float: right;">Send Feedback to <a href="https://github.com/CookiePPP/cookietts/issues">GitHub</a> or <a href="mailto:cookietriplep@gmail.com" title="You can send whatever to this email, I reply to about 50% of what comes in.">cookietriplep@gmail.com</a></div>
         
         <div id="content" class="jumbotron">
@@ -239,6 +268,36 @@
 
 
         </script>
+		<script>
+			saved_dark_mode = localStorage.getItem('dark_mode');
+			os_dark_mode = (window.matchMedia && window.matchMedia("(prefers-color-scheme: dark)").matches)
+			if (saved_dark_mode == null){
+				if (os_dark_mode){
+				  toggleDarkMode();
+				}
+			} else {
+				if (saved_dark_mode == "True"){
+					setDarkMode();
+				} else {
+					remDarkMode();
+				}
+			}
+			function setDarkMode() {
+				document.documentElement.classList.add("dark-mode");
+				localStorage.setItem('dark_mode', 'True');
+			}
+			function remDarkMode() {
+				document.documentElement.classList.remove("dark-mode");
+				localStorage.setItem('dark_mode', 'False');
+			}
+			function toggleDarkMode() {
+			  if (document.documentElement.classList.contains("dark-mode")) {
+				remDarkMode();
+			  } else {
+				setDarkMode();
+			  }
+			}
+		</script>
         <script src="https://code.jquery.com/jquery-3.3.1.slim.min.js"
             integrity="sha384-q8i/X+965DzO0rT7abK41JStQIAqVgRVzpbzo5smXKp4YfRvH+8abtTE1Pi6jizo"
             crossorigin="anonymous"></script>

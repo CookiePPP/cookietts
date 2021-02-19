@@ -1,0 +1,152 @@
+{
+    "terminal": {
+        "show_inference_progress": true,
+        "show_inference_alignment_scores": true
+    },
+    "webpage": {
+        "max_input_len": "99999999",
+        "sort_speakers": true,
+        "localhost": false,
+        "defaults": {
+            "current_text"       : "",
+            "background_text"    : "Enter text.",
+            "speaker"            : ["Nancy"],
+            "seed"               : "",
+            "use_arpabet"        : "on",
+            "cat_silence_s"      : 0.20,
+            "batch_size"         : 8,
+            "max_attempts"       : 1,
+            "max_duration_s"     : 12.5,
+            "dyna_max_duration_s": 0.15,
+            "textseg_len_target" : 120,
+            "split_nl"           : "on",
+            "split_quo"          : "on",
+            "multispeaker_mode"  : "random",
+			"global_sigma"       : 0.66,
+			"char_sigma"         : 0.66,
+			"frame_sigma"        : 0.66
+        }
+    },
+    "workers": {
+        "devices": ["cpu", "cuda:0"],
+        "sox_output_ext": "flac",
+        "working_directory_win": "I:/TTS/Audiobooks/2_unsorted_tmp",
+        "output_directory_win":  "I:/TTS/Audiobooks/1_unsorted",
+        "working_directory_lin": "/media/cookie/WD6TB/TTS/Audiobooks/2_unsorted_tmp",
+        "output_directory_lin":  "/media/cookie/WD6TB/TTS/Audiobooks/1_unsorted",
+        "working_directory": "/media/cookie/WD6TB/TTS/Audiobooks/2_unsorted_tmp",
+        "output_directory":  "/media/cookie/WD6TB/TTS/Audiobooks/1_unsorted",
+        "output_maxsize_gb": 0.01,
+        "dict_path": "../../dict/merged.dict.txt",
+        "TTM": {
+            "default_model": "MEL160C | VDVAETTS test_10_0_10xDownsample_KLD0.200 checkpoint_98000",
+            "models": {
+                "Latent94000 | VDVAETTS test_10_0_10xDownsample_KLD0.200 checkpoint_94000": {
+                    "modelpath"       : "/media/cookie/Samsung PM961/TwiBot/CookiePPPTTS/CookieTTS/_2_ttm/VDVAETTS/cps/test_10_0_10xDownsample_KLD0.200_latent_hifi/checkpoint_94000",
+                    "speaker_ids_file": "I:/TTS/HiFiDatasets/meta/speaker_info.txt",
+                    "use_speaker_ids_file_override": false
+                },
+                "MEL160C | VDVAETTS test_10_0_10xDownsample_KLD0.200 checkpoint_98000": {
+                    "modelpath"       : "/media/cookie/Samsung PM961/TwiBot/CookiePPPTTS/CookieTTS/_2_ttm/VDVAETTS/cps/test_10_0_10xDownsample_KLD0.200/checkpoint_98000",
+                    "speaker_ids_file": "I:/TTS/HiFiDatasets/meta/speaker_info.txt",
+                    "use_speaker_ids_file_override": false
+                },
+                "MEL160C | VDVAETTS test_10_0_10xDownsample_KLD0.200 checkpoint_88000": {
+                    "modelpath"       : "/media/cookie/Samsung PM961/TwiBot/CookiePPPTTS/CookieTTS/_2_ttm/VDVAETTS/cps/test_10_0_10xDownsample_KLD0.200/checkpoint_88000",
+                    "speaker_ids_file": "I:/TTS/HiFiDatasets/meta/speaker_info.txt",
+                    "use_speaker_ids_file_override": false
+                },
+                "MEL160C | VDVAETTS test_10_0_10xDownsample_KLD0.200 checkpoint_78000": {
+                    "modelpath"       : "/media/cookie/Samsung PM961/TwiBot/CookiePPPTTS/CookieTTS/_2_ttm/VDVAETTS/cps/test_10_0_10xDownsample_KLD0.200/checkpoint_78000",
+                    "speaker_ids_file": "I:/TTS/HiFiDatasets/meta/speaker_info.txt",
+                    "use_speaker_ids_file_override": false
+                },
+                "MEL160C | VDVAETTS test_10_0_10xDownsample_KLD0.200 checkpoint_68000": {
+                    "modelpath"       : "/media/cookie/Samsung PM961/TwiBot/CookiePPPTTS/CookieTTS/_2_ttm/VDVAETTS/cps/test_10_0_10xDownsample_KLD0.200/checkpoint_68000",
+                    "speaker_ids_file": "I:/TTS/HiFiDatasets/meta/speaker_info.txt",
+                    "use_speaker_ids_file_override": false
+                },
+                "MEL160C | VDVAETTS test_10_0_10xDownsample_KLD0.200 checkpoint_58000": {
+                    "modelpath"       : "/media/cookie/Samsung PM961/TwiBot/CookiePPPTTS/CookieTTS/_2_ttm/VDVAETTS/cps/test_10_0_10xDownsample_KLD0.200/checkpoint_58000",
+                    "speaker_ids_file": "I:/TTS/HiFiDatasets/meta/speaker_info.txt",
+                    "use_speaker_ids_file_override": false
+                },
+                "MEL160C | VDVAETTS test_10_0_10xDownsample_KLD0.200 checkpoint_48000": {
+                    "modelpath"       : "/media/cookie/Samsung PM961/TwiBot/CookiePPPTTS/CookieTTS/_2_ttm/VDVAETTS/cps/test_10_0_10xDownsample_KLD0.200/checkpoint_48000",
+                    "speaker_ids_file": "I:/TTS/HiFiDatasets/meta/speaker_info.txt",
+                    "use_speaker_ids_file_override": false
+                },
+                "MEL160C | VDVAETTS test_10_0_10xDownsample_KLD0.200 checkpoint_38000": {
+                    "modelpath"       : "/media/cookie/Samsung PM961/TwiBot/CookiePPPTTS/CookieTTS/_2_ttm/VDVAETTS/cps/test_10_0_10xDownsample_KLD0.200/checkpoint_38000",
+                    "speaker_ids_file": "I:/TTS/HiFiDatasets/meta/speaker_info.txt",
+                    "use_speaker_ids_file_override": false
+                },
+                "MEL160C | VDVAETTS test_10_0_10xDownsample_KLD0.200 checkpoint_28000": {
+                    "modelpath"       : "/media/cookie/Samsung PM961/TwiBot/CookiePPPTTS/CookieTTS/_2_ttm/VDVAETTS/cps/test_10_0_10xDownsample_KLD0.200/checkpoint_28000",
+                    "speaker_ids_file": "I:/TTS/HiFiDatasets/meta/speaker_info.txt",
+                    "use_speaker_ids_file_override": false
+                },
+                "MEL160C | VDVAETTS test_10_0_10xDownsample_KLD0.200 checkpoint_18000": {
+                    "modelpath"       : "/media/cookie/Samsung PM961/TwiBot/CookiePPPTTS/CookieTTS/_2_ttm/VDVAETTS/cps/test_10_0_10xDownsample_KLD0.200/checkpoint_18000",
+                    "speaker_ids_file": "I:/TTS/HiFiDatasets/meta/speaker_info.txt",
+                    "use_speaker_ids_file_override": false
+                },
+                "MEL160C | VDVAETTS test_10_0_10xDownsample_KLD0.018 checkpoint_35000": {
+                    "modelpath"       : "/media/cookie/Samsung PM961/TwiBot/CookiePPPTTS/CookieTTS/_2_ttm/VDVAETTS/cps/test_10_0_10xDownsample_KLD0.018/checkpoint_35000",
+                    "speaker_ids_file": "I:/TTS/HiFiDatasets/meta/speaker_info.txt",
+                    "use_speaker_ids_file_override": false
+                },
+                "MEL160C | VDVAETTS test_10_0_10xDownsample_KLD0.018": {
+                    "modelpath"       : "/media/cookie/Samsung PM961/TwiBot/CookiePPPTTS/CookieTTS/_2_ttm/VDVAETTS/cps/test_10_0_10xDownsample_KLD0.018/best_val_model",
+                    "speaker_ids_file": "I:/TTS/HiFiDatasets/meta/speaker_info.txt",
+                    "use_speaker_ids_file_override": false
+                },
+                "MEL160C | VDVAETTS test_09_0_lowKLD0.018": {
+                    "modelpath"       : "/media/cookie/Samsung PM961/TwiBot/CookiePPPTTS/CookieTTS/_2_ttm/VDVAETTS/cps/test_09_0_lowKLD0.018/best_val_model",
+                    "speaker_ids_file": "I:/TTS/HiFiDatasets/meta/speaker_info.txt",
+                    "use_speaker_ids_file_override": false
+                },
+                "MEL160C | VDVAETTS test_08_7_1_highKLD_0.50": {
+                    "modelpath"       : "/media/cookie/Samsung PM961/TwiBot/CookiePPPTTS/CookieTTS/_2_ttm/VDVAETTS/cps/test_08_7_1_highKLD_0.50/checkpoint_64000",
+                    "speaker_ids_file": "I:/TTS/HiFiDatasets/meta/speaker_info.txt",
+                    "use_speaker_ids_file_override": false
+                },
+                "MEL160C | VDVAETTS test_08_7_highKLD": {
+                    "modelpath"       : "/media/cookie/Samsung PM961/TwiBot/CookiePPPTTS/CookieTTS/_2_ttm/VDVAETTS/cps/test_08_7_highKLD/best_val_model",
+                    "speaker_ids_file": "I:/TTS/HiFiDatasets/meta/speaker_info.txt",
+                    "use_speaker_ids_file_override": false
+                },
+                "MEL160C | VDVAETTS test_08_6_no_norm_posenc": {
+                    "modelpath"       : "/media/cookie/Samsung PM961/TwiBot/CookiePPPTTS/CookieTTS/_2_ttm/VDVAETTS/cps/test_08_6_no_norm_posenc/best_val_model",
+                    "speaker_ids_file": "I:/TTS/HiFiDatasets/meta/speaker_info.txt",
+                    "use_speaker_ids_file_override": false
+                },
+                "MEL160C | VDVAETTS test_04": {
+                    "modelpath"       : "H:/TTCheckpoints/VDVAETTS/test_04/checkpoint_60000",
+                    "speaker_ids_file": "I:/TTS/HiFiDatasets/meta/speaker_info.txt",
+                    "use_speaker_ids_file_override": false
+                }
+            }
+        },
+        "MTW": {
+            "default_model": "MEL160C | HiFi-GAN V1.3 44Khz FT2",
+            "models": {
+                "Latent94000 | HiFi-GAN V1.4 44Khz Latent FT": {
+                    "modelpath": "../../_4_mtw/hifigan/cp_hifigan_44Khz_VDVAE_latent_01/g_00028000"
+                },
+                "MEL160C | HiFi-GAN V1.3 44Khz FT2": {
+                    "modelpath": "../../_4_mtw/hifigan/cp_hifigan_935universal44Khz_0_ft2/g_00035500 - Copy"
+                },
+                "MEL160C | HiFi-GAN V1.3 44Khz FT": {
+                    "modelpath": "../../_4_mtw/hifigan/cp_hifigan_935universal44Khz_0_ft/g_00212500"
+                },
+                "MEL160C | HiFi-GAN V1.3 44Khz GT": {
+                    "modelpath": "../../_4_mtw/hifigan/cp_hifigan_935universal44Khz_0/g_00534500"
+                },
+                "MEL80C | HiFi-GAN V1.3 44Khz FT": {
+                    "modelpath": "../../_4_mtw/hifigan/cp_hifigan_universal44Khz_3/g_00247750"
+                }
+            }
+        }
+    }
+}

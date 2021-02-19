@@ -15,7 +15,7 @@ current_iteration = iteration
 param_interval = 1# how often this file is ran
 dump_filelosses_interval = 1000# how often to update file_losses.cvs
 show_live_params = False
-LossExplosionThreshold = 1e9 # maximum loss value (which will trigger a restart from latest checkpoint)
+LossExplosionThreshold = float('inf')#1e9 # maximum loss value (which will trigger a restart from latest checkpoint)
 
 custom_lr = True
 decrease_lr_on_restart = True # Decrease the Learning Rate on a LossExplosionThreshold exception
@@ -39,8 +39,9 @@ validation_interval = 1000#125 if iteration < 2000 else (500 if iteration < 8000
 checkpoint_interval = 10000
 
 # Tacotron Loss Scalars (set to None to load from hparams.py)
-
 save_alignments = False
+if iteration > 40000:
+    save_alignments = True
 
 show_gradients = False# print abs().sum() gradients of every param tensor in tacotron model.
 

@@ -29,7 +29,6 @@ import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from torch.autograd import Variable
 
 # "Gated Convolutional Neural Networks for Domain Adaptation"
 #  https://arxiv.org/pdf/1905.06906.pdf
@@ -166,7 +165,7 @@ def GTLRU(input_a, input_b, n_channels: int):
 
 
 def get_gate_func(gated_unit_str):
-    if gated_unit_str.upper() == 'GTU':
+    if   gated_unit_str.upper() == 'GTU':
         return GTU
     elif gated_unit_str.upper() == 'GTRU':
         return GTRU
@@ -213,9 +212,9 @@ class TransposedUpsampleNet(nn.Module):
         self.t_convs = nn.ModuleList()
         for i, scale in enumerate(scales):
             is_first_layer = bool(i == 0)
-            is_last_layer = bool(i+1 == len(scales))
-            in_dim = in_channels if is_first_layer else hidden_channels
-            out_dim = out_channels if is_last_layer else hidden_channels
+            is_last_layer  = bool(i+1 == len(scales))
+            in_dim = in_channels   if is_first_layer else hidden_channels
+            out_dim = out_channels if is_last_layer  else hidden_channels
             k_size = kernel_size[i] if type(kernel_size) == list else kernel_size
             t_conv = nn.ConvTranspose1d(in_dim, out_dim, k_size, scale, padding=(k_size-scale)//2)
             if weightnorm:
@@ -533,7 +532,7 @@ class WN_2d(nn.Module):
             
             # last one is not necessary
             if i < n_layers - 1 and not self.merge_res_skip:
-                res_skip_channels = 2*n_channels
+                res_skip_channels = n_channels*2
             else:
                 res_skip_channels = n_channels
             
@@ -554,7 +553,7 @@ class WN_2d(nn.Module):
         return cond
     
     def forward(self, audio, spect, speaker_id=None, audio_queues=None, spect_queues=None):
-        audio = audio.unsqueeze(1) #   [B, n_group//2, T//n_group] -> [B, 1, n_group//2, T//n_group]
+        audio = audio.unsqueeze(1) #   [B, n_group//2, T//n_group] -> [B,          1, n_group//2, T//n_group]
         audio = self.start(audio) # [B, 1, n_group//2, T//n_group] -> [B, n_channels, n_group//2, T//n_group]
         if self.merge_res_skip:
             output = audio
@@ -604,13 +603,13 @@ class WN_2d(nn.Module):
             acts = self.in_layers[i](audio_cpad) # [B, n_channels, n_group//2, T//n_group] -> [B, 2*n_channels, pad+n_group//2, T//n_group]
             acts = self.gated_unit(
                 acts, # [B, 2*n_channels, n_group//2, T//n_group]
-                spec, # [B, 2*n_channels, 1, T//n_group]
+                spec, # [B, 2*n_channels,          1, T//n_group]
                 self.n_channels)
             # acts.shape <- [B, n_channels, n_group//2, T//n_group]
             
             res_skip_acts = self.res_skip_layers[i](acts) if ( hasattr(self, 'res_skip_layers') and len(self.res_skip_layers) ) else acts
-            # if merge_res_skip: [B, n_channels, n_group//2, T//n_group] -> [B, n_channels, n_group//2, T//n_group]
-            # else: [B, n_channels, n_group//2, T//n_group] -> [B, 2*n_channels, n_group//2, T//n_group]
+            # if merge_res_skip: [B, n_channels, n_group//2, T//n_group] -> [B,   n_channels, n_group//2, T//n_group]
+            # else:              [B, n_channels, n_group//2, T//n_group] -> [B, 2*n_channels, n_group//2, T//n_group]
             
             if i == 0:
                 if (not self.merge_res_skip) and (i < self.n_layers - 1):
@@ -620,7 +619,7 @@ class WN_2d(nn.Module):
                     output = res_skip_acts
             else:
                 if (not self.merge_res_skip) and (i < self.n_layers - 1):# if res_skip and not last layer
-                    audio += res_skip_acts[:,:self.n_channels,:]
+                    audio  += res_skip_acts[:,:self.n_channels,:]
                     output += res_skip_acts[:,self.n_channels:,:]
                 else:
                     output += res_skip_acts

@@ -31,8 +31,10 @@ def reduce_tensor(tensor, n_gpus):
 # Should predict "inferenceness" by predicting whether the spectrogram came from teacher forcing or inference.
 # The generator will then attempt to reduce inferenceness and increase teacher-forcedness outputs on the discriminator.
 class HiFiGAN_wrapper(nn.Module):
-    def __init__(self, hparams):
+    def __init__(self, hparams=None):
         super(HiFiGAN_wrapper, self).__init__()
+        if hparams is None:
+            return
         assert hparams.batch_size>=hparams.HiFiGAN_batch_size, 'HiFiGAN batch size must be even or greater than Tacotron2 batch size!'
         
         self.g_optimizer = None
@@ -144,6 +146,11 @@ class HiFiGAN_wrapper(nn.Module):
         else:
             raise NotImplementedError('HiFiGAN_cp_folder must be a folder/directory!')
     
+    def inference(self, mel):
+        with torch.no_grad():
+            audio = self.generator(mel)
+        return audio
+    
     def discriminator_loss(self, gt_audio, pred_audio):
         # MPD
         y_df_hat_r, y_df_hat_g, _, _ = self.mp_discriminator(gt_audio, pred_audio)
@@ -203,8 +210,8 @@ class HiFiGAN_wrapper(nn.Module):
             else:
                 loss.backward()
             
-            self.g_optimizer.zero_grad()
             self.d_optimizer.step()
+            self.g_optimizer.zero_grad()
             
             loss_dict['HiFiGAN_d_msd_class'] = loss_disc_s.detach()
             loss_dict['HiFiGAN_d_mpd_class'] = loss_disc_f.detach()

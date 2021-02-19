@@ -1,6 +1,10 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+import torch.jit as jit
+from torch import Tensor
+from typing import List, Tuple, Optional
+from CookieTTS.utils.model.utils import get_mask_from_lengths
 
 
 class DynamicConvolutionAttention(nn.Module):
@@ -246,175 +250,319 @@ class GMMAttention(nn.Module): # Experimental from NTT123
         return attention_context, attention_weights, loc
 
 
-import torch
-from torch.nn.modules.rnn import RNNCellBase
-from torch import Tensor
-from typing import List, Tuple, Optional
-class LSTMCellWithZoneout(RNNCellBase):
-    r"""A long short-term memory (LSTM) cell.
-    .. math::
-        \begin{array}{ll}
-        i = \sigma(W_{ii} x + b_{ii} + W_{hi} h + b_{hi}) \\
-        f = \sigma(W_{if} x + b_{if} + W_{hf} h + b_{hf}) \\
-        g = \tanh(W_{ig} x + b_{ig} + W_{hg} h + b_{hg}) \\
-        o = \sigma(W_{io} x + b_{io} + W_{ho} h + b_{ho}) \\
-        c' = f * c + i * g \\
-        h' = o * \tanh(c') \\
-        \end{array}
-    where :math:`\sigma` is the sigmoid function, and :math:`*` is the Hadamard product.
-    Args:
-        input_size: The number of expected features in the input `x`
-        hidden_size: The number of features in the hidden state `h`
-        bias: If ``False``, then the layer does not use bias weights `b_ih` and
-            `b_hh`. Default: ``True``
-    Inputs: input, (h_0, c_0)
-        - **input** of shape `(batch, input_size)`: tensor containing input features
-        - **h_0** of shape `(batch, hidden_size)`: tensor containing the initial hidden
-          state for each element in the batch.
-        - **c_0** of shape `(batch, hidden_size)`: tensor containing the initial cell state
-          for each element in the batch.
-          If `(h_0, c_0)` is not provided, both **h_0** and **c_0** default to zero.
-    Outputs: (h_1, c_1)
-        - **h_1** of shape `(batch, hidden_size)`: tensor containing the next hidden state
-          for each element in the batch
-        - **c_1** of shape `(batch, hidden_size)`: tensor containing the next cell state
-          for each element in the batch
-    Attributes:
-        weight_ih: the learnable input-hidden weights, of shape
-            `(4*hidden_size, input_size)`
-        weight_hh: the learnable hidden-hidden weights, of shape
-            `(4*hidden_size, hidden_size)`
-        bias_ih: the learnable input-hidden bias, of shape `(4*hidden_size)`
-        bias_hh: the learnable hidden-hidden bias, of shape `(4*hidden_size)`
-    .. note::
-        All the weights and biases are initialized from :math:`\mathcal{U}(-\sqrt{k}, \sqrt{k})`
-        where :math:`k = \frac{1}{\text{hidden\_size}}`
-    Examples::
-        >>> rnn = nn.LSTMCell(10, 20)
-        >>> input = torch.randn(3, 10)
-        >>> hx = torch.randn(3, 20)
-        >>> cx = torch.randn(3, 20)
-        >>> output = []
-        >>> for i in range(6):
-                hx, cx = rnn(input[i], (hx, cx))
-                output.append(hx)
+from torch.nn.modules.rnn import LSTMCell
+class LSTMCellWithZoneout(nn.LSTMCell):# taken from https://espnet.github.io/espnet/_modules/espnet/nets/pytorch_backend/tacotron2/decoder.html
+                                           # and modified with dropout and to use LSTMCell as base
+    """ZoneOut Cell module.
+    
+    This is a module of zoneout described in
+    `Zoneout: Regularizing RNNs by Randomly Preserving Hidden Activations`_.
+    This code is modified from `eladhoffer/seq2seq.pytorch`_.
+
+    Examples:
+        >>> lstm = LSTMCellWithZoneout(16, 32, zoneout=0.5)
+
+    .. _`Zoneout: Regularizing RNNs by Randomly Preserving Hidden Activations`:
+        https://arxiv.org/abs/1606.01305
+
+    .. _`eladhoffer/seq2seq.pytorch`:
+        https://github.com/eladhoffer/seq2seq.pytorch
+
     """
-
-    def __init__(self, input_size: int, hidden_size: int, bias: bool = True, dropout: float = 0.0, zoneout: float = 0.0) -> None:
-        super(LSTMCellWithZoneout, self).__init__(input_size, hidden_size, bias, num_chunks=4)
-        self.dropout = dropout
-        self.zoneout = zoneout
-    
-    @torch.jit.script
-    def lstm_cell(#self,
-                        input: Tensor,
-                        state: Tuple[Tensor, Tensor],
-                    weight_ih: Tensor,
-                    weight_hh: Tensor,
-                      dropout: float,
-                      zoneout: float,
-                     training: bool,
-                      bias_ih: Optional[Tensor] = None,
-                      bias_hh: Optional[Tensor] = None) -> Tuple[Tensor, Tensor]:
-        hx, cx = state
+    def __init__(self, input_size: int, hidden_size: int, bias: bool=True, dropout: float=0.0, zoneout: float=0.0, inplace=True):
+        """Initialize zone out cell module.
         
-        if training and zoneout > 0.0:
-            old_h = hx#.clone()
-            old_c = cx#.clone()
-            
-            if bias_ih is None or bias_hh is None:
-                gates = (torch.mm(input, weight_ih.t()) + torch.mm(hx, weight_hh.t()))
-            else:
-                gates = (torch.mm(input, weight_ih.t()) + bias_ih +
-                         torch.mm(hx, weight_hh.t()) + bias_hh)
-            ingate, forgetgate, cellgate, outgate = gates.chunk(4, 1)
-            
-            ingate     = ingate    .sigmoid().to(ingate.dtype)
-            forgetgate = forgetgate.sigmoid().to(forgetgate.dtype)
-            cellgate   = cellgate  .tanh()
-            outgate    = outgate   .sigmoid().to(outgate.dtype)
-            
-            cy_ = (forgetgate * cx).add_(ingate * cellgate)
-            
-            c_mask = torch.empty_like(cy_, dtype=torch.bool).bernoulli_(p=zoneout)
-            cy = torch.where(c_mask, old_c, cy_)
-            
-            hy = outgate * cy_.tanh_()
-            
-            if dropout > 0.0:
-                hy = torch.nn.functional.dropout(hy, p=dropout, training=training, inplace=True)
-            
-            h_mask = torch.empty_like(hy, dtype=torch.bool).bernoulli_(p=zoneout)
-            hy = torch.where(h_mask, old_h, hy)
+        Args:
+            cell (torch.nn.Module): Pytorch recurrent cell module
+                e.g. `torch.nn.Module.LSTMCell`.
+            zoneout_rate (float, optional): Probability of zoneout from 0.0 to 1.0.
+        
+        """
+        super().__init__(input_size, hidden_size, bias)
+        self.zoneout_rate = zoneout
+        self.dropout_rate = dropout
+        self.inplace      = inplace
+        if zoneout > 1.0 or zoneout < 0.0:
+            raise ValueError("zoneout probability must be in the range from 0.0 to 1.0.")
+        if dropout > 1.0 or dropout < 0.0:
+            raise ValueError("dropout probability must be in the range from 0.0 to 1.0.")
+    
+    def forward(self, inputs: Tensor, hidden: Optional[Tuple[Tensor, Tensor]] = None) -> Tuple[Tensor, Tensor]:
+        """Calculate forward propagation.
+        
+        Args:
+            inputs (Tensor): Batch of input tensor (B, input_size).
+            hidden (tuple):
+                - Tensor: Batch of initial hidden states (B, hidden_size).
+                - Tensor: Batch of initial cell states (B, hidden_size).
+
+        Returns:
+            tuple:
+                - Tensor: Batch of next hidden states (B, hidden_size).
+                - Tensor: Batch of next cell states (B, hidden_size).
+
+        """
+        next_hidden = super(LSTMCellWithZoneout, self).forward(inputs, hidden)
+        next_hidden = self._zoneout(hidden, next_hidden, self.zoneout_rate)
+        next_hidden = self._dropout(hidden, next_hidden, self.dropout_rate)
+        return next_hidden
+    
+    def _dropout(self, h, next_h, prob):
+        # apply recursively
+        if isinstance(h, tuple):
+            num_h = len(h)
+            if not isinstance(prob, tuple):
+                prob = tuple([prob] * num_h)
+            return tuple(
+                [self._dropout(h[i], next_h[i], prob[i]) for i in range(num_h)]
+            )
+        
+        return F.dropout(next_h, prob, self.training, self.inplace)
+    
+    def _zoneout(self, h, next_h, prob):
+        # apply recursively
+        if isinstance(h, tuple):
+            num_h = len(h)
+            if not isinstance(prob, tuple):
+                prob = tuple([prob] * num_h)
+            return tuple(
+                [self._zoneout(h[i], next_h[i], prob[i]) for i in range(num_h)]
+            )
+
+        if self.training:
+            mask = h.new(*h.size()).bernoulli_(prob)
+            return mask * h + (1 - mask) * next_h
         else:
-            if bias_ih is None or bias_hh is None:
-                gates = (torch.mm(input, weight_ih.t()) + torch.mm(hx, weight_hh.t()))
-            else:
-                gates = (torch.mm(input, weight_ih.t()) + bias_ih +
-                         torch.mm(hx, weight_hh.t()) + bias_hh)
-            ingate, forgetgate, cellgate, outgate = gates.chunk(4, 1)
-            
-            ingate     = ingate    .sigmoid().to(ingate.dtype)
-            forgetgate = forgetgate.sigmoid().to(forgetgate.dtype)
-            cellgate   = cellgate  .tanh()
-            outgate    = outgate   .sigmoid().to(outgate.dtype)
-            
-            cy = (forgetgate * cx).add_(ingate * cellgate)
-            hy = outgate * cy.tanh()
-            
-            if dropout > 0.0:
-                hy = torch.nn.functional.dropout(hy, p=dropout, training=training, inplace=True)
-        
-        return (hy, cy)
-    
-    def forward(self, input: Tensor, hx: Optional[Tuple[Tensor, Tensor]] = None) -> Tuple[Tensor, Tensor]:
-        self.check_forward_input(input)
-        if hx is None:
-            zeros = torch.zeros(input.size(0), self.hidden_size, dtype=input.dtype, device=input.device)
-            hx = (zeros, zeros)
-        self.check_forward_hidden(input, hx[0], '[0]')
-        self.check_forward_hidden(input, hx[1], '[1]')
-        return self.lstm_cell(
-            input, hx,
-            self.weight_ih, self.weight_hh,
-            self.dropout, self.zoneout,
-            self.training,
-            self.bias_ih, self.bias_hh,
-        )
+            return prob * h + (1 - prob) * next_h
 
-if __name__ == "__main__":
-    print("Testing LSTMCellWithZoneout")
-    torch.autograd.set_detect_anomaly(True)
+
+# adapted from https://github.com/pytorch/pytorch/blob/1f40f2a1723fd3b9302bea3829f2570c8e0e7e94/benchmarks/fastrnns/custom_lstms.py#L184-L211
+class SegLSTMLayer(jit.ScriptModule):
+    def __init__(self, cell, *cell_args, dropout:float=0.0, zoneout:float=0.1, dropout_inplace:bool=True, **cell_kwargs):
+        super(SegLSTMLayer, self).__init__()
+        self.cell = cell(*cell_args, **cell_kwargs)
+        self.zoneout_rate = zoneout
+        self.dropout_rate = dropout
+        self.inplace      = dropout_inplace
+        if zoneout > 1.0 or zoneout < 0.0:
+            raise ValueError("zoneout probability must be in the range from 0.0 to 1.0.")
+        if dropout > 1.0 or dropout < 0.0:
+            raise ValueError("dropout probability must be in the range from 0.0 to 1.0.")
     
-    # test with all
-    lstmcell = LSTMCellWithZoneout(16, 32, bias=True, dropout=0.1, zoneout=0.1)
-    output, hidden = lstmcell( torch.rand(1, 16), (torch.rand(1, 32), torch.rand(1, 32)) )
-    output.sum().backward()
+    @jit.script_method
+    def _dropout(self, h:Tensor, next_h:Tensor, prob:float):
+        return F.dropout(next_h, prob, self.training, self.inplace)
     
-    # test without bias
-    lstmcell = LSTMCellWithZoneout(16, 32, bias=False, dropout=0.1, zoneout=0.1)
-    output, hidden = lstmcell( torch.rand(1, 16), (torch.rand(1, 32), torch.rand(1, 32)) )
-    output.sum().backward()
+    @jit.script_method
+    def _zoneout(self, h:Tensor, next_h:Tensor, prob:float):
+        if self.training:
+            mask = h.new_empty(h.shape[0], h.shape[1]).bernoulli_(prob)
+            return mask * h + (1 - mask) * next_h
+        else:
+            return prob * h + (1 - prob) * next_h
     
-    # test without dropout, zoneout or bias
-    lstmcell = LSTMCellWithZoneout(16, 32, bias=False, dropout=0.0, zoneout=0.0)
-    output, hidden = lstmcell( torch.rand(1, 16), (torch.rand(1, 32), torch.rand(1, 32)) )
-    output.sum().backward()
+    @jit.script_method
+    def get_mask_from_duration(self, durs: Tensor):
+        padded_states      = durs.eq(0).sum(1)   # [B]         <- number of txt with zero duration.
+        forward_reset_idxs = durs.cumsum(dim=1)-1# [B, txt_T]  <- indexes to reset the hidden states.
+        
+        mel_lengths = durs.sum(1)#[B]
+        
+        seq = torch.arange(durs.sum(1).max(), device=durs.device)[None, :, None]# [B, mel_T, 1]
+        reset_mask = (seq==forward_reset_idxs.unsqueeze(1)).any(dim=2)# [B, mel_T] <- reset indexes as a mask. True == Reset, False = Retain
+        retain_mask = ~reset_mask# [B, mel_T]
+        
+        pad_mask = get_mask_from_lengths(padded_states)# [B, zeroed duration]
+        pad_zero = pad_mask*.0                         # [B, zeroed duration]
+        return reset_mask.t(), retain_mask.t(), pad_mask.t(), pad_zero.t(), mel_lengths
     
-    # test on GPU
-    lstmcell = LSTMCellWithZoneout(16, 32, bias=True, dropout=0.1, zoneout=0.1).cuda()
-    output, hidden = lstmcell( torch.rand(1, 16).cuda(), (torch.rand(1, 32).cuda(), torch.rand(1, 32).cuda()) )
-    output.sum().backward()
+    @jit.script_method
+    def forward(self, input: Tensor,               # [x_T, B, in_dim]
+                       durs: Tensor,               # [y_T, B]
+                      state: Optional[Tuple[Tensor, Tensor]]=None,# ([B, cell_dim], [B, cell_dim])
+                 reset_mask: Optional[Tensor]=None,# [x_T, B]
+                retain_mask: Optional[Tensor]=None,# [x_T, B]
+                   pad_mask: Optional[Tensor]=None,# [?_T, B]
+                   pad_zero: Optional[Tensor]=None,# [?_T, B]
+                mel_lengths: Optional[Tensor]=None,# [B]
+               ) -> Tuple[Tensor, List[Tensor], Tensor]:
+        inputs = input.unbind(0)# [x_T, B, in_dim] -> [[B, in_dim],]*x_T
+        assert len(inputs) == durs.sum(0).max(), f'got max length of {durs.sum(0).max().item()}, expected {len(inputs)}'
+        
+        if reset_mask is None or retain_mask is None or pad_mask is None or pad_zero is None or mel_lengths is None:
+            reset_mask, retain_mask, pad_mask, pad_zero, mel_lengths = self.get_mask_from_duration(durs.transpose(0, 1))# [txt_T, B] -> [B, txt_T]
+        assert  reset_mask.shape[0] == len(inputs), f'reset_mask has len of {reset_mask.shape[0]}, expected {len(inputs)}'
+        assert retain_mask.shape[0] == len(inputs), f'retain_mask has len of {retain_mask.shape[0]}, expected {len(inputs)}'
+        assert  reset_mask.shape[1] == input[0].shape[0]# reset_mask  [x_T, B]
+        assert retain_mask.shape[1] == input[0].shape[0]# retain_mask [x_T, B]
+        assert    pad_mask.shape[1] == input[0].shape[0]# pad_mask    [?_T, B]
+        assert    pad_zero.shape[1] == input[0].shape[0]# pad_zero    [?_T, B]
+        
+        if state is None:
+            blank_state = input.new_zeros(inputs[0].shape[0], self.cell.hidden_size)
+            state = (blank_state, blank_state)
+        assert state is not None
+        
+        mask = ~get_mask_from_lengths(mel_lengths).transpose(0, 1)# [x_T, B]
+        retain_mask_ = (~(reset_mask | mask)).unsqueeze(2).unbind(0)# [x_T, B] -> [[B, 1],]*x_T
+        reset_mask_  =   (reset_mask | mask) .unsqueeze(2).unbind(0)# [x_T, B] -> [[B, 1],]*x_T
+        
+        outputs = torch.jit.annotate(List[Tensor], [])
+        for i in range(len(inputs)):
+            prev_state = state
+            state = self.cell(inputs[i], state)# -> ([B, cell_dim], [B, cell_dim])
+            state = (self._zoneout(prev_state[0], state[0], self.zoneout_rate), self._zoneout(prev_state[1], state[1], self.zoneout_rate))
+            state = (self._dropout(prev_state[0], state[0], self.dropout_rate), self._dropout(prev_state[1], state[1], self.dropout_rate))
+            outputs += [state[0]]# [B, cell_dim]
+            if reset_mask_[i].any():
+                state = (state[0]*retain_mask_[i], state[1]*retain_mask_[i])# reset hidden + cell at end of segments
+        outputs = torch.stack(outputs)# [x_T, B, cell_dim]
+        outputs *= get_mask_from_lengths(mel_lengths).transpose(0, 1).unsqueeze(-1)# [B, x_T]
+        
+        # [mel_T, B, cell_dim], [?_T, B] -> [mel_T, B, cell_dim], [?_T, B, cell_dim] -> [mel_T+?_T, B, cell_dim]
+        segout = torch.cat((outputs, pad_zero.unsqueeze(2).repeat(1, 1, outputs.shape[2])), dim=0)# [mel_T+?_T, B, cell_dim]
+        
+        # [mel_T, B], [?_T, B] -> [mel_T+?_T, B, cell_dim]
+        segout_mask = torch.cat((reset_mask, pad_mask), dim=0).unsqueeze(2).repeat(1, 1, segout.shape[2])
+        
+        segout = segout.transpose(0, 1)[segout_mask.transpose(0, 1)].view(durs.shape[1], durs.shape[0], -1)# [B, y_T, cell_dim]
+        
+        return outputs, state, segout# [x_T, B, cell_dim], ([B, cell_dim], [B, cell_dim]), [B, y_T, cell_dim]
+
+
+# adapted from https://github.com/pytorch/pytorch/blob/1f40f2a1723fd3b9302bea3829f2570c8e0e7e94/benchmarks/fastrnns/custom_lstms.py#L184-L211
+class SegReverseLSTMLayer(jit.ScriptModule):
+    def __init__(self, cell, *cell_args, dropout:float=0.0, zoneout:float=0.1, dropout_inplace:bool=True, **cell_kwargs):
+        super(SegReverseLSTMLayer, self).__init__()
+        self.cell = cell(*cell_args, **cell_kwargs)
+        self.zoneout_rate = zoneout
+        self.dropout_rate = dropout
+        self.inplace      = dropout_inplace
+        if zoneout > 1.0 or zoneout < 0.0:
+            raise ValueError("zoneout probability must be in the range from 0.0 to 1.0.")
+        if dropout > 1.0 or dropout < 0.0:
+            raise ValueError("dropout probability must be in the range from 0.0 to 1.0.")
     
-    # test on GPU in fp16
-    lstmcell = LSTMCellWithZoneout(16, 32, bias=True, dropout=0.1, zoneout=0.1).cuda().half()
-    output, hidden = lstmcell( torch.rand(1, 16).cuda().half(), (torch.rand(1, 32).cuda().half(), torch.rand(1, 32).cuda().half()) )
-    output.sum().backward()
+    @jit.script_method
+    def _dropout(self, h:Tensor, next_h:Tensor, prob:float):
+        return F.dropout(next_h, prob, self.training, self.inplace)
     
-    lstmcell = torch.jit.script(lstmcell)
+    @jit.script_method
+    def _zoneout(self, h:Tensor, next_h:Tensor, prob:float):
+        if self.training:
+            mask = h.new_empty(h.shape[0], h.shape[1]).bernoulli_(prob)
+            return mask * h + (1 - mask) * next_h
+        else:
+            return prob * h + (1 - prob) * next_h
     
-    torch.autograd.set_detect_anomaly(False)
-    print('LSTMCellWithZoneout Test Passed!')
+    @jit.script_method
+    def get_mask_from_duration(self, durs: Tensor):
+        padded_states      = durs.eq(0).sum(1)   # [B]         <- number of txt with zero duration.
+        
+        mel_lengths = durs.sum(1)#[B]
+        n_padded_frames = mel_lengths.max()-mel_lengths# [B]
+        
+        rev_reset_idxs = (durs.flip(1).cumsum(dim=1)-1).flip(1)+n_padded_frames.unsqueeze(1)# [B, txt_T]  <- indexes to reset the hidden states.
+        rev_reset_idxs.masked_fill_(durs.eq(0), -1)
+        
+        seq = torch.arange(durs.sum(1).max(), device=durs.device)[None, :, None]# [B, mel_T, 1]
+        rev_reset_mask = (seq==rev_reset_idxs.unsqueeze(1)).any(dim=2)# [B, mel_T] <- reset indexes as a mask. True == Reset, False = Retain
+        rev_retain_mask = ~rev_reset_mask# [B, mel_T]
+        
+        pad_mask = get_mask_from_lengths(padded_states)# [B, zeroed duration]
+        pad_zero = pad_mask*.0                         # [B, zeroed duration]
+        return rev_reset_mask.t(), rev_retain_mask.t(), pad_mask.t(), pad_zero.t(), mel_lengths
+    
+    @jit.script_method
+    def forward(self, input: Tensor,               # [x_T, B, in_dim]
+                       durs: Tensor,               # [y_T, B]
+                      state: Optional[Tuple[Tensor, Tensor]]=None,# ([B, cell_dim], [B, cell_dim])
+                 reset_mask: Optional[Tensor]=None,# [x_T, B]
+                retain_mask: Optional[Tensor]=None,# [x_T, B]
+                   pad_mask: Optional[Tensor]=None,# [?_T, B]
+                   pad_zero: Optional[Tensor]=None,# [?_T, B]
+                mel_lengths: Optional[Tensor]=None,# [B]
+               ) -> Tuple[Tensor, List[Tensor], Tensor]:
+        inputs = input.flip(0).unbind(0)# [x_T, B, in_dim] -> [[B, in_dim],]*x_T
+        assert len(inputs) == durs.sum(0).max(), f'got max length of {durs.sum(0).max().item()}, expected {len(inputs)}'
+        
+        if reset_mask is None or retain_mask is None or pad_mask is None or pad_zero is None or mel_lengths is None:
+            reset_mask, retain_mask, pad_mask, pad_zero, mel_lengths = self.get_mask_from_duration(durs.transpose(0, 1))# [txt_T, B] -> [B, txt_T]
+        assert  reset_mask.shape[0] == len(inputs), f'reset_mask has len of {reset_mask.shape[0]}, expected {len(inputs)}'
+        assert retain_mask.shape[0] == len(inputs), f'retain_mask has len of {retain_mask.shape[0]}, expected {len(inputs)}'
+        assert  reset_mask.shape[1] == input[0].shape[0]# reset_mask  [x_T, B]
+        assert retain_mask.shape[1] == input[0].shape[0]# retain_mask [x_T, B]
+        assert    pad_mask.shape[1] == input[0].shape[0]# pad_mask    [?_T, B]
+        assert    pad_zero.shape[1] == input[0].shape[0]# pad_zero    [?_T, B]
+        
+        if state is None:
+            blank_state = input.new_zeros(inputs[0].shape[0], self.cell.hidden_size)
+            state = (blank_state, blank_state)
+        assert state is not None
+        
+        mask = ~get_mask_from_lengths(mel_lengths).transpose(0, 1)# [x_T, B]
+        retain_mask_ = (~(reset_mask | mask)).unsqueeze(2).unbind(0)# [x_T, B] -> [[B, 1],]*x_T
+        reset_mask_  =   (reset_mask | mask) .unsqueeze(2).unbind(0)# [x_T, B] -> [[B, 1],]*x_T
+        
+        outputs = torch.jit.annotate(List[Tensor], [])
+        for i in range(len(inputs)):
+            prev_state = state
+            state = self.cell(inputs[i], state)# -> ([B, cell_dim], [B, cell_dim])
+            state = (self._zoneout(prev_state[0], state[0], self.zoneout_rate), self._zoneout(prev_state[1], state[1], self.zoneout_rate))
+            state = (self._dropout(prev_state[0], state[0], self.dropout_rate), self._dropout(prev_state[1], state[1], self.dropout_rate))
+            outputs += [state[0]]# [B, cell_dim]
+            if reset_mask_[i].any():
+                state = (state[0]*retain_mask_[i], state[1]*retain_mask_[i])# reset hidden + cell at end of segments
+        outputs = torch.stack(outputs)# [x_T, B, cell_dim]
+        outputs *= get_mask_from_lengths(mel_lengths).transpose(0, 1).flip(0).unsqueeze(-1)# [B, x_T] -> [x_T, B, 1]
+        
+        # [mel_T, B, cell_dim], [?_T, B] -> [mel_T, B, cell_dim], [?_T, B, cell_dim] -> [mel_T+?_T, B, cell_dim]
+        segout = torch.cat((pad_zero.unsqueeze(2).repeat(1, 1, outputs.shape[2]), outputs), dim=0)# [mel_T+?_T, B, cell_dim]
+        
+        # [mel_T, B], [?_T, B] -> [mel_T+?_T, B, cell_dim]
+        segout_mask = torch.cat((pad_mask, reset_mask), dim=0).unsqueeze(2).repeat(1, 1, segout.shape[2])
+        
+        segout = segout.transpose(0, 1)[segout_mask.transpose(0, 1)].view(durs.shape[1], durs.shape[0], -1)# [B, y_T, cell_dim]
+        
+        return outputs.flip(0), state, segout.flip(1)# [x_T, B, cell_dim], ([B, cell_dim], [B, cell_dim]), [B, y_T, cell_dim]
+
+
+class SegLSTMWithZoneout(nn.Module):
+    def __init__(self, input_size:int, hidden_size:int, num_layers:int=1, bias: bool=True, batch_first:bool=False, dropout: float=0.0, bidirectional:bool=False, zoneout: float=0.0, inplace=True):
+        super().__init__()
+        self.input_size  = input_size
+        self.hidden_size = hidden_size
+        self.num_layers  = num_layers
+        self.bias        = bias
+        self.batch_first = batch_first
+        
+        self.forward_cell = []
+        for i in range(num_layers):  
+            self.forward_cell.append(SegLSTMLayer(nn.LSTMCell, input_size, hidden_size, bias, dropout=dropout, zoneout=zoneout, dropout_inplace=inplace))
+        self.forward_cell = nn.ModuleList(self.forward_cell)
+        
+        if bidirectional:
+            self.reverse_cell = []
+            for i in range(num_layers):
+                self.reverse_cell.append(SegReverseLSTMLayer(nn.LSTMCell, input_size, hidden_size, bias, dropout=dropout, zoneout=zoneout, dropout_inplace=inplace))
+            self.reverse_cell = nn.ModuleList(self.reverse_cell)
+    
+    def forward(self, x: Tensor, durs: Tensor):# [x_T, B, D], [x_T, B]
+        forward_args = self.forward_cell[0].get_mask_from_duration(durs.transpose(0, 1))
+        if hasattr(self, 'reverse_cell'):
+            reverse_args = self.reverse_cell[0].get_mask_from_duration(durs.transpose(0, 1))
+        
+        for i in range(self.num_layers):
+            x, (h, c), seg_x = self.forward_cell[i](x, durs, None, *forward_args)
+            if hasattr(self, 'reverse_cell'):
+                rev_x, (rev_h, rev_c), rev_seg_x = self.reverse_cell[i](x, durs, None, *reverse_args)
+                x = x + rev_x
+        
+        if hasattr(self, 'reverse_cell'):
+            seg_x = seg_x + rev_seg_x
+            h = h + rev_h
+            c = c + rev_c
+        return x, (h, c), seg_x
 
 
 class LinearNorm(torch.nn.Module):

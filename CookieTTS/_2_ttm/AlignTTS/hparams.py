@@ -52,8 +52,8 @@ def create_hparams(hparams_string=None, verbose=False):
         val_batch_size=16,# for more precise comparisons between models, constant batch_size is useful
         
         use_TBPTT  =False,# continue processing longer files into the next training iteration
-        max_segment_length=640,# max mel length till a segment is sliced.
-        max_chars_length  =160,# max text input till text is sliced. I use segment_length/4.
+        max_segment_length=9999,# max mel length till a segment is sliced.
+        max_chars_length  =9999,# max text input till text is sliced. I use segment_length/4.
         
         gradient_checkpoint      = False,# Saves forward pass states to recompute the gradients in chunks
                                          # Will reduce VRAM usage significantly at the cost of running parts of the model twice.
@@ -89,13 +89,14 @@ def create_hparams(hparams_string=None, verbose=False):
         
         # if data_source is 1:
         dataset_folder = '/media/cookie/WD6TB/TTS/HiFiDatasets',
+        dataset_metapath_append = '_VDVAETTS',
         dataset_audio_filters= ['*.wav','*.flac',],
         dataset_audio_rejects= ['*_Noisy_*','*_Very Noisy_*',],
         dataset_p_val = 0.005,# portion of dataset for Validation # default of 0.5% may be too small depending on the size of your dataset.
-        dataset_min_duration =  1.5,# minimum duration in seconds for audio files to be added.
-        dataset_max_duration = 30.0,# maximum duration in seconds for audio files being added.
+        dataset_min_duration =  0.9,# minimum duration in seconds for audio files to be added.
+        dataset_max_duration = 10.0,# maximum duration in seconds for audio files being added.
                                     # use max_segment_length to control how much of each audio file can be used to fill VRAM during training.
-        dataset_min_chars    =   16,# min number of letters/text that a transcript should have to be added to the audiofiles list.
+        dataset_min_chars    =   12,# min number of letters/text that a transcript should have to be added to the audiofiles list.
         dataset_max_chars    =  256,# min number of letters/text that a transcript should have to be added to the audiofiles list.
                                     # use max_chars_length to control how much of text from each audio file can be used to fill VRAM during training.
         
@@ -137,15 +138,17 @@ def create_hparams(hparams_string=None, verbose=False):
         ## Audio Parameters             ##
         ##################################
         sampling_rate= 44100,
-        target_lufs  = -27.0,# Loudness each file is rescaled to, use None for original file loudness.
+        target_lufs  = -25.0,# Loudness each file is rescaled to, use None for original file loudness.
         
-        trim_enable = True,# set to False to disable trimming completely
-        trim_cache_audio = False,# save trimmed audio to disk to load later. Saves CPU usage, uses more disk space.
-                                 # modifications to params below do not apply to already cached files.
-        trim_margin_left  = [0.0125]*3,
-        trim_margin_right = [0.0125]*3,
+        trim_enable      = True,# set to False to disable trimming completely
+        trim_cache_audio = True,# save trimmed audio to disk to load later. Saves CPU usage, uses more disk space.
+        filt_min_freq =    60.,# low freq
+        filt_max_freq = 18000.,# top freq
+        filt_order    =     6 ,# filter strength/agressiveness/whatever - don't set too high or things will break
+        trim_margin_left  = [0.125, 0.05, 0.0375],
+        trim_margin_right = [0.125, 0.05, 0.0375],
         trim_ref          = ['amax']*3,
-        trim_top_db       = [   48,   46,   46],
+        trim_top_db       = [   36,   41,   46],# volume/dB under reference that should be trimmed
         trim_window_length= [16384, 4096, 2048],
         trim_hop_length   = [ 2048, 1024,  512],
         trim_emphasis_str = [  0.0,  0.0,  0.0],
@@ -161,7 +164,7 @@ def create_hparams(hparams_string=None, verbose=False):
         mel_fmax       = 11025.0,
         stft_clamp_val = 1e-5,# 1e-5 = original
         
-        cache_mel=False,# save spectrograms to disk to load later. Saves CPU usage, uses more disk space.
+        cache_mel=True,# save spectrograms to disk to load later. Saves CPU usage, uses more disk space.
                         # modifications to params below do not apply to already cached files.
         
         silence_value = -11.5129,# = ln(1e-5)
@@ -204,9 +207,11 @@ def create_hparams(hparams_string=None, verbose=False):
         
         # Attention
         start_token = "~",#"☺"
-        stop_token  = "",#"␤"
+        stop_token  = "~",#"␤"
+        text_repeat_interleave = 2,# times to repeat each char. Might help with graphemes that map to mulitple phonemes or silence between some phonemes that is not shown in text.
         
         # (Encoder) Lower FFT Params
+        mel_downsize = 4,
         hidden_dim =512,
         ff_dim=1024,
         n_heads=2,

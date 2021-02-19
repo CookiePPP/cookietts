@@ -79,6 +79,7 @@ def get_filelist(hparams, val=False):
     if hparams.data_source == 1:# if filelist is a folder, check all datasets inside the folder for audio files and transcripts.
         # convert dataset folder into a filelist
         filelist = generate_filelist_from_datasets(hparams.dataset_folder,
+                              METAPATH_APPEND=hparams.dataset_metapath_append,
                                 AUDIO_FILTER =hparams.dataset_audio_filters,
                                 AUDIO_REJECTS=hparams.dataset_audio_rejects,
                                 MIN_DURATION =hparams.dataset_min_duration,
@@ -224,7 +225,7 @@ def load_checkpoint(checkpoint_path, model, optimizer, best_val_loss_dict, best_
     
     model.load_state_dict(checkpoint_dict['state_dict'])# load model weights
     
-    if 'optimizer' in checkpoint_dict.keys():
+    if optimizer is not None and 'optimizer' in checkpoint_dict.keys():
         optimizer.load_state_dict(checkpoint_dict['optimizer'])# load optimizer state
     #if 'amp' in checkpoint_dict.keys() and amp is not None:
     #    amp.load_state_dict(checkpoint_dict['amp']) # load AMP (fp16) state.
@@ -236,9 +237,9 @@ def load_checkpoint(checkpoint_path, model, optimizer, best_val_loss_dict, best_
         best_validation_loss = checkpoint_dict['best_validation_loss']
     if 'best_inf_attsc' in checkpoint_dict.keys():
         best_inf_attsc = checkpoint_dict['best_inf_attsc']
-    if 'best_val_loss_dict' in checkpoint_dict.keys():
+    if best_val_loss_dict is not None and 'best_val_loss_dict' in checkpoint_dict.keys():
         best_val_loss_dict = checkpoint_dict['best_val_loss_dict']
-    if 'best_loss_dict' in checkpoint_dict.keys():
+    if best_loss_dict is not None and 'best_loss_dict' in checkpoint_dict.keys():
         best_loss_dict = checkpoint_dict['best_loss_dict']
     if 'average_loss' in checkpoint_dict.keys():
         average_loss = checkpoint_dict['average_loss']
@@ -441,6 +442,75 @@ def validate(hparams, args, file_losses, loss_scalars, model, criterion, valset,
     return loss_dict_total['loss'], best_val_loss_dict, file_losses
 
 
+@torch.no_grad()
+def align_dataset(args, rank, group_name, hparams):
+    # setup distributed
+    hparams.n_gpus = args.n_gpus
+    hparams.rank   = rank
+    if hparams.distributed_run:
+        init_distributed(hparams, args.n_gpus, rank, group_name)
+    
+    # initialize blank model
+    print('Initializing AlignTTS...')
+    model = load_model(hparams)
+    print('Done')
+    global model_args
+    model_args = get_args(model.forward)
+    model.eval()
+    
+    print("Initializing AlignTTS Loss func.")
+    criterion = AlignTTSLoss(hparams)
+    
+    _ = load_checkpoint(args.checkpoint_path, model, None, None, None)
+    model, _, _, iteration, _, _, saved_lookup, _, _ = _; del _
+    iteration += 1  # next iteration is iteration + 1
+    print('Model Loaded')
+    
+    # define datasets
+    dataloader_args = [*get_args(criterion.forward), *model_args]
+    
+    datasets = []
+    
+    hparams.p_arpabet = 0.0
+    valset, collate_fn, train_sampler, trainset, speakerlist = prepare_dataloaders(hparams, dataloader_args, args, saved_lookup)[1:]
+    #datasets.extend((trainset, valset))
+    datasets.append(valset)
+    
+    hparams.p_arpabet = 1.0
+    valset, collate_fn, train_sampler, trainset, speakerlist = prepare_dataloaders(hparams, dataloader_args, args, saved_lookup)[1:]
+    #datasets.extend((trainset, valset))
+    datasets.append(valset)
+    
+    speaker_lookup = trainset.speaker_ids
+    for dataset in datasets:
+        data_sampler = DistributedSampler(dataset) if hparams.distributed_run else None
+        data_loader  = DataLoader(dataset, sampler=data_sampler,
+                            num_workers=hparams.num_workers,# prefetch_factor=hparams.prefetch_factor,
+                            shuffle=False, batch_size=hparams.batch_size,
+                            pin_memory=False, drop_last=False, collate_fn=collate_fn)
+        
+        start_time = time.time()
+        # start iterating through the epoch
+        for i, batch in tqdm(enumerate(data_loader), desc="Iter:  ", smoothing=0, total=len(data_loader), position=0, unit="iter"):
+            y = model.parse_batch(batch) # move batch to GPU (async)
+            y_pred = force(model, valid_kwargs=model_args, **y)
+            
+            loss_dict, file_losses_batch, _ = criterion(model, y_pred, y, {}, save_alignments=True)
+            
+            if hparams.distributed_run:
+                reduced_loss_dict = {k: reduce_tensor(v.data, args.n_gpus).item() if v is not None else 0. for k, v in loss_dict.items()}
+            else:
+                reduced_loss_dict = {k: v.item() if v is not None else 0. for k, v in loss_dict.items()}
+            
+            if rank == 0:
+                duration = time.time() - start_time
+                tqdm.write(f"{iteration} [{duration:.2f}s/it] [{(duration/(hparams.batch_size*args.n_gpus)):.3f}s/file]")
+                start_time = time.time()
+            
+            iteration += 1
+            # end of iteration loop
+        # end of epoch loop
+
 def train(args, rank, group_name, hparams):
     """Training and validation logging results to tensorboard and stdout
 
@@ -590,53 +660,6 @@ def train(args, rank, group_name, hparams):
     torch.manual_seed(hparams.seed)
     torch.cuda.manual_seed(hparams.seed)
     
-    # Run Simulated Largest Input to Cache VRAM Chunks
-    print("Running Simulated Largest Possible Input to Pre-Allocate VRAM")
-    with torch.random.fork_rng(devices=[0,]):
-        batch = next(iter(train_loader))
-        with torch.no_grad():
-            batch['text']            = batch['text'].new_zeros(batch['text'].shape[0], hparams.max_chars_length).long()
-            batch['text_lengths'][0] = hparams.max_chars_length
-            batch['gt_mel']          = batch['gt_mel'].new_zeros(batch['text'].shape[0], hparams.n_mel_channels, hparams.max_segment_length)
-            batch['mel_lengths' ][0] = hparams.max_segment_length
-            batch['gt_gate_logits' ] = batch['gt_gate_logits'].new_zeros(batch['text'].shape[0], hparams.max_segment_length)
-        optimizer.zero_grad()
-        
-        y = model.parse_batch(batch) # move batch to GPU (async)
-        y_pred = force(model, valid_kwargs=model_args, **y)
-        loss_scalars = {}
-        loss_dict, file_losses_batch, _ = criterion(model, y_pred, y, loss_scalars,)
-        loss = loss_dict['loss']
-        
-        if hparams.distributed_run:
-            reduced_loss_dict = {k: reduce_tensor(v.data, args.n_gpus).item() if v is not None else 0. for k, v in loss_dict.items()}
-        else:
-            reduced_loss_dict = {k: v.item() if v is not None else 0. for k, v in loss_dict.items()}
-        
-        reduced_loss = reduced_loss_dict['loss']
-        
-        if hparams.fp16_run:
-            with amp.scale_loss(loss, optimizer) as scaled_loss:
-                scaled_loss.backward()
-        else:
-            loss.backward()
-        
-        if hparams.fp16_run:
-            grad_norm = torch.nn.utils.clip_grad_norm_(amp.master_params(optimizer), 1e-9)
-            is_overflow = math.isinf(grad_norm) or math.isnan(grad_norm)
-        else:
-            grad_norm = torch.nn.utils.clip_grad_norm_(model.parameters(), 1e-9)
-        
-        for param_group in optimizer.param_groups:
-            param_group['lr'] = 0.0
-        #optimizer.step()
-        del grad_norm, reduced_loss, loss_dict, file_losses_batch, y, y_pred, batch, loss_scalars
-    print("Finished Pre-Allocating VRAM.")
-    
-    # reproducablilty stuffs
-    torch.manual_seed(hparams.seed)
-    torch.cuda.manual_seed(hparams.seed)
-    
     # ================ MAIN TRAINNIG LOOP! ===================
     training = True
     while training:
@@ -744,7 +767,8 @@ def train(args, rank, group_name, hparams):
                     else:
                         grad_norm = 0.0
                     
-                    optimizer.step()
+                    if math.isfinite(grad_norm):
+                        optimizer.step()
                     
                     # calcuate the effective learning rate after gradient clipping is applied, and use the effective learning rate on the GAN modules.
                     effective_lr = 0.0 if is_overflow else (learning_rate*min((grad_clip_thresh/grad_norm+1e-6), 1.0) if grad_clip_thresh else learning_rate)
@@ -753,7 +777,7 @@ def train(args, rank, group_name, hparams):
                     loss_scale = amp._amp_state.loss_scalers[0]._loss_scale if hparams.fp16_run else 32768.
                     
                     # restart if training/model has collapsed
-                    if (iteration > 1e3 and (reduced_loss > LossExplosionThreshold)) or (math.isnan(reduced_loss)):
+                    if (iteration > 1e3 and (reduced_loss >= LossExplosionThreshold)) or (math.isnan(reduced_loss)):
                         raise LossExplosion(f"\nLOSS EXPLOSION EXCEPTION ON RANK {rank}: Loss reached {reduced_loss} during iteration {iteration}.\n\n\n")
                     if (loss_scale < 1/4):
                         raise LossExplosion(f"\nLOSS EXCEPTION ON RANK {rank}: Loss Scaler reached {loss_scale} during iteration {iteration}.\n\n\n")
@@ -860,6 +884,8 @@ if __name__ == '__main__':
                         help='load model weights only, ignore all missing/non-matching layers')
     parser.add_argument('--detect_anomaly', action='store_true',
                         help='detects NaN/Infs in autograd backward pass and gives additional debug info.')
+    parser.add_argument('--align_dataset', action='store_true',
+                        help='Use once model is trained, saves the alignments generated from this model to disk so it can be used by other models.')
     parser.add_argument('--n_gpus', type=int, default=1,
                         required=False, help='number of gpus')
     parser.add_argument('--rank', type=int, default=0,
@@ -896,5 +922,8 @@ if __name__ == '__main__':
     except:
         pass
     
-    train(args, args.rank, args.group_name, hparams)
+    if args.align_dataset:
+        align_dataset(args, args.rank, args.group_name, hparams)
+    else:
+        train(args, args.rank, args.group_name, hparams)
 

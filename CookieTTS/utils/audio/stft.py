@@ -219,19 +219,9 @@ class TacotronSTFT(torch.nn.Module):
     
     def get_mel_from_path(self, audiopath):
         audio = load_wav_to_torch(audiopath, target_sr=self.sampling_rate)[0]
-        return self.mel_spectrogram(audio.unsqueeze(0))
+        return self.mel_spectrogram(audio.to(self.mel_basis.device).unsqueeze(0))
     
-    @torch.no_grad()
-    def mel_spectrogram(self, y):
-        """Computes mel-spectrograms from a batch of waves
-        PARAMS
-        ------
-        y: Variable(torch.FloatTensor) with shape (B, T) in range [-1, 1]
-
-        RETURNS
-        -------
-        mel_output: torch.FloatTensor of shape (B, n_mel_channels, T)
-        """
+    def forward(self, y):
         assert(torch.min(y) >= -1.), f'Tensor.min() of {torch.min(y).item()} is less than -1.0'
         assert(torch.max(y) <=  1.), f'Tensor.max() of {torch.max(y).item()} is greater than 1.0'
         
@@ -239,14 +229,40 @@ class TacotronSTFT(torch.nn.Module):
             magnitudes = self.stft_fn.transform_gpu(y, return_phase=False)[0] # get magnitudes at each (overlapped) window [B, T] ->  # [B, filter_len, T//hop_length+1]
         else:
             magnitudes = self.stft_fn.transform(y, return_phase=False)[0] # get magnitudes at each (overlapped) window [B, T] ->  # [B, filter_len, T//hop_length+1]
+        return magnitudes
+    
+    @torch.no_grad()
+    def mel_spectrogram(self, *args):
+        """Computes mel-spectrograms from a batch of waves
+        PARAMS
+        ------
+        y: Variable(torch.FloatTensor) with shape (B, T) in range [-1, 1]
         
-        mag_shape = magnitudes.shape# [B, n_mel, T//hop_length+1]
+        RETURNS
+        -------
+        mel_output: torch.FloatTensor of shape (B, n_mel_channels, T)
+        """
+        return self.mel_spectrogram_with_grad(*args)
+    
+    def mel_spectrogram_with_grad(self, y):
+        """Computes mel-spectrograms from a batch of waves
+        PARAMS
+        ------
+        y: Variable(torch.FloatTensor) with shape (B, T) in range [-1, 1]
+        
+        RETURNS
+        -------
+        mel_output: torch.FloatTensor of shape (B, n_mel_channels, T)
+        """
+        magnitudes = self(y)# get spectrogram magnitudes
+        
+        B, filter_len, mel_T = magnitudes.shape# [B, filter_len, T//hop_length+1]
         if False:#mag_shape[0] == 1:# do sparse op if possible. Pytorch 1.6 required for sparse with batches.
             mel_basis = self.mel_basis.to_sparse()
             mel_output = torch.mm(mel_basis, magnitudes.squeeze(0)).unsqueeze(0)
                       # [n_mel, filter_len] @ [filter_len, T//hop_length+1] -> [1, n_mel, T//hop_length+1]
         else:
-            mel_basis = self.mel_basis.unsqueeze(0).repeat(mag_shape[0], 1, 1)
+            mel_basis = self.mel_basis.unsqueeze(0).expand(B, *self.mel_basis.shape)
             mel_output = torch.bmm(mel_basis, magnitudes)# [B, n_mel, filter_len] @ [B, filter_len, T//hop_length+1] -> [B, n_mel, T//hop_length+1]
                                                          # This op uses an emourmous amount of contiguous memory with 2400 filter len and 160 n_mel.
         

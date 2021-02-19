@@ -7,11 +7,15 @@ import torch.nn as nn
 import torch.nn.functional as F
 from torch.utils.checkpoint import checkpoint
 import torch.distributed as dist
+
 from typing import Optional
-import numpy as np
+
 import math
+import numpy as np
+
 from CookieTTS.utils.model.utils import get_mask_from_lengths, alignment_metric, get_first_over_thresh, freeze_grads
 from CookieTTS._2_ttm.untts.model import MaskedBatchNorm1d
+from piqa.ssim import SSIM
 
 # https://github.com/gothiswaysir/Transformer_Multi_encoder/blob/952868b01d5e077657a036ced04933ce53dcbf4c/nets/pytorch_backend/e2e_tts_tacotron2.py#L28-L156
 class GuidedAttentionLoss(torch.nn.Module):
@@ -96,6 +100,7 @@ def NormalLLLoss(mu, logvar, target):
         pass
     return loss
 
+
 # https://discuss.pytorch.org/t/fastest-way-of-converting-a-real-number-to-a-one-hot-vector-representing-a-bin/21578/2
 def indexes_to_one_hot(indexes, num_classes=None):
     """Converts a vector of indexes to a batch of one-hot vectors. """
@@ -118,12 +123,16 @@ class Tacotron2Loss(nn.Module):
     def __init__(self, hparams):
         super(Tacotron2Loss, self).__init__()
         self.rank       = hparams.rank
+        self.n_frames_per_frame = getattr(hparams, 'n_frames_per_frame', 1)
+        self.n_fpf_per_elem     = getattr(hparams, 'n_fpf_per_elem', False)
         
         self.n_symbols  = hparams.n_symbols
         self.n_speakers = hparams.n_speakers
         
         # Gate Loss
         self.pos_weight = torch.tensor(hparams.gate_positive_weight)
+        
+        self.SSIM = SSIM(window_size=11, sigma=1.5, n_channels=1, reduction='mean')
         
         self.spec_MSE_weight     = hparams.spec_MSE_weight
         self.spec_MFSE_weight    = hparams.spec_MFSE_weight
@@ -159,6 +168,47 @@ class Tacotron2Loss(nn.Module):
         self.HiFiGAN_batch_size   = getattr(hparams, 'HiFiGAN_batch_size'  ,     2)
         self.hop_length           = hparams.hop_length
     
+    def best_frames(self, pred_mels, gt_mel, mask, frame_mean=True):# [B, n_mel*n_frames, mel_T], [B, n_mel, mel_T]
+        """Output best frames from a set of predicted mels and the target mel."""
+        if self.n_frames_per_frame > 1:
+            B, n_mel_n_frames, mel_T = pred_mels.shape
+            pred_mels = pred_mels.chunk(self.n_frames_per_frame, dim=1)# [[B, n_mel, mel_T],]*n_frames
+            aerr_mels = []
+            for i in range(self.n_frames_per_frame):
+                aerr_mel = F.l1_loss(pred_mels[i].detach(), gt_mel.detach(), reduction='none')
+                if frame_mean:
+                    aerr_mel = aerr_mel.mean(dim=1, keepdim=True)
+                aerr_mels.append(aerr_mel)# -> [B, n_mel, mel_T]
+            
+            ae_index = aerr_mels[0].new_zeros(aerr_mels[0].shape)
+            pred_mel = pred_mels[0]
+            aerr_mel = aerr_mels[0]
+            for i in range(1, self.n_frames_per_frame):
+                pred_mel = pred_mel.where(aerr_mel < aerr_mels[i], pred_mels[i])
+                aerr_mel = aerr_mel.where(aerr_mel < aerr_mels[i], aerr_mels[i])
+                ae_index[~(aerr_mel < aerr_mels[i])] = float(i)
+            
+            masked_ae_index = ae_index.masked_select(mask)
+            weights = []
+            for i in range(self.n_frames_per_frame):
+                p_best = float((masked_ae_index==float(i)).sum().item())/masked_ae_index.numel()
+                weights.append((1/(p_best+1e-6))/self.n_frames_per_frame)
+                if p_best == 0.:
+                    print(f"Warning! p_best of projection {i} has no good outputs. If this happens constantly then this model is dead.")
+                    continue
+            
+            ae_weights = aerr_mels[0].new_zeros(aerr_mels[0].shape)
+            for i in range(self.n_frames_per_frame):
+                ae_weights[ae_index==float(i)] = weights[i]
+        else:
+            pred_mel   = pred_mels
+            ae_index   = pred_mels.new_zeros(pred_mels[0].shape)
+            ae_weights = pred_mels.new_ones (pred_mels[0].shape)
+            if frame_mean:
+                ae_index   = ae_index  [:, 0:1, :]
+                ae_weights = ae_weights[:, 0:1, :]
+        return pred_mel, ae_index, ae_weights# [B, n_mel, mel_T], [B, n_mel, mel_T], [B, n_mel, mel_T]
+    
     def vae_kl_anneal_function(self, anneal_function, lag, step, k, x0, upper):
         if anneal_function == 'logistic': # https://www.desmos.com/calculator/neksnpgtmz
             return float(upper/(upper+np.exp(-k*(step-x0))))
@@ -176,13 +226,19 @@ class Tacotron2Loss(nn.Module):
         for k, v in loss_dict.items():
             loss_scale = loss_scalars.get(f'{k}_weight', None)
             if loss_scale is None:
-                loss_scale = getattr(self, f'{k}_weight', 1.0)
-                print(f'{k} is missing loss weight')
-            if loss_scale > 0.0:
-                if loss is not None:
-                    loss = loss + v*loss_scale
+                if 'all_losses' in loss_scalars:
+                    loss_scale = loss_scalars.get('all_losses')
                 else:
-                    loss = v*loss_scale
+                    loss_scale = getattr(self, f'{k}_weight', 1.0)
+                    print(f'{k} is missing loss weight')
+            if loss_scale > 0.0:
+                new_loss = v*loss_scale
+                if new_loss > 1000.0:
+                    print(f'{k} reached {v}.')
+                if loss is not None:
+                    loss = loss + new_loss
+                else:
+                    loss = new_loss
             if False and self.rank == 0:
                 print(f'{k:20} {loss_scale:05.2f} {loss:05.2f} {loss_scale*v:+010.6f}', v)
         loss_dict['loss'] = loss
@@ -200,25 +256,29 @@ class Tacotron2Loss(nn.Module):
                 file_losses[gt['audiopath'][i]] = {'speaker_id_ext': gt['speaker_id_ext'][i], 'time': current_time}
         
         if True:
-            pred_mel_postnet = pred['pred_mel_postnet']
-            pred_mel         = pred['pred_mel']
-            gt_mel           =   gt['gt_mel']
-            mel_lengths      =   gt['mel_lengths']
+            pred_mel_postnet = pred['pred_mel_postnet']# [B, n_mel, mel_T]
+            pred_mels        = pred['pred_mel']        # [B, n_mel*n_frames, mel_T]
+            gt_mel           =   gt['gt_mel']          # [B, n_mel, mel_T]
+            mel_lengths      =   gt['mel_lengths']     # [B]
             
-            mask = get_mask_from_lengths(mel_lengths)
-            mask = mask.expand(gt_mel.size(1), *mask.shape).permute(1, 0, 2)
+            # fill padded with zeros
+            mask = get_mask_from_lengths(mel_lengths).unsqueeze(1)# [B, 1, mel_T]
             pred_mel_postnet.masked_fill_(~mask, 0.0)
-            pred_mel        .masked_fill_(~mask, 0.0)
+            pred_mels       .masked_fill_(~mask, 0.0)
             
+            # check for nan/infs
             with torch.no_grad():
-                assert not torch.isnan(pred_mel).any(), 'mel has NaNs'
-                assert not torch.isinf(pred_mel).any(), 'mel has Infs'
+                pred_mels       .masked_fill_(torch.isnan(pred_mels       ) | torch.isinf(pred_mels       ), 0.0)# debug?
+                pred_mel_postnet.masked_fill_(torch.isnan(pred_mel_postnet) | torch.isinf(pred_mel_postnet), 0.0)# debug?
+                assert not torch.isnan(pred_mels).any(), 'mel has NaNs'
+                assert not torch.isinf(pred_mels).any(), 'mel has Infs'
                 assert not torch.isnan(pred_mel_postnet).any(), 'mel has NaNs'
                 assert not torch.isinf(pred_mel_postnet).any(), 'mel has Infs'
             
+            # split tensor into teacher-forced items only if required
             if model.decoder.half_inference_mode:
                 pred_mel_postnet = pred_mel_postnet.chunk(2, dim=0)[0]
-                pred_mel         = pred_mel        .chunk(2, dim=0)[0]
+                pred_mels        = pred_mels       .chunk(2, dim=0)[0]
                 gt_mel           = gt_mel          .chunk(2, dim=0)[0]
                 mel_lengths      = mel_lengths     .chunk(2, dim=0)[0]
                 mask             = mask            .chunk(2, dim=0)[0]
@@ -228,36 +288,75 @@ class Tacotron2Loss(nn.Module):
             p_teacher_forcing  = loss_scalars.get('p_teacher_forcing' , 1.0)
             if p_teacher_forcing == 0.0 and teacher_force_till > 1:
                 gt_mel           = gt_mel          [:, :, :teacher_force_till]
-                pred_mel         = pred_mel        [:, :, :teacher_force_till]
+                pred_mels        = pred_mels       [:, :, :teacher_force_till]
                 pred_mel_postnet = pred_mel_postnet[:, :, :teacher_force_till]
                 mel_lengths      = mel_lengths.clamp(max=teacher_force_till)
             
+            # get best combo of frames if using multiframe outputs
+            pred_mel, ae_index, ae_weights = self.best_frames(pred_mels, gt_mel, mask, frame_mean=not self.n_fpf_per_elem)# -> [B, n_mel, mel_T]
+            pred['pred_mel_b'] = pred_mel
+            
             # spectrogram / decoder loss
-            pred_mel_selected = torch.masked_select(pred_mel, mask)
-            gt_mel_selected   = torch.masked_select(gt_mel,   mask)
+            gt_mels_selected = gt_mel.repeat(1, self.n_frames_per_frame, 1).masked_select(mask)
+            pred_mels_selected = pred_mels.masked_select(mask)
+            loss_dict['specs_MSE' ] = F.mse_loss      (pred_mels_selected, gt_mels_selected)
+            loss_dict['specs_MSAE'] = F.smooth_l1_loss(pred_mels_selected, gt_mels_selected)
+            
+            pred_mel_selected   = torch.masked_select(pred_mel,   mask)# -> [B*n_mel*mel_T]
+            gt_mel_selected     = torch.masked_select(gt_mel,     mask)# -> [B*n_mel*mel_T]
+            ae_weights_selected = torch.masked_select(ae_weights, mask)# -> [B*n_mel*mel_T]
             spec_SE = nn.MSELoss(reduction='none')(pred_mel_selected, gt_mel_selected)
             loss_dict['spec_MSE'] = spec_SE.mean()
+            
+            spec_SAE = nn.SmoothL1Loss(reduction='none')(pred_mel_selected, gt_mel_selected)
+            loss_dict['spec_MSAE'] = spec_SAE.mean()
             
             losses = spec_SE.split([x*n_mel for x in mel_lengths.cpu()])
             for i in range(tfB):
                 audiopath = gt['audiopath'][i]
                 file_losses[audiopath]['spec_MSE'] = losses[i].mean().item()
             
+            # weighted multi-frame MSE
+            numfr = mel_lengths.sum().item()
+            loss_dict['spec_MSE_MF' ] = (spec_SE .view(numfr, n_mel)*ae_weights_selected.view(numfr, -1)).mean()
+            loss_dict['spec_MSAE_MF'] = (spec_SAE.view(numfr, n_mel)*ae_weights_selected.view(numfr, -1)).mean()
+            
+            # SSIM
+            #self.SSIM.to(gt_mel)
+            #loss_dict['spec_SSIM']    = 1.0-self.SSIM(pred_mel        .unsqueeze(1), gt_mel.unsqueeze(1))# [B, 1, n_mel, mel_T]
+            #loss_dict['postnet_SSIM'] = 1.0-self.SSIM(pred_mel_postnet.unsqueeze(1), gt_mel.unsqueeze(1))# [B, 1, n_mel, mel_T]
+            
             # postnet
             pred_mel_postnet_selected = torch.masked_select(pred_mel_postnet, mask)
-            loss_dict['postnet_MSE'] = nn.MSELoss()(pred_mel_postnet_selected, gt_mel_selected)
+            loss_dict['postnet_MSE' ] = nn.MSELoss()(pred_mel_postnet_selected, gt_mel_selected)
+            loss_dict['postnet_MSAE'] = nn.SmoothL1Loss()(pred_mel_postnet_selected, gt_mel_selected)
             
             # squared by frame, mean postnet
             mask = mask.transpose(1, 2)[:, :, :1]# [B, mel_T, n_mel] -> [B, mel_T, 1]
             
             spec_AE = nn.L1Loss(reduction='none')(pred_mel, gt_mel).transpose(1, 2)# -> [B, mel_T, n_mel]
-            spec_AE = spec_AE.masked_select(mask).view(mel_lengths.sum(), n_mel)   # -> [B* mel_T, n_mel]
-            loss_dict['spec_MFSE'] = (spec_AE * spec_AE.mean(dim=1, keepdim=True)).mean()# multiply by frame means (similar to square op from MSE) and get the mean of the losses
+            spec_AE = spec_AE.masked_select(mask).view(numfr, n_mel)               # -> [B *mel_T, n_mel]
+            spec_FSE = spec_AE * spec_AE.mean(dim=1, keepdim=True)# multiply by frame means (similar to square op from MSE) 
+            loss_dict['spec_MFSE'] = spec_FSE.mean()              # and get the mean of the losses
+            
+            loss_dict['spec_MFSE_MF'] = (spec_FSE.view(numfr, n_mel)*ae_weights_selected.view(numfr, -1)).mean()
             
             post_AE = nn.L1Loss(reduction='none')(pred_mel_postnet, gt_mel).transpose(1, 2)# -> [B, mel_T, n_mel]
             post_AE = post_AE.masked_select(mask).view(mel_lengths.sum(), n_mel)# -> [B*mel_T, n_mel]
             loss_dict['postnet_MFSE'] = (post_AE * post_AE.mean(dim=1, keepdim=True)).mean()# multiply by frame means (similar to square op from MSE) and get the mean of the losses
             del gt_mel, spec_AE, post_AE,#pred_mel_postnet, pred_mel
+        
+        if self.n_frames_per_frame > 1:
+            mask = get_mask_from_lengths(mel_lengths).unsqueeze(1)# [B, 1, mel_T]
+            
+            mel_outputs_logprob = pred['mel_outputs_logprob']# [B, n_frames*(n_mel OR 1), mel_T]
+            mel_outputs_logprob = torch.stack(mel_outputs_logprob.chunk(self.n_frames_per_frame, dim=1), dim=-1)# [B, n_frames*(n_mel OR 1), mel_T] -> [B, (n_mel OR 1), mel_T, n_frames]
+            mel_outputs_logprob = mel_outputs_logprob.masked_select(mask.unsqueeze(-1)).view(-1, self.n_frames_per_frame)# [B, (n_mel OR 1), mel_T, n_frames] -> [B*(n_mel OR 1)*mel_T, n_frames]
+            ae_index_selected = ae_index.masked_select(mask).round().long()# [B*(n_mel OR 1)*mel_T]
+            
+            loss_dict['MF_CE_loss'] = nn.CrossEntropyLoss()(mel_outputs_logprob, ae_index_selected)# [B*(n_mel OR 1)*mel_T, n_frames], [B*(n_mel OR 1)*mel_T]
+            
+            #mel_outputs_prob = F.softmax(mel_outputs_logprob, dim=1)# <-- how to calculate the probabilities
         
         if True: # gate/stop loss
             gate_target =   gt['gt_gate_logits'  ]
@@ -266,7 +365,7 @@ class Tacotron2Loss(nn.Module):
                 gate_target = gate_target.chunk(2, dim=0)[0]
                 gate_out    = gate_out   .chunk(2, dim=0)[0]
             gate_target = gate_target.view(-1, 1)
-            gate_out    =    gate_out.view(-1, 1)
+            gate_out    = gate_out   .view(-1, 1)
             
             loss_dict['gate_loss'] = nn.BCEWithLogitsLoss(pos_weight=self.pos_weight)(gate_out, gate_target)
             del gate_target, gate_out
@@ -289,6 +388,22 @@ class Tacotron2Loss(nn.Module):
             loss_dict['sylps_MAE'] =  nn.L1Loss()(pred_sylps, sylps_target)
             loss_dict['sylps_MSE'] = nn.MSELoss()(pred_sylps, sylps_target)
             del pred_sylps, sylps_target
+        
+        if 'mdn_loss' in pred:
+            safe_mdn_ids = ~(gt['pres_prev_state'] | gt['cont_next_iter']) & (pred['mdn_loss'].detach() < 1e3)# BoolTensor[B]
+            loss_dict['mdn_loss'] = pred['mdn_loss'][safe_mdn_ids].mean()
+        
+        if ('pred_logdur' in pred) and ("mdn_alignment" in pred):
+            pred_logdur = pred['pred_logdur'].squeeze(-1)# [B, txt_T]
+            mask = get_mask_from_lengths(gt['text_lengths'])# [B, txt_T]
+            loss_dict['dur_loss'] = F.mse_loss(pred['mdn_alignment'].sum(dim=1).detach().clamp(min=0.5).log().masked_fill(~mask, 0.0),
+                                                                                                  pred_logdur.masked_fill(~mask, 0.0))# [B, txt_T], [B, txt_T] -> []
+        
+        if 'mdn_alignment' in pred:
+            gt_alignments   = pred['mdn_alignment'][safe_mdn_ids]
+            pred_alignments = pred['alignments'   ][safe_mdn_ids]
+            abs_err = F.mse_loss(pred_alignments, gt_alignments, reduction='none')# [B, mel_T, txt_T]
+            loss_dict['gt_align_mse'] = abs_err.sum(2).mean()
         
         if True:# Diagonal Attention Guiding
             alignments     = pred['alignments'  ]
@@ -337,15 +452,13 @@ class Tacotron2Loss(nn.Module):
             del mu, logvar, kl_loss, mulogvar
         
         if 1 and model.training and self.use_dbGAN and dbGAN is not None:
-            pred_mel_postnet = pred['pred_mel_postnet'].unsqueeze(1)# -> [tfB, 1, n_mel, mel_T]
-            pred_mel         = pred['pred_mel']        .unsqueeze(1)# -> [tfB, 1, n_mel, mel_T]
-            speaker_embed    = pred['speaker_embed']
+            pred_mel_postnet = pred['pred_mel_postnet'].unsqueeze(1)# -> [  B, 1, n_mel, mel_T]
+            speaker_embed    = pred['speaker_embed']# -> [B, embed]
             if model.decoder.half_inference_mode:
-                pred_mel_postnet = pred_mel_postnet.chunk(2, dim=0)[0]
-                pred_mel         = pred_mel        .chunk(2, dim=0)[0]
-                speaker_embed    = speaker_embed   .chunk(2, dim=0)[0]
-            B, _, n_mel, mel_T = pred_mel.shape
-            mels = torch.cat((pred_mel, pred_mel_postnet), dim=0).float()# [2*B, 1, n_mel, mel_T]
+                pred_mel_postnet = pred_mel_postnet.chunk(2, dim=0)[0]# -> [tfB, 1, n_mel, mel_T]
+                speaker_embed    = speaker_embed   .chunk(2, dim=0)[0]# -> [tfB, embed]
+            B, _, n_mel, mel_T = pred_mel_postnet.shape
+            mels = torch.cat((pred_mel.unsqueeze(1), pred_mel_postnet), dim=0).float()# [2*B, 1, n_mel, mel_T]
             with torch.no_grad():
                 assert not (torch.isnan(mels) | torch.isinf(mels)).any(), 'NaN or Inf value found in computation'
             
@@ -361,7 +474,7 @@ class Tacotron2Loss(nn.Module):
             with torch.no_grad():
                 assert not torch.isnan(loss_dict['dbGAN_gLoss']), 'dbGAN loss is NaN'
                 assert not torch.isinf(loss_dict['dbGAN_gLoss']), 'dbGAN loss is Inf'
-            del mels, real_label, pred_fakeness, postnet_fakeness, pred_mel, pred_mel_postnet, speaker_embed
+            del mels, real_label, pred_fakeness, postnet_fakeness, pred_mel_postnet, speaker_embed
         
         if self.use_InfGAN and infGAN is not None and model.decoder.half_inference_mode:
             with torch.no_grad():
@@ -392,12 +505,10 @@ class Tacotron2Loss(nn.Module):
         if self.prenet_use_code_loss:# Encoded Prenet Loss
             dtype = next(model.decoder.prenet.parameters()).dtype
             if model.decoder.half_inference_mode:
-                pred_mel         = pred['pred_mel'     ].chunk(2, dim=0)[0].to(dtype)
                 gt_mel           =   gt['gt_mel'       ].chunk(2, dim=0)[0].to(dtype)
                 mel_lengths      =   gt['mel_lengths'  ].chunk(2, dim=0)[0].long()
                 speaker_embed    = pred['speaker_embed'].chunk(2, dim=0)[0].to(dtype)
             else:
-                pred_mel         = pred['pred_mel'     ].to(dtype)
                 gt_mel           =   gt['gt_mel'       ].to(dtype)
                 mel_lengths      =   gt['mel_lengths'  ].long()
                 speaker_embed    = pred['speaker_embed'].to(dtype)
@@ -411,7 +522,7 @@ class Tacotron2Loss(nn.Module):
                     gt_pn_code = torch.masked_select(gt_pn_code, mask).view(-1, self.prenet_dim, 1)# [mel_T*B, n_mel, 1]
                     gt_pn_code = self.gt_code_bn(gt_pn_code)# [mel_T, B, prenet_dim]
             with torch.random.fork_rng(devices=[0,]):
-                pred_pn_code = model.decoder.prenet(pred_mel.permute(2, 0, 1), speaker_embed, disable_dropout=True)# [B, n_mel, mel_T] -> [mel_T, B, prenet_dim]
+                pred_pn_code = model.decoder.prenet(pred_mel.to(dtype).permute(2, 0, 1), speaker_embed, disable_dropout=True)# [B, n_mel, mel_T] -> [mel_T, B, prenet_dim]
             pred_pn_code = torch.masked_select(pred_pn_code, mask).view(-1, self.prenet_dim, 1)# [mel_T*B, n_mel, 1]
             pred_pn_code = self.pr_code_bn(pred_pn_code)
             loss_dict['prenet_code_MAE'] = F.l1_loss(gt_pn_code, pred_pn_code)

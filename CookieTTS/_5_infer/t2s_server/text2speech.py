@@ -320,7 +320,7 @@ class T2S:
         _ = model.cuda().eval()#.half()
         print("Done")
         
-        if self.conf.get("use_zoneout_during_inference", True):
+        if self.conf.get("use_zoneout_during_inference", False):
             try:
                 model.decoder.attention_rnn.train()
                 model.decoder.second_attention_rnn.train()
@@ -363,7 +363,7 @@ class T2S:
               textseg_len_target, split_nl, split_quo, multispeaker_mode, seed,
               zoneout_power=None, res_std=0.75, gate_delay=2, gate_threshold=0.6, filename_prefix=None,
               status_updates=True, show_time_to_gen=True, end_mode='thresh',
-              target_score=0.75, absolutely_required_score=0.60, absolute_maximum_tries=256):
+              target_score=0.5, absolutely_required_score=-10.0, absolute_maximum_tries=256):
         """
         PARAMS:
         ...
@@ -673,6 +673,7 @@ class T2S:
             audio_batch = []
             for i in range(0, len(mel_batch_outputs_postnet), self.vocoder_batch_size):
                 pred_mel_part_batch = mel_batch_outputs_postnet[i:i+self.vocoder_batch_size]
+                pred_mel_part_batch += 1.0
                 audio_batch.extend( self.vocoder(pred_mel_part_batch.to(vocoder_dtype)).squeeze(1).cpu().split(1, dim=0) )# [b, T]
             # audio_batch shapes = [[1, T], [1, T], [1, T], [1, T], ...]
             

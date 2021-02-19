@@ -29,15 +29,19 @@ def plot_alignment_to_numpy(alignment, info=None):
     return data
 
 
-def plot_spectrogram_to_numpy(spectrogram):
+def plot_spectrogram_to_numpy(spectrogram, range=None):
     fig, ax = plt.subplots(figsize=(12, 3))
     im = ax.imshow(spectrogram, cmap='inferno', aspect="auto", origin="lower",
                    interpolation='none')
+    if range is not None:
+        assert len(range) == 2, 'range params should be a 2 element List of [Min, Max].'
+        assert range[1] > range[0], 'Max (element 1) must be greater than Min (element 0).'
+        im.set_clim(range[0], range[1])
     plt.colorbar(im, ax=ax)
     plt.xlabel("Frames")
     plt.ylabel("Channels")
     plt.tight_layout()
-
+    
     fig.canvas.draw()
     data = save_figure_to_numpy(fig)
     plt.close()

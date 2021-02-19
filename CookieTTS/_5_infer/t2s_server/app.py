@@ -111,7 +111,7 @@ def texttospeech():
                                 
                                 current_text  =tts_dict['text'],
                                 sample_text   =conf['webpage']['defaults']['background_text'],
-                                speaker=tts_dict['speaker'][0],
+                                speaker=tts_dict['speaker'],
                                 
                                 seed                = tts_dict['seed'],
                                 use_arpabet         = tts_dict['use_arpabet'],

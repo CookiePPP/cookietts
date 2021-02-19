@@ -3,7 +3,7 @@ from unidecode import unidecode
 class ARPA:
     def __init__(self, dict_path):
         self.arpadict = self.load_arpadict(dict_path)
-        self.punc = "!?,.;:␤#-_'\"()[]\n"
+        self.punc = "!?,.;:␤#~-_'\"()[]\n"
     
     def load_arpadict(self, dict_path):
         # load dictionary as lookup table

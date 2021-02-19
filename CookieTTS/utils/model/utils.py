@@ -1,8 +1,27 @@
 import numpy as np
 from scipy.io.wavfile import read
 import torch
+import torch.nn as nn
+import torch.nn.functional as F
 from typing import Optional
+from torch.autograd import Function
 
+# Taken From https://github.com/janfreyberg/pytorch-revgrad/blob/master/src/pytorch_revgrad/functional.py
+class GradScale(Function):
+    @staticmethod
+    def forward(ctx, input_, alpha_):
+        ctx.save_for_backward(input_, alpha_ if type(alpha_) is torch.Tensor else torch.tensor(alpha_, requires_grad=False))
+        output = input_
+        return output
+
+    @staticmethod
+    def backward(ctx, grad_output):  # pragma: no cover
+        grad_input = None
+        _, alpha_ = ctx.saved_tensors
+        if ctx.needs_input_grad[0]:
+            grad_input = grad_output * alpha_
+        return grad_input, None
+grad_scale = GradScale.apply
 
 class freeze_grads():
     def __init__(self, submodule):
@@ -35,7 +54,7 @@ def get_mask_3d(widths, heights, max_w: Optional[torch.Tensor] = None, max_h: Op
         max_w = torch.max(widths)
     if max_h is None:
         max_h = torch.max(heights)
-    seq_w = torch.arange(0, max_w, device=device) # [max_w]
+    seq_w = torch.arange(0, max_w, device=device)# [max_w]
     seq_h = torch.arange(0, max_h, device=device)# [max_h]
     mask_w = (seq_w.unsqueeze(0) < widths.unsqueeze(1)).to(torch.bool) # [1, max_w] < [B, 1] -> [B, max_w]
     mask_h = (seq_h.unsqueeze(0) < heights.unsqueeze(1)).to(torch.bool)# [1, max_h] < [B, 1] -> [B, max_h]
@@ -52,20 +71,35 @@ def get_drop_frame_mask_from_lengths(lengths, drop_frame_rate):
     return drop_mask
 
 
-def dropout_frame(mels, global_mean, mel_lengths, drop_frame_rate):
-    drop_mask = get_drop_frame_mask_from_lengths(mel_lengths, drop_frame_rate)
-    dropped_mels = (mels * (~drop_mask).unsqueeze(1) +
-                    global_mean[None, :, None] * drop_mask.unsqueeze(1))
+def dropout_frame(mels, global_mean, mel_lengths, drop_frame_rate, soft_mask=False, local_mean=False, local_mean_range=5):
+    drop_mask = get_drop_frame_mask_from_lengths(mel_lengths, drop_frame_rate).unsqueeze(1)# [B, 1, mel_T]
+    
+    if local_mean:
+        def padidx(i):
+            pad = (i+1)//2
+            return (pad, -pad) if i%2==0 else (-pad, pad)
+        mel_mean = sum([F.pad(mels.detach(), padidx(i), mode='replicate') for i in range(local_mean_range)])/local_mean_range# [B, n_mel, mel_T]
+    else:
+        if len(global_mean.shape) == 1:
+            mel_mean = global_mean.unsqueeze(0) #    [n_mel] -> [B, n_mel]
+        if len(mel_mean.shape) == 2:
+            mel_mean = mel_mean.unsqueeze(-1)# [B, n_mel] -> [B, n_mel, mel_T]
+    
+    dropped_mels = (mels * ~drop_mask) + (mel_mean * drop_mask)
+    if soft_mask:
+        rand_mask = torch.rand(dropped_mels.shape[0], 1, dropped_mels.shape[2], device=mels.device, dtype=mels.dtype)
+        rand_mask_inv = (1.-rand_mask)
+        dropped_mels = (dropped_mels*rand_mask) + (mels*rand_mask_inv)
     return dropped_mels
 
 
 def get_first_over_thresh(x, threshold):
-    """Takes [B, T] and outputs first T over threshold for each B (output.shape = [B])."""
+    """Takes [B, T] and outputs indexes of first element over threshold for each vector in B (output.shape = [B])."""
     device = x.device
     x = x.clone().cpu().float() # using CPU because GPU implementation of argmax() splits tensor into 32 elem chunks, each chunk is parsed forward then the outputs are collected together... backwards
     x[:,-1] = threshold # set last to threshold just incase the output didn't finish generating.
     x[x>threshold] = threshold
-    if int(''.join(torch.__version__.split('+')[0].split('.'))) < 170:
+    if int(''.join(torch.__version__.split('+')[0].split('.'))) < 170:# old pytorch < 1.7 did argmax backwards on CPU and even more broken on GPU.
         return ( (x.size(1)-1)-(x.flip(dims=(1,)).argmax(dim=1)) ).to(device).int()
     else:
         return x.argmax(dim=1).to(device).int()
@@ -133,3 +167,17 @@ def alignment_metric(alignments, input_lengths=None, output_lengths=None, enc_mi
     output["encoder_avg_focus"] = encoder_avg_focus
     output["p_missing_enc"]     = p_missing_enc
     return output
+
+
+# taken from https://stackoverflow.com/a/30024601
+import time
+class elapsed_timer(object):
+    def __init__(self, msg=''):
+        self.msg = msg
+    
+    def __enter__(self):
+        self.start = time.time()
+        return self
+    
+    def __exit__(self, typ, value, traceback):
+        print(f'{self.msg} took {time.time()-self.start}s')

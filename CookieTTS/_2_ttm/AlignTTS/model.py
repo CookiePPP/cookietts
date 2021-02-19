@@ -120,7 +120,7 @@ class AlignTTS(nn.Module):
                                  nn.LayerNorm(hparams.hidden_dim),
                                  nn.ReLU(),
                                  nn.Dropout(0.1),
-                                 Linear(hparams.hidden_dim, 2*hparams.n_mel_channels))
+                                 Linear(hparams.hidden_dim, 2*(hparams.n_mel_channels//hparams.mel_downsize)))
         
         self.tm_linear = nn.Linear(hparams.tt_torchMoji_attDim, hparams.tt_torchMoji_crushedDim)
         if hparams.tt_torchMoji_BatchNorm:
@@ -182,7 +182,7 @@ class AlignTTS(nn.Module):
         path = torch.stack(path, -1)
         
         indices = path.new_tensor(torch.arange(path.max()+1).view(1,1,-1)) # 1, 1, L
-        align = 1.0*(path.new_tensor(indices==path.unsqueeze(-1))) # B, T, L
+        align = path.new_tensor(indices==path.unsqueeze(-1)) # B, T, L
         
         for i in range(align.size(0)):
             pad= T-mel_lengths[i]

@@ -79,24 +79,30 @@ class Tacotron2Logger(SummaryWriter):
             self.add_image(f"{prepend}_{idx}/alignment",
                 plot_alignment_to_numpy(y_pred['alignments'][idx].data.cpu().numpy().T),
                 iteration, dataformats='HWC')
-            self.add_image(f"{prepend}_{idx}/mel_pred",
-                plot_spectrogram_to_numpy(y_pred['pred_mel'][idx].data.cpu().numpy()),
-                iteration, dataformats='HWC')
+            
             self.add_image(f"{prepend}_{idx}/mel_SE",
                 plot_spectrogram_to_numpy(mel_L1_map[idx].data.cpu().numpy()),
                 iteration, dataformats='HWC')
+            
             if self.plotted_targets_val < 2 or is_len_changed:
                 self.add_image(f"{prepend}_{idx}/mel_gt",
                     plot_spectrogram_to_numpy(y['gt_mel'][idx].data.cpu().numpy()),
                     iteration, dataformats='HWC')
                 self.plotted_targets_val +=1 # target spect doesn't change so only needs to be plotted once.
+            
+            mag_range = [y['gt_mel'][idx].data.min().item(), y['gt_mel'][idx].data.max().item()]
+            self.add_image(f"{prepend}_{idx}/mel_pred",
+                plot_spectrogram_to_numpy(y_pred['pred_mel_b'][idx].data.cpu().numpy(), range=mag_range),
+                iteration, dataformats='HWC')
+            
             if 'hifigan_gt_mel' in y and len(y['hifigan_gt_mel']) > idx:
                 self.add_image(f"{prepend}_{idx}/hifi_mel_gt",
-                    plot_spectrogram_to_numpy(y['hifigan_gt_mel'][idx].data.cpu().numpy()),
+                    plot_spectrogram_to_numpy(y['hifigan_gt_mel'][idx].data.cpu().numpy(), range=mag_range),
                     iteration, dataformats='HWC')
+            
             if 'hifigan_pred_mel' in y_pred and len(y_pred['hifigan_pred_mel']) > idx:
                 self.add_image(f"{prepend}_{idx}/hifi_mel_pred",
-                    plot_spectrogram_to_numpy(y_pred['hifigan_pred_mel'][idx].data.cpu().numpy()),
+                    plot_spectrogram_to_numpy(y_pred['hifigan_pred_mel'][idx].data.cpu().numpy(), range=mag_range),
                     iteration, dataformats='HWC')
     
     def log_infer(self, reduced_loss_dict, reduced_bestval_loss_dict, model, y, y_pred, iteration, val_teacher_force_till, val_p_teacher_forcing):
@@ -118,11 +124,14 @@ class Tacotron2Logger(SummaryWriter):
             self.add_image(f"{prepend}_{idx}/alignment",
                 plot_alignment_to_numpy(y_pred['alignments'][idx].data.cpu().numpy().T),
                 iteration, dataformats='HWC')
-            self.add_image(f"{prepend}_{idx}/mel_pred",
-                plot_spectrogram_to_numpy(y_pred['pred_mel'][idx].data.cpu().numpy()),
-                iteration, dataformats='HWC')
+            
             if self.plotted_targets_inf < 2 or is_len_changed:
                 self.add_image(f"{prepend}_{idx}/mel_gt",
                     plot_spectrogram_to_numpy(y['gt_mel'][idx].data.cpu().numpy()),
                     iteration, dataformats='HWC')
                 self.plotted_targets_inf +=1 # target spect doesn't change so only needs to be plotted ~~once~~ a couple times.
+            
+            mag_range = [y['gt_mel'][idx].data.min().item(), y['gt_mel'][idx].data.max().item()]
+            self.add_image(f"{prepend}_{idx}/mel_pred",
+                plot_spectrogram_to_numpy(y_pred['pred_mel_b'][idx].data.cpu().numpy(), range=mag_range),
+                iteration, dataformats='HWC')

@@ -18,3 +18,4 @@ norbert
 webrtcvad
 ipywidgets
 pyworld
+piqa

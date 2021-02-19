@@ -21,50 +21,53 @@ LossExplosionThreshold = 1e5 # maximum loss value (which will trigger a restart 
 custom_lr = True
 decrease_lr_on_restart = True # Decrease the Learning Rate on a LossExplosionThreshold exception
 
-offset = 0
 # Learning Rate / Optimization
-decay_start = 120000
-#if iteration <  10000+offset:
-#    A_ = 3.600e-4
-#elif iteration <  50000+offset:
-#    A_ = 2.000e-4
-#elif iteration <  80000+offset:
-#    A_ = 1.000e-4
-#elif iteration < 110000+offset:
-#    A_ = 0.500e-4
-#elif iteration < 140000+offset:
-#    A_ = 0.250e-4
-#elif iteration < 170000+offset:
-#    A_ = 0.125e-4
-#else:
-#    A_ = 0.050e-4
-A_ = 1.0e-4
-A_ *= 0.25**0.5# for HiFiGAN TTFT-ing
+decay_start = 140000
+A_ = 2.0e-4
 B_ = 30000
 C_ = 0e-5
 min_learning_rate = 1e-11
-grad_clip_thresh  = 9999.#1.0 if iteration > 20000 else 4.0
+grad_clip_thresh  = 99.#1.0 if iteration > 20000 else 4.0
 
 warmup_start_lr = 0.0e-4
-warmup_start = checkpoint_iter+10
+warmup_start = checkpoint_iter
 warmup_end   = warmup_start + (A_-warmup_start_lr)*2e6 # warmup will linearly increase LR by 1e-5 each iter till LR hits A_
 
 best_model_margin = 0.01 # training loss margin
 
-validation_interval =  125 if iteration < 2000 else (250 if iteration < 8000 else 500)
-checkpoint_interval = 1000
+validation_interval =  125 if iteration < 2000 else (500 if iteration < 8000 else 1000)
+checkpoint_interval = 5000
 
 # Loss Scalars (set to None to load from hparams.py)
-spec_MSE_weight     = 0.0000
-spec_MFSE_weight    = 1.0000
+spec_MSAE_weight    = 0.0000# MSAE = Mean Smoothed Absolute Error
+spec_MSE_weight     = 0.0000# MSE = Mean Squared Error
+spec_MFSE_weight    = 0.0000# MSE = Mean-Frame Squared Error
+spec_MSAE_MF_weight = 1.0000# _MF = Multiframe weighted loss. This should be used 99% of the time.
+spec_MSE_MF_weight  = 0.0000# _MF = Multiframe weighted loss. This should be used 99% of the time.
+spec_MFSE_MF_weight = 0.0000# _MF = Multiframe weighted loss. This should be used 99% of the time.
+postnet_MSAE_weight = 1.0000
 postnet_MSE_weight  = 0.0000
-postnet_MFSE_weight = 1.0000
+postnet_MFSE_weight = 0.0000
+
+spec_SSIM_weight    = 0.0000
+postnet_SSIM_weight = 0.0000
+
+specs_MSAE_weight   = 0.0000# MSAE loss for all projection layers.
+specs_MSE_weight    = 0.0100#  MSE loss for all projection layers.
+MF_CE_loss_weight   = 0.5000# MultiFrame CrossEntropy Classification Loss
+
 gate_loss_weight    = 1.0000
+
 sylps_kld_weight    = 0.0500
 sylps_MSE_weight    = 0.0100
 sylps_MAE_weight    = 0.0010
-diag_att_weight     = 0.1000# you only want to use this at high strenght to warmup the attention, it will mask problems later into training.
-if iteration >  5000:
+
+mdn_loss_weight     = 0.5000
+dur_loss_weight     = 0.5000
+gt_align_mse_weight = 0.1000
+
+diag_att_weight     = 0.5000# you only want to use this at high strenght to warmup the attention, it will mask problems later into training.
+if iteration > 5000:
     diag_att_weight *= 0.25
 
 pn_code_MAE_weight = 0.00200# prenet code loss

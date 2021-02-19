@@ -68,7 +68,7 @@ class Tacotron2Loss(nn.Module):
         
         # Decoder / MelGlow Loss
         if True:
-            mel_z, log_s_sum, logdet_w_sum = model_output['melglow']
+            mel_z, log_s_sum    , logdet_w_sum = model_output['melglow']
             
             # remove paddings before loss calc
             mask = get_mask_from_lengths(output_lengths)[:, None, :] # [B, 1, T] BoolTensor
