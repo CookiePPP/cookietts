@@ -1443,10 +1443,10 @@ class VDVAETTS(nn.Module):# Main module, contains all the submodules for the net
                 outputs[key] = input
         return outputs
     
-    def inference(self, text_seq, text_lengths, speaker_id, torchmoji_hdn,
+    def inference(self, text_seq, text_lengths, speaker_id, torchmoji_hdn, multispeaker_mode,
                     char_sigma=1.0, frame_sigma=1.0,
                     bn_logdur=None, char_dur=None, gt_mel=None, alignment=None,
-                    mel_lengths=None,):# [B, enc_T], [B], [B], [B], [B, tm_dim]
+                    mel_lengths=None):# [B, enc_T], [B], [B], [B], [B, tm_dim]
         outputs = {}
         
         memory = []
@@ -1458,7 +1458,18 @@ class VDVAETTS(nn.Module):# Main module, contains all the submodules for the net
         # (Speaker) speaker_id -> speaker_embed
         if hasattr(self, "speaker_embedding"):
             speaker_embed = self.speaker_embedding(speaker_id)# [B, embed]
-            outputs["speaker_embed"] = speaker_embed# [B, embed]
+            if multispeaker_mode == "hybrid_voices" and speaker_embed.shape[0] > 1:
+              splits = int(speaker_embed.shape[0] / 2)
+              mix_1, mix_2 = torch.split(speaker_embed, splits)
+              speaker_embed = torch.add(mix_1, mix_2)
+              speaker_embed = torch.div(speaker_embed, 2)
+              speaker_embed = speaker_embed.repeat(2, 1)
+            #outputs["speaker_embed"] = speaker_embed# [B, embed]
+            #speaker_embed_mix = self.speaker_embedding(speaker_mix)# [B, embed]
+            #outputs["speaker_embed_mix"] = speaker_embed_mix# [B, embed]
+            #print(speaker_embed_mix)
+            #speaker_embed = torch.div(torch.add(speaker_embed, speaker_embed_mix), 2)
+            outputs["speaker_embed"] = speaker_embed
         
         # (TorchMoji)
         if hasattr(self, 'tm_bn'):
