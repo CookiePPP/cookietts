@@ -127,6 +127,7 @@
                                 <option value="cycle_next" {{ 'selected' if multispeaker_mode == 'cycle_next' else '' }}>Cycle Next (go down the list, use the next speaker for each text then loop back to the top)</option>
                                 <option value="interleaved" {{ 'selected' if multispeaker_mode == 'interleaved' else '' }}>Interleaved (seperate speaker for each text segment, going from top to bottom)</option>
                                 <option value="not_interleaved" {{ 'selected' if multispeaker_mode == 'not_interleaved' else '' }}>Non-Interleaved (speaker going from top to bottom per clip attempt)</option>
+                                <option value="hybrid_voices" {{ 'selected' if multispeaker_mode == 'hybrid_voices' else '' }}>Hybrid Voices (Combine voices into one)</option>
                             </select></div>
                         <div class="form-group">
                             <label for="select">Global Sigma Scaler</label>
