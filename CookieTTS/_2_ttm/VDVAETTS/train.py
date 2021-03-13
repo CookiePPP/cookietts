@@ -758,165 +758,163 @@ def train(args, rank, group_name, hparams):
                     y = model.parse_batch(batch)# move batch to GPU (async)
                     y['gt_mel'].requires_grad_()
                     y['use_pred_z'] = False
-                    print(y['gt_mel'].shape[2], y['gt_frame_logf0'].shape[1])
-                    if y['gt_mel'].shape[2] == y['gt_frame_logf0'].shape[1]:
-                        y_pred = force(model, valid_kwargs=model_args, **y)
-                        
-                        loss_scalars = {
-                          "decoder_MAE_weight": decoder_MAE_weight,
-                          "decoder_MSE_weight": decoder_MSE_weight,
-                          "decoder_KLD_weight": decoder_KLD_weight,
-                          "varpred_MAE_weight": varpred_MAE_weight,
-                          "varpred_MSE_weight": varpred_MSE_weight,
-                          "varpred_KLD_weight": varpred_KLD_weight,
-                      "postnet_f0_MAE_weight": postnet_f0_MAE_weight,
-                      "postnet_f0_MSE_weight": postnet_f0_MSE_weight,
-                  "postnet_voiced_MAE_weight": postnet_voiced_MAE_weight,
-                  "postnet_voiced_BCE_weight": postnet_voiced_BCE_weight,
-                          "postnet_KLD_weight": postnet_KLD_weight,
-                          "postnet_MAE_weight": postnet_MAE_weight,
-                          "postnet_MSE_weight": postnet_MSE_weight,
-                            "mdn_loss_weight": mdn_loss_weight,
-                            "dur_loss_weight": dur_loss_weight,
-                            "sylps_MAE_weight": sylps_MAE_weight,
-                            "sylps_MSE_weight": sylps_MSE_weight,
-                            "diag_att_weight": diag_att_weight,
-                  "HiFiGAN_g_all_class_weight": HiFiGAN_g_all_class_weight,
-            "HiFiGAN_g_all_featuremap_weight": HiFiGAN_g_all_featuremap_weight,
-                "HiFiGAN_g_all_mel_mae_weight": HiFiGAN_g_all_mel_mae_weight,
-                  "HiFiGAN_d_all_class_weight": HiFiGAN_d_all_class_weight,
-                        }
-                        loss_dict, file_losses_batch = criterion(iteration, model, y_pred, y, loss_scalars,
-                                                    hifiGAN if hparams.HiFiGAN_enable else None,)
-                        
-                        file_losses = update_smoothed_dict(file_losses, file_losses_batch, file_losses_smoothness)
-                        
-                        if hparams.distributed_run:
-                            reduced_loss_dict = {k: reduce_tensor(v.data, args.n_gpus).item() if v is not None else 0. for k, v in loss_dict.items()}
-                        else:
-                            reduced_loss_dict = {k: v.item() if v is not None else 0. for k, v in loss_dict.items()}
-                        
-                        reduced_loss = reduced_loss_dict['loss']
-                        
-                        loss = loss_dict['loss']
+                    y_pred = force(model, valid_kwargs=model_args, **y)
+                    
+                    loss_scalars = {
+                      "decoder_MAE_weight": decoder_MAE_weight,
+                      "decoder_MSE_weight": decoder_MSE_weight,
+                      "decoder_KLD_weight": decoder_KLD_weight,
+                      "varpred_MAE_weight": varpred_MAE_weight,
+                      "varpred_MSE_weight": varpred_MSE_weight,
+                      "varpred_KLD_weight": varpred_KLD_weight,
+                   "postnet_f0_MAE_weight": postnet_f0_MAE_weight,
+                   "postnet_f0_MSE_weight": postnet_f0_MSE_weight,
+               "postnet_voiced_MAE_weight": postnet_voiced_MAE_weight,
+               "postnet_voiced_BCE_weight": postnet_voiced_BCE_weight,
+                      "postnet_KLD_weight": postnet_KLD_weight,
+                      "postnet_MAE_weight": postnet_MAE_weight,
+                      "postnet_MSE_weight": postnet_MSE_weight,
+                         "mdn_loss_weight": mdn_loss_weight,
+                         "dur_loss_weight": dur_loss_weight,
+                        "sylps_MAE_weight": sylps_MAE_weight,
+                        "sylps_MSE_weight": sylps_MSE_weight,
+                         "diag_att_weight": diag_att_weight,
+              "HiFiGAN_g_all_class_weight": HiFiGAN_g_all_class_weight,
+         "HiFiGAN_g_all_featuremap_weight": HiFiGAN_g_all_featuremap_weight,
+            "HiFiGAN_g_all_mel_mae_weight": HiFiGAN_g_all_mel_mae_weight,
+              "HiFiGAN_d_all_class_weight": HiFiGAN_d_all_class_weight,
+                    }
+                    loss_dict, file_losses_batch = criterion(iteration, model, y_pred, y, loss_scalars,
+                                                hifiGAN if hparams.HiFiGAN_enable else None,)
+                    
+                    file_losses = update_smoothed_dict(file_losses, file_losses_batch, file_losses_smoothness)
+                    
+                    if hparams.distributed_run:
+                        reduced_loss_dict = {k: reduce_tensor(v.data, args.n_gpus).item() if v is not None else 0. for k, v in loss_dict.items()}
+                    else:
+                        reduced_loss_dict = {k: v.item() if v is not None else 0. for k, v in loss_dict.items()}
+                    
+                    reduced_loss = reduced_loss_dict['loss']
+                    
+                    loss = loss_dict['loss']
+                    if hparams.fp16_run:
+                        with amp.scale_loss(loss, optimizer) as scaled_loss:
+                            scaled_loss.backward()
+                    else:
+                        loss.backward()
+                    
+                    if rank==0 and show_gradients:# debug/extreme verbose
+                        try:
+                            _=avg_grads
+                        except:
+                            avg_grads = {}
+                        for param_name, params in model.named_parameters():
+                            if params.requires_grad and params.grad is not None:
+                                norm_grad = 1.0
+                                grad = params.grad.abs().sum().item()
+                                if param_name not in avg_grads:
+                                    avg_grads[param_name] = grad
+                                elif grad*5. < avg_grads[param_name]:
+                                    avg_grads[param_name] = (avg_grads[param_name]*0.9)+(grad*0.1)
+                                norm_grad = grad/avg_grads[param_name]
+                                if grad > 30.0 or norm_grad > 2.0:
+                                    print(f'{norm_grad:03.1f} | {grad:020.6f} | {params.grad.abs().mean().item():06.6f}| {params.grad.abs().max().item():010.6f} | {param_name}')
+                    
+                    if hparams.HiFiGAN_enable and y_pred['hifigan_enabled']:# HiFiGAN isn't supposed to use gradient clipping so the optimizer.
+                        hifiGAN.g_optimizer_step_and_clear()#      should be ran before gradient clipping occurs.
+                    
+                    if grad_clip_thresh:# apply gradient clipping to params
                         if hparams.fp16_run:
-                            with amp.scale_loss(loss, optimizer) as scaled_loss:
-                                scaled_loss.backward()
+                            grad_norm = torch.nn.utils.clip_grad_norm_(
+                                amp.master_params(optimizer), grad_clip_thresh)
+                            is_overflow = math.isinf(grad_norm) or math.isnan(grad_norm)
                         else:
-                            loss.backward()
-                        
-                        if rank==0 and show_gradients:# debug/extreme verbose
-                            try:
-                                _=avg_grads
-                            except:
-                                avg_grads = {}
-                            for param_name, params in model.named_parameters():
-                                if params.requires_grad and params.grad is not None:
-                                    norm_grad = 1.0
-                                    grad = params.grad.abs().sum().item()
-                                    if param_name not in avg_grads:
-                                        avg_grads[param_name] = grad
-                                    elif grad*5. < avg_grads[param_name]:
-                                        avg_grads[param_name] = (avg_grads[param_name]*0.9)+(grad*0.1)
-                                    norm_grad = grad/avg_grads[param_name]
-                                    if grad > 30.0 or norm_grad > 2.0:
-                                        print(f'{norm_grad:03.1f} | {grad:020.6f} | {params.grad.abs().mean().item():06.6f}| {params.grad.abs().max().item():010.6f} | {param_name}')
-                        
-                        if hparams.HiFiGAN_enable and y_pred['hifigan_enabled']:# HiFiGAN isn't supposed to use gradient clipping so the optimizer.
-                            hifiGAN.g_optimizer_step_and_clear()#      should be ran before gradient clipping occurs.
-                        
-                        if grad_clip_thresh:# apply gradient clipping to params
-                            if hparams.fp16_run:
-                                grad_norm = torch.nn.utils.clip_grad_norm_(
-                                    amp.master_params(optimizer), grad_clip_thresh)
-                                is_overflow = math.isinf(grad_norm) or math.isnan(grad_norm)
-                            else:
-                                grad_norm = torch.nn.utils.clip_grad_norm_(
-                                    model.parameters(), grad_clip_thresh)
+                            grad_norm = torch.nn.utils.clip_grad_norm_(
+                                model.parameters(), grad_clip_thresh)
+                    else:
+                        grad_norm = 0.0
+                    
+                    if math.isfinite(grad_norm):
+                        optimizer.step()
+                    
+                    # calcuate the effective learning rate after gradient clipping is applied, and use the effective learning rate on the GAN modules.
+                    effective_lr = 0.0 if is_overflow else (learning_rate*min((grad_clip_thresh/grad_norm+1e-6), 1.0) if grad_clip_thresh else learning_rate)
+                    
+                    # (Optional) Discriminator Forward+Backward Pass
+                    if hparams.HiFiGAN_enable and y_pred['hifigan_enabled']:
+                        hifiGAN.train(model.training)
+                        with torch.random.fork_rng(devices=[0,]):
+                            hifiGAN(y_pred, y, reduced_loss_dict, loss_dict, loss_scalars)
+                    
+                    # get current Loss Scale of first optimizer
+                    loss_scale = amp._amp_state.loss_scalers[0]._loss_scale if hparams.fp16_run else 32768.
+                    
+                    # restart if training/model has collapsed
+                    if (iteration > 1e3 and (reduced_loss > LossExplosionThreshold)) or (math.isnan(reduced_loss)):
+                        raise LossExplosion(f"\nLOSS EXPLOSION EXCEPTION ON RANK {rank}: Loss reached {reduced_loss} during iteration {iteration}.\n\n\n")
+                    if (loss_scale < 1/4):
+                        raise LossExplosion(f"\nLOSS EXCEPTION ON RANK {rank}: Loss Scaler reached {loss_scale} during iteration {iteration}.\n\n\n")
+                    
+                    if expavg_loss_dict is None:
+                        expavg_loss_dict = reduced_loss_dict
+                    else:
+                        expavg_loss_dict.update({k:v for k, v in reduced_loss_dict.items() if k not in expavg_loss_dict.keys()})# if new loss term appears in reduced_loss_dict, add it to the expavg_loss_dict.
+                        expavg_loss_dict = {k: (reduced_loss_dict[k]*(1-loss_dict_smoothness))+(expavg_loss_dict[k]*loss_dict_smoothness) for k in expavg_loss_dict.keys() if k in reduced_loss_dict}
+                        expavg_loss_dict_iters += 1
+                    
+                    if expavg_loss_dict_iters > 100:# calc smoothed loss dict
+                        if best_loss_dict is None:
+                            best_loss_dict = expavg_loss_dict
                         else:
-                            grad_norm = 0.0
-                        
-                        if math.isfinite(grad_norm):
-                            optimizer.step()
-                        
-                        # calcuate the effective learning rate after gradient clipping is applied, and use the effective learning rate on the GAN modules.
-                        effective_lr = 0.0 if is_overflow else (learning_rate*min((grad_clip_thresh/grad_norm+1e-6), 1.0) if grad_clip_thresh else learning_rate)
-                        
-                        # (Optional) Discriminator Forward+Backward Pass
-                        if hparams.HiFiGAN_enable and y_pred['hifigan_enabled']:
-                            hifiGAN.train(model.training)
-                            with torch.random.fork_rng(devices=[0,]):
-                                hifiGAN(y_pred, y, reduced_loss_dict, loss_dict, loss_scalars)
-                        
-                        # get current Loss Scale of first optimizer
-                        loss_scale = amp._amp_state.loss_scalers[0]._loss_scale if hparams.fp16_run else 32768.
-                        
-                        # restart if training/model has collapsed
-                        if (iteration > 1e3 and (reduced_loss > LossExplosionThreshold)) or (math.isnan(reduced_loss)):
-                            raise LossExplosion(f"\nLOSS EXPLOSION EXCEPTION ON RANK {rank}: Loss reached {reduced_loss} during iteration {iteration}.\n\n\n")
-                        if (loss_scale < 1/4):
-                            raise LossExplosion(f"\nLOSS EXCEPTION ON RANK {rank}: Loss Scaler reached {loss_scale} during iteration {iteration}.\n\n\n")
-                        
-                        if expavg_loss_dict is None:
-                            expavg_loss_dict = reduced_loss_dict
-                        else:
-                            expavg_loss_dict.update({k:v for k, v in reduced_loss_dict.items() if k not in expavg_loss_dict.keys()})# if new loss term appears in reduced_loss_dict, add it to the expavg_loss_dict.
-                            expavg_loss_dict = {k: (reduced_loss_dict[k]*(1-loss_dict_smoothness))+(expavg_loss_dict[k]*loss_dict_smoothness) for k in expavg_loss_dict.keys() if k in reduced_loss_dict}
-                            expavg_loss_dict_iters += 1
-                        
-                        if expavg_loss_dict_iters > 100:# calc smoothed loss dict
-                            if best_loss_dict is None:
-                                best_loss_dict = expavg_loss_dict
-                            else:
-                                best_loss_dict = {k: min(best_loss_dict[k], expavg_loss_dict[k]) for k in best_loss_dict.keys() if k in expavg_loss_dict}
-                        
-                        if rank == 0:# print + log metrics
-                            duration = time.time() - start_time
-                            if not is_overflow:
-                                average_loss = rolling_loss.process(reduced_loss)
-                                dbGANAccStr  = expavg_loss_dict.get('dbGAN_accuracy',  None) or reduced_loss_dict.get('dbGAN_accuracy',  0.5)
-                                InfGANAccStr = expavg_loss_dict.get('InfGAN_accuracy', None) or reduced_loss_dict.get('InfGAN_accuracy', 0.5)
-                                WScoreStr    = expavg_loss_dict.get('weighted_score' , None) or reduced_loss_dict.get('weighted_score' , 0.0)
-                                logger.log_training(model, reduced_loss_dict, expavg_loss_dict, best_loss_dict, grad_norm, learning_rate, duration, iteration)
-                            tqdm.write(
-                                f"{iteration} [TrainLoss:{reduced_loss:.3f} Avg:{average_loss:.3f}] "
-                                f"[{grad_norm:03.1f}GradNorm] [{duration:.2f}s/it] "
-                                f"[{(duration/(hparams.batch_size*args.n_gpus)):.3f}s/file] "
-                                f"[{learning_rate:.1e}LR] [{loss_scale:.0f}LS] "
-                                f"[{WScoreStr:.1%}AttSc] [{dbGANAccStr:.1%}dbGANAcc] [{InfGANAccStr:.1%}InfGANAcc]")
-                            if is_overflow:
-                                tqdm.write("Gradient Overflow, Skipping Step\n")
-                            start_time = time.time()
-                        
-                        if iteration%checkpoint_interval==0 or os.path.exists(save_file_check_path):# save model checkpoint every X iters
-                            if rank == 0:
-                                checkpoint_path = os.path.join(args.output_directory, f"checkpoint_{iteration}")
-                                save_checkpoint(model, optimizer, hifiGAN, learning_rate, iteration, hparams, best_validation_loss, average_loss, best_val_loss_dict, best_loss_dict, speaker_lookup, speakerlist, checkpoint_path)
-                        
-                        if iteration%dump_filelosses_interval==0:# syncronise file_losses between graphics cards
-                            print("Updating File_losses dict!")
-                            file_losses = write_dict_to_file(file_losses, os.path.join(args.output_directory, 'file_losses.csv'),
-                                                                          os.path.join(args.output_directory, 'speaker_losses.csv'), speakerlist, args.n_gpus, rank)
-                        
-                        if (iteration % int(validation_interval) == 0) or (os.path.exists(save_file_check_path)):# validate models and save 'best_val_model' checkpoints
-                            if rank == 0 and os.path.exists(save_file_check_path):
-                                os.remove(save_file_check_path)
-                            # perform validation and save "best_val_model" depending on validation loss
-                            val_loss, best_val_loss_dict, file_losses = validate(hparams, args, file_losses, model, criterion, hifiGAN, valset, loss_scalars, best_val_loss_dict, iteration, collate_fn, logger)# validate/teacher_force
-                            file_losses = write_dict_to_file(file_losses, os.path.join(args.output_directory, 'file_losses.csv'),
-                                                                          os.path.join(args.output_directory, 'speaker_losses.csv'), speakerlist, args.n_gpus, rank)
-                            if (val_loss < best_validation_loss):
-                                best_validation_loss = val_loss
-                                if rank == 0 and hparams.save_best_val_model:
-                                    checkpoint_path = os.path.join(args.output_directory, "best_val_model")
-                                    save_checkpoint(
-                                        model, optimizer, hifiGAN, learning_rate, iteration, hparams, best_validation_loss,
-                                        average_loss, best_val_loss_dict, best_loss_dict, speaker_lookup, speakerlist, checkpoint_path)
-                            just_did_val = True
-                        
-                        del y_pred, y, batch, loss_dict, reduced_loss_dict
-                        iteration += 1
-                        # end of iteration loop
+                            best_loss_dict = {k: min(best_loss_dict[k], expavg_loss_dict[k]) for k in best_loss_dict.keys() if k in expavg_loss_dict}
+                    
+                    if rank == 0:# print + log metrics
+                        duration = time.time() - start_time
+                        if not is_overflow:
+                            average_loss = rolling_loss.process(reduced_loss)
+                            dbGANAccStr  = expavg_loss_dict.get('dbGAN_accuracy',  None) or reduced_loss_dict.get('dbGAN_accuracy',  0.5)
+                            InfGANAccStr = expavg_loss_dict.get('InfGAN_accuracy', None) or reduced_loss_dict.get('InfGAN_accuracy', 0.5)
+                            WScoreStr    = expavg_loss_dict.get('weighted_score' , None) or reduced_loss_dict.get('weighted_score' , 0.0)
+                            logger.log_training(model, reduced_loss_dict, expavg_loss_dict, best_loss_dict, grad_norm, learning_rate, duration, iteration)
+                        tqdm.write(
+                            f"{iteration} [TrainLoss:{reduced_loss:.3f} Avg:{average_loss:.3f}] "
+                            f"[{grad_norm:03.1f}GradNorm] [{duration:.2f}s/it] "
+                            f"[{(duration/(hparams.batch_size*args.n_gpus)):.3f}s/file] "
+                            f"[{learning_rate:.1e}LR] [{loss_scale:.0f}LS] "
+                            f"[{WScoreStr:.1%}AttSc] [{dbGANAccStr:.1%}dbGANAcc] [{InfGANAccStr:.1%}InfGANAcc]")
+                        if is_overflow:
+                            tqdm.write("Gradient Overflow, Skipping Step\n")
+                        start_time = time.time()
+                    
+                    if iteration%checkpoint_interval==0 or os.path.exists(save_file_check_path):# save model checkpoint every X iters
+                        if rank == 0:
+                            checkpoint_path = os.path.join(args.output_directory, f"checkpoint_{iteration}")
+                            save_checkpoint(model, optimizer, hifiGAN, learning_rate, iteration, hparams, best_validation_loss, average_loss, best_val_loss_dict, best_loss_dict, speaker_lookup, speakerlist, checkpoint_path)
+                    
+                    if iteration%dump_filelosses_interval==0:# syncronise file_losses between graphics cards
+                        print("Updating File_losses dict!")
+                        file_losses = write_dict_to_file(file_losses, os.path.join(args.output_directory, 'file_losses.csv'),
+                                                                      os.path.join(args.output_directory, 'speaker_losses.csv'), speakerlist, args.n_gpus, rank)
+                    
+                    if (iteration % int(validation_interval) == 0) or (os.path.exists(save_file_check_path)):# validate models and save 'best_val_model' checkpoints
+                        if rank == 0 and os.path.exists(save_file_check_path):
+                            os.remove(save_file_check_path)
+                        # perform validation and save "best_val_model" depending on validation loss
+                        val_loss, best_val_loss_dict, file_losses = validate(hparams, args, file_losses, model, criterion, hifiGAN, valset, loss_scalars, best_val_loss_dict, iteration, collate_fn, logger)# validate/teacher_force
+                        file_losses = write_dict_to_file(file_losses, os.path.join(args.output_directory, 'file_losses.csv'),
+                                                                      os.path.join(args.output_directory, 'speaker_losses.csv'), speakerlist, args.n_gpus, rank)
+                        if (val_loss < best_validation_loss):
+                            best_validation_loss = val_loss
+                            if rank == 0 and hparams.save_best_val_model:
+                                checkpoint_path = os.path.join(args.output_directory, "best_val_model")
+                                save_checkpoint(
+                                    model, optimizer, hifiGAN, learning_rate, iteration, hparams, best_validation_loss,
+                                    average_loss, best_val_loss_dict, best_loss_dict, speaker_lookup, speakerlist, checkpoint_path)
+                        just_did_val = True
+                    
+                    del y_pred, y, batch, loss_dict, reduced_loss_dict
+                    iteration += 1
+                    # end of iteration loop
                 
                 # update filelist of training dataloader
                 print("Updating File_losses dict!")
@@ -1007,4 +1005,3 @@ if __name__ == '__main__':
         pass
     
     train(args, args.rank, args.group_name, hparams)
-
