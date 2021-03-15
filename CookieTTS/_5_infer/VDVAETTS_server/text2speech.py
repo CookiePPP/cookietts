@@ -436,20 +436,25 @@ class T2S:
                     speaker_names.append(speaker_names.pop(0))
                     return first_speaker
                 batch_speaker_names = [shuffle_and_return() for i in range(simultaneous_texts)]
+            elif multispeaker_mode == "hybrid_voices":
+                batch_speaker_names = speaker_names * -(-simultaneous_texts//len(speaker_names))
             else:
                 raise NotImplementedError
             
             if 0:# (optional) use different speaker list for text inside quotes
                 speaker_ids = [random.choice(speakers).split("|")[2] if ('"' in text) else random.choice(narrators).split("|")[2] for text in text_batch] # pick speaker if quotemark in text, else narrator
-            text_batch  = [text.replace('"',"") for text in text_batch] # remove quotes from text
+                text_batch  = [text.replace('"',"") for text in text_batch] # remove quotes from text
             
             if len(batch_speaker_names) > len(text_batch):
                 batch_speaker_names = batch_speaker_names[:len(text_batch)]
-                simultaneous_texts = len(text_batch)
+            simultaneous_texts = len(text_batch)
             
             # get speaker_ids (VDVAETTS)
             VDVAETTS_speaker_ids = [self.ttm_sp_name_lookup[speaker] for speaker in batch_speaker_names]
             VDVAETTS_speaker_ids = torch.LongTensor(VDVAETTS_speaker_ids).cuda().repeat_interleave(batch_size_per_text)
+            #VDVAETTS_speaker_mix = [44]
+            #print(VDVAETTS_speaker_mix)
+            #VDVAETTS_speaker_mix = torch.LongTensor(VDVAETTS_speaker_mix).cuda().repeat_interleave(batch_size_per_text)
             
             # get style input
             try:
@@ -503,7 +508,7 @@ class T2S:
                 while np.amin(best_score) < target_score:
                     # run VDVAETTS
                     if status_updates: print("..", end='')
-                    outputs = self.VDVAETTS.inference(sequence, text_lengths.repeat_interleave(batch_size_per_text, dim=0), VDVAETTS_speaker_ids, style_input, char_sigma=char_sigma, frame_sigma=frame_sigma)
+                    outputs = self.VDVAETTS.inference(sequence, text_lengths.repeat_interleave(batch_size_per_text, dim=0), VDVAETTS_speaker_ids, style_input, multispeaker_mode, char_sigma=char_sigma, frame_sigma=frame_sigma)
                     batch_pred_mel = outputs['hifigan_inputs'] if self.MTW_conf.uses_latent_input else outputs['pred_mel']
                     
                     # metric for html side
