@@ -32,6 +32,18 @@ def load_model(hparams, device='cuda'):
     return model
 
 
+class ScaleGrad():
+    def __init__(self):
+        pass
+    
+    def __call__(self, x, grad_scalar):# [B, ...], [B]
+        while len(x.shape) > len(grad_scalar.shape):
+            grad_scalar = grad_scalar.unsqueeze(-1)
+        scaled_x = x*grad_scalar
+        x = scaled_x + (-scaled_x + x).detach()# detach gradient fuckery so the output is "x" with the gradients of "scaled_x"
+        return x
+
+
 class SSSUnit(nn.Module):# Dubbing this the Shift Scale Shift Unit, mixes information from input 2 into input 1.
     def __init__(self, x_dim, y_dim, enabled=True, grad_scale=1.0, preshift=True):
         super(SSSUnit, self).__init__()
@@ -521,12 +533,17 @@ class VariancePredictor(nn.Module):
 
 #@torch.jit.script
 def gaussian_analytical_kl(mu1, mu2, logsigma1, logsigma2):# uses mean and standard deviation
-    return -0.5 +logsigma2 -logsigma1 + 0.5 * (logsigma1.exp().pow(2) + F.mse_loss(mu1, mu2, reduction='none')) / (logsigma2.exp().pow(2))
+    kld = -0.5 +logsigma2 -logsigma1 + 0.5 * (logsigma1.exp().pow(2) + F.mse_loss(mu1, mu2, reduction='none')) / (logsigma2.exp().pow(2))
+    return kld
 
 #@torch.jit.script
-def gaussian_analytical_kl_var(mu1, mu2, logvar1, logvar2):# uses mean and variance
+def gaussian_analytical_kl_var(mu1, mu2, logvar1, logvar2, normal_weight=0.00):# uses mean and variance
     """KLD between 2 sets of guassians. Returns Tensor with same shape as input."""
-    return 0.5 * (-1.0 +logvar2 -logvar1 +logvar1.exp().add(F.mse_loss(mu1, mu2, reduction='none')).div(logvar2.exp()) )
+    neg_logvar2 = -logvar2
+    kld = 0.5 * (-1.0 +logvar2 -logvar1 +logvar1.add(neg_logvar2).float().exp() + F.mse_loss(mu1, mu2, reduction='none').clamp(min=1e-6).log().add(neg_logvar2).float().exp() )
+    if normal_weight is not None and normal_weight > 0.0:# optional apply loss mu or logvar that differs extemely from normal dist
+        kld = kld + (normal_weight * -0.5) * (-mu1.pow(2) +(1.0 +logvar1 -logvar1.exp()))
+    return kld
 
 class ResBlock(nn.Module):
     def __init__(self, in_width, middle_width, out_width, down_rate=None, residual=True, rezero=True, kernel_sizes=[1, 3, 3, 1]):
@@ -566,6 +583,7 @@ class ResBlock(nn.Module):
 class TopDownBlock(nn.Module):
     def __init__(self, hparams, hdn_dim, btl_dim, latent_dim, mem_dim=0):
         super().__init__()
+        self.use_z_variance = getattr(hparams, 'use_z_variance', False)
         self.std = 0.5
         
         self.mem_dim = mem_dim
@@ -580,6 +598,8 @@ class TopDownBlock(nn.Module):
     
     def reparameterize(self, mu, logsigma):# use for VAE sampling
         if self.std or self.training:
+            if self.use_z_variance:
+                logsigma = logsigma * 0.5
             std = torch.exp(logsigma)
             eps = torch.randn_like(std)
             if (not self.training) and self.std != 1.0:
@@ -623,7 +643,7 @@ class TopDownBlock(nn.Module):
         if use_pred_z:
             z_embed = self.get_z_embed(z_mu*0.01+zp_mu*0.99, z_logsigma*0.01+zp_logsigma*0.99)# -> [B, latent_dim]
         else:
-            z_embed = self.get_z_embed(z_mu, z_logsigma)# -> [B, latent_dim]
+            z_embed = self.get_z_embed(z_mu, z_logsigma)# -> [B, latent_dim] 
         x = x + z_embed
         if mel_mask is not None:
             x.masked_fill_(~mel_mask, 0.0)
@@ -633,7 +653,10 @@ class TopDownBlock(nn.Module):
             if mel_mask is not None:
                 x.masked_fill_(~mel_mask, 0.0)
         
-        kl = gaussian_analytical_kl(z_mu, zp_mu, z_logsigma, zp_logsigma)# [B, latent_dim, T]
+        if self.use_z_variance:
+            kl = gaussian_analytical_kl_var(z_mu, zp_mu, z_logsigma, zp_logsigma)# [B, latent_dim, T]
+        else:
+            kl = gaussian_analytical_kl(z_mu, zp_mu, z_logsigma, zp_logsigma)# [B, latent_dim, T]
         return x, kl# [B, btl_dim, T], [B, latent_dim, T]
     
     def infer(self, x, attention_contexts, mel_mask, std=None):
@@ -701,6 +724,7 @@ class LSTMBlock(nn.Module):
 class TopDownLSTMBlock(nn.Module):
     def __init__(self, hparams, inp_dim, hdn_dim, btl_dim, latent_dim, mem_dim=0, n_layers=2):
         super().__init__()
+        self.use_z_variance = getattr(hparams, 'use_z_variance', False)
         self.std = 0.5
         
         assert mem_dim, 'TopDownLSTMBlock requires mem_dim and attention_contexts'
@@ -725,6 +749,8 @@ class TopDownLSTMBlock(nn.Module):
     
     def reparameterize(self, mu, logsigma):# use for VAE sampling
         if self.std or self.training:
+            if self.use_z_variance:
+                logsigma = logsigma * 0.5
             std = torch.exp(logsigma)# NOTE THIS IS SIGMA
             eps = torch.randn_like(std)
             if (not self.training) and self.std != 1.0:
@@ -787,7 +813,10 @@ class TopDownLSTMBlock(nn.Module):
         if mel_mask is not None:
             x.masked_fill_(~mel_mask, 0.0)
         
-        kl = gaussian_analytical_kl(z_mu, zp_mu, z_logsigma, zp_logsigma).unsqueeze(-1)# -> [B, latent_dim, 1]
+        if self.use_z_variance:
+            kl = gaussian_analytical_kl_var(z_mu, zp_mu, z_logsigma, zp_logsigma).unsqueeze(-1)# [B, latent_dim, T]
+        else:
+            kl = gaussian_analytical_kl(z_mu, zp_mu, z_logsigma, zp_logsigma).unsqueeze(-1)# -> [B, latent_dim, 1]
         return x, kl# [B, btl_dim, T], [B, latent_dim, 1]
     
     def infer(self, x, attention_contexts, mel_mask, std=None):
@@ -943,6 +972,7 @@ class Decoder(nn.Module):
     def __init__(self, hparams, mem_dim, hdn_dim, btl_dim, latent_dim):# hparams, memory_dim, hidden_dim, bottleneck_dim, latent_dim
         super(Decoder, self).__init__()
         self.memory_efficient = False#hparams.memory_efficient
+        self.use_z_variance = getattr(hparams, 'use_z_variance', False)
         self.use_pred_z = False
         self.n_blocks = hparams.decoder_n_blocks
         self.scale = 2
@@ -1059,7 +1089,7 @@ class Decoder(nn.Module):
         B,   mem_dim, mel_T = attention_contexts.shape
         B, embed_dim        = speaker_embed.shape
         
-        mel_mask, mel_masks = self.get_mask_list(mel_lengths)# [B, 1, mel_T], list([B, 1, mel_T//2**i] for i in range(self.n_blocks))
+        mel_mask, mel_masks = self.get_mask_list(mel_lengths, type='ceil')# [B, 1, mel_T], list([B, 1, mel_T//2**i] for i in range(self.n_blocks))
         
         # downsample attention_contexts
         attention_contexts = F.pad(attention_contexts, (0, self.downscales[-1]-attention_contexts.shape[-1]%self.downscales[-1]))# pad to multiple of max downscale
@@ -1081,11 +1111,11 @@ class Decoder(nn.Module):
         kl_list  = x[2*self.n_blocks+1:                 ]
         return x_list, mel_list, kl_list
     
-    def infer(self, attention_contexts, mel_lengths, speaker_embed, std):
+    def infer(self, attention_contexts, mel_lengths, speaker_embed, std, global_std=None):
         B,   mem_dim, mel_T = attention_contexts.shape
         B, embed_dim        = speaker_embed.shape
         
-        mel_mask, mel_masks = self.get_mask_list(mel_lengths)# [B, 1, mel_T], list([B, 1, mel_T//2**i] for i in range(self.n_blocks))
+        mel_mask, mel_masks = self.get_mask_list(mel_lengths, type='ceil')# [B, 1, mel_T], list([B, 1, mel_T//2**i] for i in range(self.n_blocks))
         
         # downsample attention_contexts
         attention_contexts = F.pad(attention_contexts, (0, self.downscales[-1]-attention_contexts.shape[-1]%self.downscales[-1]))# pad to multiple of max downscale
@@ -1099,14 +1129,16 @@ class Decoder(nn.Module):
             print(f"TopDownLSTMBlock has a nan or inf output.")
         
         x_list  = [x,]
-        for i, block in reversed(list(enumerate(self.block))):# go down the TopDownBlock stack
-            x = block.infer(x, attention_contexts_list[i], mel_masks[i], std)
+        for i, block in reversed(list(enumerate(self.block))):# go down the TopDownBlock stack, from last (highest) to first (lowest)
+            is_first_block = (  i==0  )
+            is_last_block  = (i+1==len(self.block))
+            
+            x = block.infer(x, attention_contexts_list[i], mel_masks[i],
+                                global_std if (i>=len(self.block)-2 and global_std is not None) else std)# use global_std for top 2 blocks
             if torch.isinf(x).any() or torch.isnan(x).any():
                 print(f"TopDownBlock {i} has a nan or inf output.")
             x_list.append(x)
             
-            is_first_block = (  i==0  )
-            is_last_block  = (i+1==len(self.block))
             if not is_first_block:
                 x = block.upsample(x)
         x_list = x_list[::-1]# reverse list -> [bottom, ..., top, toplstm]
@@ -1123,11 +1155,16 @@ class Postnet(nn.Module):
     def __init__(self, hparams, hdn_dim, btl_dim, latent_dim):# hparams, memory_dim, hidden_dim, bottleneck_dim, latent_dim
         super(Postnet, self).__init__()
         self.std = 0.0
+        self.use_pred_z = False
         self.f0_thresh = 0.5
         self.latent_dim = latent_dim
         self.f0s_dim = 4
         
-        in_width  = btl_dim + hparams.n_mel_channels + self.f0s_dim
+        in_width  = self.f0s_dim
+        out_width = btl_dim
+        self.pitch_encoder = nn.Sequential(*[ResBlock(in_width if i==0 else btl_dim, hdn_dim, out_width if i+1==hparams.postnet_n_blocks else btl_dim) for i in range(hparams.postnet_n_blocks)])
+        
+        in_width  = btl_dim + hparams.n_mel_channels + btl_dim
         out_width = 2*latent_dim
         self.encoder = nn.Sequential(*[ResBlock(in_width if i==0 else btl_dim, hdn_dim, out_width if i+1==hparams.postnet_n_blocks else btl_dim) for i in range(hparams.postnet_n_blocks)])
         
@@ -1135,7 +1172,7 @@ class Postnet(nn.Module):
         out_width = 2*latent_dim + 2*self.f0s_dim
         self.prior = nn.Sequential(*[ResBlock(in_width if i==0 else btl_dim, hdn_dim, out_width if i+1==hparams.postnet_n_blocks else btl_dim) for i in range(hparams.postnet_n_blocks)])
         
-        in_width  = latent_dim + self.f0s_dim
+        in_width  = btl_dim + latent_dim + btl_dim
         out_width = hparams.n_mel_channels
         self.decoder = nn.Sequential(*[ResBlock(in_width if i==0 else btl_dim, hdn_dim, out_width if i+1==hparams.postnet_n_blocks else btl_dim) for i in range(hparams.postnet_n_blocks)])
     
@@ -1152,7 +1189,9 @@ class Postnet(nn.Module):
     def forward(self, x, gt_mel, gt_frame_logf0s, mel_lengths):# [B, btl_dim, mel_T], [B, n_mel, mel_T], [B, f0s_dim, mel_T]
         mel_mask = get_mask_from_lengths(mel_lengths).unsqueeze(1)
         
-        encoder_inputs = torch.cat((x, gt_mel, gt_frame_logf0s), dim=1)# -> [B, btl_dim+n_mel+f0s_dim, mel_T]
+        f0_enc_out = self.pitch_encoder(gt_frame_logf0s)
+        
+        encoder_inputs = torch.cat((x, gt_mel, f0_enc_out), dim=1)# -> [B, btl_dim+n_mel+f0s_dim, mel_T]
         z_mu_logsigma = self.encoder(encoder_inputs)# -> [B, 2*latent_dim, mel_T]
         z_mu_logsigma.masked_fill_(~mel_mask, 0.0)
         z_mu, z_logsigma = z_mu_logsigma.chunk(2, dim=1)# -> [B, latent_dim, mel_T], [B, latent_dim, mel_T]
@@ -1166,13 +1205,19 @@ class Postnet(nn.Module):
         kld = gaussian_analytical_kl(z_mu,       pred_z_mu,
                                      z_logsigma, pred_z_logsigma)# -> [B, latent_dim, mel_T]
         
-        z = self.reparameterize(z_mu, z_logsigma)# -> [B, latent_dim, mel_T]
+        if self.use_pred_z:
+            z = self.reparameterize(z_mu*0.01+pred_z_mu*0.99, z_logsigma*0.01+pred_z_logsigma*0.99)# -> [B, latent_dim, mel_T]
+        else:
+            z = self.reparameterize(z_mu, z_logsigma)# -> [B, latent_dim, mel_T]
         
-        decoder_input = torch.cat((z, gt_frame_logf0s), dim=1)
+        decoder_input = torch.cat((x, z, f0_enc_out), dim=1)
         pred_mel = self.decoder(decoder_input)# [B, latent_dim, mel_T], [B, f0s_dim, mel_T] -> [B, n_mel_channels, mel_T]
+        mel_mask.masked_fill_(~mel_mask, 0.0)
         return pred_mel, kld, pred_logf0s, pred_voiceds# -> [B, n_mel_channels, mel_T], [B, latent_dim, mel_T]
     
-    def infer(self, x):
+    def infer(self, x, mel_lengths):
+        mel_mask = get_mask_from_lengths(mel_lengths).unsqueeze(1)
+        
         prior_out = self.prior(x)# -> [B, 2*latent_dim+2*f0s_dim, mel_T]
         pred_z_mu, pred_z_logsigma, pred_logf0s, pred_voiceds = prior_out.split([self.latent_dim, self.latent_dim, self.f0s_dim, self.f0s_dim], dim=1)
         pred_voiceds = pred_voiceds.sigmoid()
@@ -1183,8 +1228,11 @@ class Postnet(nn.Module):
         # set any frames that don't have a pitch to 0.0
         pred_logf0s[pred_voiceds<self.f0_thresh] = 0.0
         
-        decoder_input = torch.cat((z, pred_logf0s), dim=1)
+        f0_enc_out = self.pitch_encoder(pred_logf0s)
+        
+        decoder_input = torch.cat((x, z, f0_enc_out), dim=1)
         pred_mel = self.decoder(decoder_input)# [B, latent_dim, mel_T], [B, f0s_dim, mel_T] -> [B, n_mel_channels, mel_T]
+        mel_mask.masked_fill_(~mel_mask, 0.0)
         return pred_mel# -> [B, n_mel_channels, mel_T]
 
 class FFTBlock(nn.Module):
@@ -1240,6 +1288,8 @@ class VDVAETTS(nn.Module):# Main module, contains all the submodules for the net
             self.speaker_embedding_dim = hparams.speaker_embedding_dim
             if self.speaker_embedding_dim:
                 self.speaker_embedding = nn.Embedding(hparams.n_speakers, self.speaker_embedding_dim)
+                self.speaker_embed_grad_scale_enable = getattr(hparams, 'speaker_embed_grad_scale_enable', True)
+                self.speaker_embed_grad_scale = getattr(hparams, 'speaker_embed_grad_scale', 1.)
             
             self.tm_linear = nn.Linear(hparams.torchMoji_attDim, hparams.torchMoji_crushedDim)
             if hparams.torchMoji_BatchNorm:
@@ -1302,22 +1352,26 @@ class VDVAETTS(nn.Module):# Main module, contains all the submodules for the net
         else:
             return func_callable(*args)
     
-    def get_speaker_embed(self, speaker_id, y=None):
-        return self.speaker_embedding(speaker_id)
+    def get_speaker_embed(self, speaker_id, freq_grad_scalar=None, y=None):
+        embed = self.speaker_embedding(speaker_id)
+        if freq_grad_scalar is not None and self.speaker_embed_grad_scale_enable:
+            embed = ScaleGrad()(embed, freq_grad_scalar.clamp(min=0.5, max=20.0)*self.speaker_embed_grad_scale)
+        return embed
     
-    def forward(self, gt_audio, audio_lengths,# FloatTensor[B, wav_T],  LongTensor[B]
-                        gt_mel,   mel_lengths,# FloatTensor[B, n_mel, mel_T],  LongTensor[B]
-                          text,  text_lengths,#  LongTensor[B, txt_T],  LongTensor[B]
+    def forward(self, gt_audio, audio_lengths,# FloatTensor[B, wav_T],        LongTensor[B]
+                        gt_mel,   mel_lengths,# FloatTensor[B, n_mel, mel_T], LongTensor[B]
+                          text,  text_lengths,#  LongTensor[B, txt_T],        LongTensor[B]
                                gt_char_dur   ,# FloatTensor[B, txt_T]
                                gt_char_logdur,# FloatTensor[B, txt_T]
-                               gt_char_logf0 ,# FloatTensor[B, txt_T]
-                               gt_char_fesv  ,# FloatTensor[B, 7, txt_T]
-                             gt_frame_logf0s ,# FloatTensor[B, f0s_dim, mel_T]
-                             gt_frame_voiceds,# FloatTensor[B, f0s_dim, mel_T]
+#                              gt_char_logf0 ,# FloatTensor[B, txt_T]
+#                              gt_char_fesv  ,# FloatTensor[B, 7, txt_T]
+#                            gt_frame_logf0s ,# FloatTensor[B, f0s_dim, mel_T]
+#                            gt_frame_voiceds,# FloatTensor[B, f0s_dim, mel_T]
                                    speaker_id,#  LongTensor[B]
                                      gt_sylps,# FloatTensor[B]
                                 torchmoji_hdn,# FloatTensor[B, embed]
                                     alignment,# FloatTensor[B, mel_T, txt_T] # get alignment from file instead of recalculating.
+                             freq_grad_scalar,# FloatTensor[B]
                              use_pred_z=False,# Bool # Sample Z from Prior instead of Encoder. Should NEVER be used for training, only for Validation or Testing.
             ):
         try:    alignment = alignment
@@ -1343,7 +1397,7 @@ class VDVAETTS(nn.Module):# Main module, contains all the submodules for the net
         
         # (Speaker) speaker_id -> speaker_embed
         if hasattr(self, "speaker_embedding"):
-            speaker_embed = self.maybe_cp(self.get_speaker_embed, *(speaker_id, encoder_outputs))# [B, embed]
+            speaker_embed = self.maybe_cp(self.get_speaker_embed, *(speaker_id, freq_grad_scalar, encoder_outputs))# [B, embed]
             if torch.isinf(speaker_embed).any() or torch.isnan(speaker_embed).any():
                 print(f"speaker_embed has a nan or inf output.")
             outputs["speaker_embed"] = speaker_embed# [B, embed]
@@ -1384,11 +1438,11 @@ class VDVAETTS(nn.Module):# Main module, contains all the submodules for the net
         
         # get BatchNorm FESVD
         text_mask = get_mask_from_lengths(text_lengths)# [B, txt_T]
-        bn_char_fesv   = self.fesv_bn(gt_char_fesv               , text_mask)# [B, 7, txt_T] -> [B, 7, txt_T]
+#        bn_char_fesv   = self.fesv_bn(gt_char_fesv               , text_mask)# [B, 7, txt_T] -> [B, 7, txt_T]
         bn_char_logdur = self.ldur_bn(gt_char_logdur.unsqueeze(1), text_mask)# [B, txt_T]    -> [B, 1, txt_T]
         outputs['bn_logdur'] = bn_char_logdur
-        bn_fesvd = torch.cat((bn_char_logdur, bn_char_fesv,), dim=1)# [B, 1, txt_T], [B, 7, txt_T] -> [B, 8, txt_T]
-        outputs['bn_fesvd'] = bn_fesvd
+#        bn_fesvd = torch.cat((bn_char_logdur, bn_char_fesv,), dim=1)# [B, 1, txt_T], [B, 7, txt_T] -> [B, 8, txt_T]
+#        outputs['bn_fesvd'] = bn_fesvd
         
         if hasattr(self, 'varpred'):
             pred_logdur, final_states, *vp_enc_latents = self.varpred(memory.transpose(1, 2), bn_char_logdur, text_lengths)# [B, 8, txt_T], [B, n_lstm, 4*lstm_dim]
@@ -1417,6 +1471,7 @@ class VDVAETTS(nn.Module):# Main module, contains all the submodules for the net
         
         x = x_list[0][:, :, :mel_lengths.max()]
         if hasattr(self, 'postnet'):
+            self.postnet.use_pred_z = use_pred_z
             postnet_out = self.maybe_cp(self.postnet, *(x, gt_mel, gt_frame_logf0s, mel_lengths))
             pred_mel, kld, pred_frame_f0s, pred_frame_voiceds = postnet_out
             outputs['postnet_pred_mel'] = pred_mel# [B, n_mel, mel_T]
@@ -1444,7 +1499,7 @@ class VDVAETTS(nn.Module):# Main module, contains all the submodules for the net
         return outputs
     
     def inference(self, text_seq, text_lengths, speaker_id, torchmoji_hdn,
-                    char_sigma=1.0, frame_sigma=1.0,
+                    global_sigma=1.0, char_sigma=1.0, frame_sigma=1.0,
                     bn_logdur=None, char_dur=None, gt_mel=None, alignment=None,
                     mel_lengths=None,):# [B, enc_T], [B], [B], [B], [B, tm_dim]
         outputs = {}
@@ -1517,7 +1572,7 @@ class VDVAETTS(nn.Module):# Main module, contains all the submodules for the net
         attention_contexts = self.att_dec(attention_contexts, mel_lengths)# [B, mel_T, mem_dim] -> [B, mel_T, mem_dim]
         
         # (Decoder/Attention) memory -> pred_mel
-        pred_mel, hifigan_inputs = self.decoder.infer(attention_contexts.transpose(1, 2), mel_lengths, speaker_embed, frame_sigma)
+        pred_mel, hifigan_inputs = self.decoder.infer(attention_contexts.transpose(1, 2), mel_lengths, speaker_embed, frame_sigma, global_sigma)
         outputs["pred_mel"] = pred_mel[:, :, :mel_lengths.max()]# [B, n_mel, mel_T]
         if self.HiFiGAN_enable:
             outputs['hifigan_inputs'] = hifigan_inputs[:, :, :mel_lengths.max()]# [B, btl_dim, mel_T]

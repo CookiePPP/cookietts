@@ -19,7 +19,7 @@ def create_hparams(hparams_string=None, verbose=False):
                               # This is basically best stability model.
         
         dynamic_loss_scaling=True,
-        fp16_run        = False,# requires 20 Series or Better (e.g: RTX 2080 Ti, RTX 2060, Tesla V100, Tesla A100)
+        fp16_run        = True,# requires 20 Series or Better (e.g: RTX 2080 Ti, RTX 2060, Tesla V100, Tesla A100)
         fp16_run_optlvl = '2',
         
         distributed_run = True,
@@ -46,23 +46,23 @@ def create_hparams(hparams_string=None, verbose=False):
         #################################
         ## Batch Size / Segment Length ##
         #################################
-        batch_size    =12,# controls num of files processed in parallel per GPU
-        val_batch_size=16,# for more precise comparisons between models, constant batch_size is useful
+        batch_size    =24,# controls num of files processed in parallel per GPU
+        val_batch_size=32,# for more precise comparisons between models, constant batch_size is useful
         
-        max_segment_length=5000,# max mel length till a segment is sliced.
-        max_chars_length  =5000,# max text input till text is sliced. I use segment_length/4.
+        max_segment_length=864,# max mel length till a segment is sliced.
+        max_chars_length  =320,# max text input till text is sliced.
                                # text slicing is ignored when using TBPTT
         
         sort_text_len_decending = False,# Leave disabled
         
-        num_workers    =8,# (train) Number of threads for dataloading per GPU
-        val_num_workers=2,# (eval)  Number of threads for dataloading per GPU
+        num_workers    = 3,# (train) Number of threads for dataloading per GPU
+        val_num_workers= 2,# (eval)  Number of threads for dataloading per GPU
         prefetch_factor=8,# NOT IMPLEMENTED - Requires Pytorch 1.7 (so not right now)# Number of samples loaded in advance by each worker.
         
         ###################################
         ## Dataset / Filelist Parameters ##
         ###################################
-        data_source = 1,# 0 to use nvidia/VDVAETTS filelists, 1 to use automatic dataset processor
+        data_source = 1,# 0 to use nvidia/tacotron2 filelists, 1 to use automatic dataset processor
         
         # if data_source is 0:
         speakerlist     ='/media/cookie/Samsung 860 QVO/ClipperDatasetV2/filelists/speaker_ids.txt',
@@ -72,7 +72,7 @@ def create_hparams(hparams_string=None, verbose=False):
         # if data_source is 1:
         dataset_folder = '/media/cookie/WD6TB/TTS/HiFiDatasets',
         dataset_metapath_append = '_VDVAETTS',
-        dataset_audio_filters= ['*.wav','*.flac',],
+        dataset_audio_filters= ['*.wav','*.flac','*.ogg'],
         dataset_audio_rejects= ['*_Noisy_*','*_Very Noisy_*',],
         dataset_p_val = 0.005,# portion of dataset for Validation # default of 0.5% may be too small depending on the size of your dataset.
         dataset_min_duration =  0.9,# minimum duration in seconds for audio files to be added.
@@ -81,6 +81,11 @@ def create_hparams(hparams_string=None, verbose=False):
         dataset_min_chars    =   12,# min number of letters/text that a transcript should have to be added to the audiofiles list.
         dataset_max_chars    =  256,# min number of letters/text that a transcript should have to be added to the audiofiles list.
                                     # use max_chars_length to control how much of text from each audio file can be used to fill VRAM during training.
+        
+        cache_all = False,# will save every datapoint/feature from each audiopath into it's own single pt file.
+                         # Will be reset if ANYTHING in the dataloader args or config changes
+                         # each pt file will be reset if the source audiopath or textpath is modified.
+                         # This hparam should not be used by more than 2 model at the same time. For use with many GPU's on a single task or storage devices with low random access speed.
         
         force_load  = True,# if a file fails to load, replace it with a random other file.
         
@@ -105,13 +110,13 @@ def create_hparams(hparams_string=None, verbose=False):
         ## Audio Parameters             ##
         ##################################
         sampling_rate= 44100,
-        target_lufs  = -25.0,# Loudness each file is rescaled to, use None for original file loudness.
+        target_lufs  = -24.0,# Loudness each file is rescaled to, use None for original file loudness.
         
         trim_enable      = True,# set to False to disable trimming completely
         trim_cache_audio = True,# save trimmed audio to disk to load later. Saves CPU usage, uses more disk space.
         filt_min_freq =    60.,# low freq
         filt_max_freq = 18000.,# top freq
-        filt_order    =     6 ,# filter strength/agressiveness/whatever - don't set too high or things will break
+        filt_order    =     3 ,# filter strength/agressiveness/whatever - don't set too high or things will break
         trim_margin_left  = [0.125, 0.05, 0.0375],
         trim_margin_right = [0.125, 0.05, 0.0375],
         trim_ref          = ['amax']*3,
@@ -131,7 +136,7 @@ def create_hparams(hparams_string=None, verbose=False):
         mel_fmax       = 11025.0,
         stft_clamp_val = 1e-5,# 1e-5 = original
         
-        cache_mel=True,# save spectrograms to disk to load later. Saves CPU usage, uses more disk space.
+        cache_mel=False,# save spectrograms to disk to load later. Saves CPU usage, uses more disk space and IOPS.
                         # modifications to params below do not apply to already cached files.
         
         silence_value = -11.5129,# = ln(1e-5)
@@ -181,8 +186,10 @@ def create_hparams(hparams_string=None, verbose=False):
         torchMoji_BatchNorm  = True,
         
         # (Speaker) Speaker embedding
-        n_speakers            = 1024,# maximum number of speakers the model can support.
+        n_speakers            = 4096,# maximum number of speakers the model can support.
         speaker_embedding_dim =  256,# speaker embedding size # 128 baseline
+        speaker_embed_grad_scale_enable=True,
+        speaker_embed_grad_scale = 5.0,# increase/decrease learning rate of the speaker embedding layer.
         
         # (Decoder/Encoder) Bottleneck parameters
         # The outputs from the encoder, speaker, emotionnet and sylpsnet need to be mixed.
@@ -198,7 +205,7 @@ def create_hparams(hparams_string=None, verbose=False):
         mem_fft_n_layers =    4,
         
         # (Mixture Density Network) Guided Alignment using AlignTTS algorithm as target.
-        enable_MDN = True,
+        enable_MDN = False,
         MDN_mel_downscale = 8,# Resize n_mel_channels to a smaller height to reduce VRAM usage of the alignment algorithm. 160/8 = 20, n_mel_channels/mel_downscale = 20
         mdn_n_heads  =    2,
         mdn_ff_dim   = 1536,
@@ -220,7 +227,7 @@ def create_hparams(hparams_string=None, verbose=False):
         varpred_lstm_dim      = 768,
         varpred_lstm_n_layers =   2,
         varpred_lstm_dropout  = 0.0,
-        varpred_lstm_zoneout  = 0.2,
+        varpred_lstm_zoneout  = 0.0,
         
         # (Attention Context FFT) parameters
         att_dec_n_heads  =    2,
@@ -237,17 +244,19 @@ def create_hparams(hparams_string=None, verbose=False):
         dec_hidden_dim     = 384,
         dec_bottleneck_dim = 128,
         dec_latent_dim     =  16,
-        decoder_n_blocks   =  10,# n_blocks = how many times the input is downsampled.
-                             # [0, 1, 2, 3, 4, 5, 6, 7, 8, 9]
-        n_blocks_per_timescale=[3, 3, 3, 3, 3, 2, 2, 2, 1, 1],
+        decoder_n_blocks   =   9,# n_blocks = how many times the input is downsampled.
+                             # [0, 1, 2, 3,  4,  5,  6,   7,   8,   9,]
+                             # [1, 2, 4, 8, 16, 32, 64, 128, 256, 512,]
+        n_blocks_per_timescale=[3, 3, 3, 3,  3,  2,  2,   2,   1,   1,],# can be list or int.
         exp_cond_proj = False,
         topdown_resnet_enable=True,# used in the original Very Deep VAE paper. Not sure if required in this model however, I don't see any improvements in early training results.
+        use_z_variance=True,# True = use Variance, False = use Sigma/std
         
         # (Pitch Postnet) parameters
         # quite a large modification to the main network!
         # When enabled, the decoder will predict pitch and latents for the postnet.
-        # The postnet is a conditional VAE that uses spectrograms as input/output and pitch for conditioning.
-        pitch_postnet_enable=True,
+        # The postnet is a conditional VAE that uses spectrograms as input/output and pitch + decoder for conditioning.
+        pitch_postnet_enable=False,
         postnet_latent_dim = 160,
         postnet_n_blocks   =   3,
         
@@ -272,7 +281,7 @@ def create_hparams(hparams_string=None, verbose=False):
         use_saved_learning_rate=False,
         learning_rate   = 0.1e-5,# overriden by 'run_every_epoch.py'
         grad_clip_thresh= 1.0,   # overriden by 'run_every_epoch.py'
-        weight_decay    = 0.0,#1.0e-5,
+        weight_decay    = 0.0,
         
         mask_padding  = True,#mask values by setting them to the same values in target and predicted
         masked_select = True,#mask values by removing them from the calculation
@@ -284,7 +293,15 @@ def create_hparams(hparams_string=None, verbose=False):
         ##################################
         ## Loss Weights/Scalars         ##
         ##################################
-        # All of these can be overriden from 'run_every_epoch.py'
+        volume_rescale_power=0.4,# Rescale spectrogram losses to prioritise louder sounds, and put less (or zero) priority on silence
+                                # Valid values between 0.0 and 1.0, 1.0 = max rescaling, 0.0 = normal spect losses
+                                # https://www.desmos.com/calculator/xdzvehg689
+                                # note, setting to 1.0 will make the network never predict silence.
+        volume_rescale_centre=-5.0,# The centre magnitude where there loss is unmodified.
+                   # Any spectrogram magnitude above this has loss scaled up, anything below this point has loss scaled down.
+        
+        
+        # All of the below must be overriden from 'run_every_epoch.py'
         spec_MSE_weight     = 0.0,# MSE  Spectrogram Loss Before Postnet
         spec_MFSE_weight    = 1.0,# MFSE Spectrogram Loss Before Postnet
         postnet_MSE_weight  = 0.0,# MSE  Spectrogram Loss After Postnet
@@ -301,11 +318,6 @@ def create_hparams(hparams_string=None, verbose=False):
         diag_att_weight=0.05,# 'dumb' guided attention. Simply punishes the model for attention that is non-diagonal. Decreases training time and increases training stability with English speech. 
                              # As an example of how this works, if you imagine there is a 10 letter input that lasts 1 second. The first 0.1s is pushed towards using the 1st letter, the next 0.1s will be pushed towards using the 2nd letter, and so on for each chunk of audio. Since each letter has a different natural duration (especially punctuation), this attention guiding is not particularly accurate, so it's not recommended to use a high loss scalar later into training.
         DiagonalGuidedAttention_sigma=0.5, # how to *curve?* the attention loss? Just leave this one alone.
-        
-        rescale_for_volume=0.0, # Not implemented # Rescale spectrogram losses to prioritise louder sounds, and put less (or zero) priority on quieter sounds
-                                # Valid values between 0.0 and 1.0
-                                # will rescale spectrogram magnitudes (which range from -11.52 for silence, and 4.5 for deafeningly loud)
-                                # https://www.desmos.com/calculator/bmbakslmtc
     )
 
     if hparams_string:

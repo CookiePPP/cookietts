@@ -44,13 +44,20 @@ class MDNLoss(nn.Module):
         log_alpha = log_alpha[:, 1:, :]
         alpha_last = log_alpha[torch.arange(B), text_lengths-1, mel_lengths-1]
         alpha_last = alpha_last/mel_lengths# avg by length of the log_alpha
-        mdn_loss = -alpha_last.mean()
+        mdn_loss = -alpha_last#.mean()
         
         return mdn_loss, log_prob_matrix
 
 
+@torch.jit.script
+def NormalLLLoss(mu, logvar, target, mask:Optional[torch.Tensor]=None, mean:bool=True):
+    loss = (F.mse_loss(mu, target, reduction='none')/logvar.exp())+logvar
+    if mask is not None:
+        loss = loss*mask
+    if mean:
+        loss = loss.mean()
+    return loss
 
-    
 @torch.no_grad()
 def downsize_mel(gt_mel, MDN_mel_downscale=1):
     if MDN_mel_downscale == 1:
@@ -75,16 +82,22 @@ class AlignTTSLoss(nn.Module):
     def colate_losses(self, loss_dict, loss_scalars, loss=None):
         for k, v in loss_dict.items():
             loss_scale = loss_scalars.get(f'{k}_weight', None)
+            
             if loss_scale is None:
                 loss_scale = getattr(self, f'{k}_weight', None)
+            
             if loss_scale is None:
                 loss_scale = 1.0
                 print(f'{k} is missing loss weight')
+            
             if loss_scale > 0.0:
+                new_loss = v*loss_scale
+                if new_loss > 40.0 or math.isnan(new_loss) or math.isinf(new_loss):
+                    print(f'{k} reached {v}.')
                 if loss is not None:
-                    loss = loss + v*loss_scale
+                    loss = loss + new_loss
                 else:
-                    loss = v*loss_scale
+                    loss = new_loss
             if False and self.rank == 0:
                 print(f'{k:20} {loss_scale:05.2f} {loss:05.2f} {loss_scale*v:+010.6f}', v)
         loss_dict['loss'] = loss
@@ -112,7 +125,8 @@ class AlignTTSLoss(nn.Module):
             B, n_mel, mel_T = gt_mel.shape
             assert n_mel == mu_logvar.shape[2]//2, f'got {mu_logvar.shape[2]} channels from mu_logvar, expected {n_mel*2}.'
             mdn_loss, log_prob_matrix = self.MDNLoss(mu_logvar, gt_mel, text_lengths, mel_lengths)
-            loss_dict['mdn_loss'] = mdn_loss
+            mdn_loss[mdn_loss>1e5] = mdn_loss[~(mdn_loss>1e5)].mean()
+            loss_dict['mdn_loss'] = mdn_loss.mean()
         
         #align = None
         #if calc_alignments or save_alignments:
@@ -131,8 +145,20 @@ class AlignTTSLoss(nn.Module):
         with torch.no_grad():
             mdn_alignment = model.viterbi(log_prob_matrix.cpu(), text_lengths.cpu(), mel_lengths.cpu()).to(torch.long)
             mdn_alignment = mdn_alignment.transpose(1, 2)# [B, txt_T, mel_T] -> [B, mel_T, txt_T]
-            assert mdn_alignment.shape[1] == gt['mel_lengths'].max(), f"got shape of {mdn_alignment.shape}, expected size(1) == {gt['mel_lengths'].max()}"
+            assert mdn_alignment.shape[1] == gt['mel_lengths' ].max(), f"got shape of {mdn_alignment.shape}, expected size(1) == {gt['mel_lengths' ].max()}"
             assert mdn_alignment.shape[2] == gt['text_lengths'].max(), f"got shape of {mdn_alignment.shape}, expected size(2) == {gt['text_lengths'].max()}"
+            
+            durs = mdn_alignment.sum(dim=1)# [B, mel_T, txt_T] -> [B, txt_T]
+        
+        dur_logmuvar = pred['dur_logmuvar']# [B, txt_T, 2]
+        assert torch.isfinite(dur_logmuvar).all()
+        dur_logmu, dur_logvar = dur_logmuvar[:, :, 0], dur_logmuvar[:, :, 1]# [B, txt_T, 2] -> [B, txt_T], [B, txt_T]
+        log_dur = durs.to(dur_logmu).float().clamp(min=0.1).log()
+        mask = get_mask_from_lengths(text_lengths)# [B, txt_T]
+        loss_dict['dur_NLL'] = NormalLLLoss(dur_logmu, dur_logvar, log_dur, mask=mask, mean=True)*(mask.numel()/mask.sum())
+        loss_dict['dur_MAE'] =   (F.l1_loss(dur_logmu, log_dur, reduction='none')*mask).sum()/mask.sum()
+        
+        with torch.no_grad():
             if calc_alignments or save_alignments:
                 not_truncated = ~(gt['pres_prev_state'] | gt['cont_next_iter'])
                 for i, not_trunc in enumerate(not_truncated):
@@ -146,7 +172,8 @@ class AlignTTSLoss(nn.Module):
                         audiopath = gt['audiopath'][i]
                         is_arpa   = gt['arpa'][i]
                         alignpath = os.path.splitext(audiopath)[0]+('_palign.pt' if is_arpa else '_galign.pt')
-                        torch.save(alignment.detach().clone().half(), alignpath)
+                        if (not os.path.exists(alignpath)) or torch.load(alignpath).shape != alignment.shape:
+                            torch.save(alignment.detach().clone().half(), alignpath)
         
         #################################################################
         ## Colate / Merge the Losses into a single tensor with scalars ##

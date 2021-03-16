@@ -39,9 +39,19 @@ class LossExplosion(Exception):
     """Custom Exception Class. If Loss Explosion, raise Error and automatically restart training script from previous best_val_model checkpoint."""
     pass
 
-def reduce_tensor(tensor, n_gpus):
+def reduce_tensor(tensor, n_gpus, timeout=0, ignore_timeout_exception=False):
     rt = tensor.clone()
-    dist.all_reduce(rt, op=dist.ReduceOp.SUM)
+    work = dist.all_reduce(rt, op=dist.ReduceOp.SUM, async_op=bool(timeout))
+    if work is not None or bool(timeout):
+        if ignore_timeout_exception:
+            try:
+                work.wait(timeout)
+            except:
+                print("all_reduce call hit timeout")
+                del work
+        else:
+            work.wait(timeout)
+    
     rt /= n_gpus
     return rt
 
@@ -463,7 +473,6 @@ def align_dataset(args, rank, group_name, hparams):
     
     _ = load_checkpoint(args.checkpoint_path, model, None, None, None)
     model, _, _, iteration, _, _, saved_lookup, _, _ = _; del _
-    iteration += 1  # next iteration is iteration + 1
     print('Model Loaded')
     
     # define datasets
@@ -474,40 +483,52 @@ def align_dataset(args, rank, group_name, hparams):
     hparams.p_arpabet = 0.0
     valset, collate_fn, train_sampler, trainset, speakerlist = prepare_dataloaders(hparams, dataloader_args, args, saved_lookup)[1:]
     #datasets.extend((trainset, valset))
-    datasets.append(valset)
+    #datasets.extend((valset,))
     
     hparams.p_arpabet = 1.0
     valset, collate_fn, train_sampler, trainset, speakerlist = prepare_dataloaders(hparams, dataloader_args, args, saved_lookup)[1:]
-    #datasets.extend((trainset, valset))
-    datasets.append(valset)
+    datasets.extend((trainset, valset))
+    #datasets.extend((valset,))
     
     speaker_lookup = trainset.speaker_ids
-    for dataset in datasets:
+    datasets_len = len(datasets)
+    for j, dataset in enumerate(datasets):
         data_sampler = DistributedSampler(dataset) if hparams.distributed_run else None
         data_loader  = DataLoader(dataset, sampler=data_sampler,
                             num_workers=hparams.num_workers,# prefetch_factor=hparams.prefetch_factor,
-                            shuffle=False, batch_size=hparams.batch_size,
+                            shuffle=False, batch_size=int(hparams.val_batch_size*1.5),
                             pin_memory=False, drop_last=False, collate_fn=collate_fn)
         
         start_time = time.time()
+        dataload_start_time = time.time()
         # start iterating through the epoch
+        data_loader_len = len(data_loader)
         for i, batch in tqdm(enumerate(data_loader), desc="Iter:  ", smoothing=0, total=len(data_loader), position=0, unit="iter"):
+            dataload_duration = time.time() - dataload_start_time
+            if all(os.path.exists(os.path.splitext(audiopath)[0]+('_palign.pt' if batch['arpa'][k] else '_galign.pt')) and torch.load(os.path.splitext(audiopath)[0]+('_palign.pt' if batch['arpa'][k] else '_galign.pt')).shape[0] == batch['mel_lengths'][k] for k, audiopath in enumerate(batch['audiopath'])):
+                tqdm.write(f"[{rank}] {i} skip iter [{dataload_duration:.2f}dataloader s/it]")
+                dataload_start_time = time.time()
+                continue# if all alignment files in this batch are already written, skip iter
+            
             y = model.parse_batch(batch) # move batch to GPU (async)
             y_pred = force(model, valid_kwargs=model_args, **y)
             
-            loss_dict, file_losses_batch, _ = criterion(model, y_pred, y, {}, save_alignments=True)
+            loss_scalars = {
+                "dur_NLL_weight": 0.,
+                "dur_MAE_weight": 0.,
+            }
+            loss_start_time = time.time()
+            loss_dict, file_losses_batch, _ = criterion(model, y_pred, y, loss_scalars, save_alignments=True)
+            loss_duration = time.time() - loss_start_time
             
-            if hparams.distributed_run:
-                reduced_loss_dict = {k: reduce_tensor(v.data, args.n_gpus).item() if v is not None else 0. for k, v in loss_dict.items()}
-            else:
-                reduced_loss_dict = {k: v.item() if v is not None else 0. for k, v in loss_dict.items()}
+            reduced_loss_dict = {k: v.item() if v is not None else 0. for k, v in loss_dict.items()}
             
             if rank == 0:
                 duration = time.time() - start_time
-                tqdm.write(f"{iteration} [{duration:.2f}s/it] [{(duration/(hparams.batch_size*args.n_gpus)):.3f}s/file]")
+                tqdm.write(f"{j:>}/{datasets_len:<} {i:>4}/{data_loader_len:<4} [{duration:.2f}s/it] [{(duration/(hparams.batch_size*args.n_gpus)):.3f}s/file] [{dataload_duration:.2f}dataloader s/it] [{loss_duration:.2f}loss s/it]")
                 start_time = time.time()
             
-            iteration += 1
+            dataload_start_time = time.time()
             # end of iteration loop
         # end of epoch loop
 
@@ -717,7 +738,10 @@ def train(args, rank, group_name, hparams):
                     y = model.parse_batch(batch) # move batch to GPU (async)
                     y_pred = force(model, valid_kwargs=model_args, **y)
                     
-                    loss_scalars = {}
+                    loss_scalars = {
+                        "dur_NLL_weight": dur_NLL_weight,
+                        "dur_MAE_weight": dur_MAE_weight,
+                    }
                     loss_dict, file_losses_batch, _ = criterion(model, y_pred, y, loss_scalars, save_alignments=save_alignments)
                     
                     file_losses = update_smoothed_dict(file_losses, file_losses_batch, file_losses_smoothness)
@@ -804,7 +828,7 @@ def train(args, rank, group_name, hparams):
                                 f"[Grad Norm {grad_norm:04.2f}] [{duration:.2f}s/it] "
                                 f"[{(duration/(hparams.batch_size*args.n_gpus)):.3f}s/file] "
                                 f"[{learning_rate:.1e}LR] [{loss_scale:.0f}LS]")
-                            logger.log_training(model, reduced_loss_dict, expavg_loss_dict, best_loss_dict, grad_norm, learning_rate, duration, iteration)
+                            logger.log_training(model, y, reduced_loss_dict, expavg_loss_dict, best_loss_dict, grad_norm, learning_rate, duration, iteration)
                         else:
                             tqdm.write("Gradient Overflow, Skipping Step")
                         start_time = time.time()

@@ -23,19 +23,28 @@ def load_wav_to_torch(full_path, target_sr=None, min_sr=None, remove_dc_offset=T
     
     if len(data.shape) > 1: # if audio has more than 1 channels,
         data = data[:, 0]   # extract/use the first channel.
-        assert len(data) > 2# Also check duration of audio file is > 2 samples (because otherwise the slice operation was probably on the wrong dimension)
+        assert len(data) > 2, 'audio file is empty (length < 3)'# Also check duration of audio file is > 2 samples (because otherwise the slice operation was probably on the wrong dimension)
     
-    if np.issubdtype(data.dtype, np.integer): # if audio data is type int
-        max_mag = -np.iinfo(data.dtype).min # maximum magnitude = min possible value of intXX
-    else: # if audio data is type fp32
-        max_mag = max(np.amax(data), -np.amin(data))
-        max_mag = (2**31)+1 if max_mag > (2**15) else ((2**15)+1 if max_mag > 1.01 else 1.0) # data should be either 16-bit INT, 32-bit INT or [-1 to 1] float32
+    #if np.issubdtype(data.dtype, np.integer): # if audio data is type int
+    #    max_mag = -np.iinfo(data.dtype).min # maximum magnitude = min possible value of intXX
+    #else: # if audio data is type fp32
+    #    max_mag = max(np.amax(data), -np.amin(data))
+    #    if max_mag > (2**23):
+    #        max_mag = 2**31
+    #    elif max_mag > (2**15):
+    #        max_mag = 2**23
+    #    elif max_mag > (1.99):
+    #        max_mag = 2**15
+    #    else:
+    #        max_mag = 1.0
+    #data = torch.FloatTensor(data.astype(np.float32))/max_mag
     
-    data = torch.FloatTensor(data.astype(np.float32))/max_mag
+    data = torch.FloatTensor(data.astype(np.float32))
     
     if (torch.isinf(data) | torch.isnan(data)).any() and return_empty_on_exception:# check for Nan/Inf in audio files
         return [], sampling_rate or target_sr or 48000
     assert not (torch.isinf(data) | torch.isnan(data)).any(), f'Inf or NaN found in audio file\n"{full_path}"'
+    
     if target_sr is not None and sampling_rate != target_sr:
         data = torch.from_numpy(librosa.core.resample(data.numpy(), sampling_rate, target_sr))
         if (torch.isinf(data) | torch.isnan(data)).any() and return_empty_on_exception:# resample will crash with inf/NaN inputs. return_empty_on_exception will return empty arr instead of except

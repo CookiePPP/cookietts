@@ -29,14 +29,16 @@
         "devices": ["cpu", "cuda:0"],
 		"use_zoneout_during_inference": false,
         "sox_output_ext": "flac",
-        "working_directory": "I:/TTS/Audiobooks/2_unsorted_tmp",
-        "output_directory":  "I:/TTS/Audiobooks/1_unsorted",
+        "working_directory_win": "I:/TTS/Audiobooks/2_unsorted_tmp",
+        "output_directory_win":  "I:/TTS/Audiobooks/1_unsorted",
         "working_directory_lin": "/media/cookie/WD6TB/TTS/Audiobooks/2_unsorted_tmp",
         "output_directory_lin":  "/media/cookie/WD6TB/TTS/Audiobooks/1_unsorted",
+        "working_directory": "/media/cookie/WD6TB/TTS/Audiobooks/2_unsorted_tmp",
+        "output_directory":  "/media/cookie/WD6TB/TTS/Audiobooks/1_unsorted",
         "output_maxsize_gb": 0.01,
         "dict_path": "../../dict/merged.dict.txt",
         "TTM": {
-            "default_model": "MEL160C | Tacotron2 TM U5 V10.0 0.2DFR 0.0DO 0.00Z0 (best_val_model)",
+            "default_model": "MEL160C | Tacotron2 TM U5 V10.0 0.2DFR 0.0DO 0.00Z0 (best_val_model) Pop!",
             "models": {
                 "MEL160C | Tacotron2 TM U3 V0 (20K)": {
                     "modelpath": "G:/TwiBot/CookiePPPTTS/CookieTTS/_2_ttm/tacotron2_tm/outdir_u3_debluraGAN/checkpoint_20000",

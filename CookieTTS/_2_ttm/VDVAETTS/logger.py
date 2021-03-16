@@ -1,8 +1,7 @@
 import random
 import torch
 from tensorboardX import SummaryWriter
-from plotting_utils import plot_alignment_to_numpy, plot_spectrogram_to_numpy
-from plotting_utils import plot_gate_outputs_to_numpy
+from plotting_utils import plot_alignment_to_numpy, plot_spectrogram_to_numpy, plot_time_series_to_numpy
 
 class VDVAETTSLogger(SummaryWriter):
     def __init__(self, logdir, hparams):
@@ -78,11 +77,13 @@ class VDVAETTSLogger(SummaryWriter):
             self.plotted_targets_val_lens = mel_lengths_cpu
         
         for idx in range(n_items):# plot target spectrogram of longest audio file(s)
+            # MDN Plots
             if 'mdn_alignment' in y_pred:
                 self.add_image(f"{prepend}_{idx}/alignment",
                     plot_alignment_to_numpy(y_pred['mdn_alignment'][idx].data.cpu().numpy().T),
                     iteration, dataformats='HWC')
             
+            # Decoder Plots
             self.add_image(f"{prepend}_{idx}/mel_SE",
                 plot_spectrogram_to_numpy(mel_L1_map[idx].data.cpu().numpy()),
                 iteration, dataformats='HWC')
@@ -102,6 +103,38 @@ class VDVAETTSLogger(SummaryWriter):
                 plot_spectrogram_to_numpy(inv_y_pred['pred_mel'][idx].data.cpu().numpy(), range=mag_range),
                 iteration, dataformats='HWC')
             
+            # Postnet Plots
+            if 'postnet_pred_mel' in y_pred:
+                mag_range = [y['gt_mel'][idx].data.min().item(), y['gt_mel'][idx].data.max().item()]
+                self.add_image(f"{prepend}_{idx}/postnet_mel_pred",
+                    plot_spectrogram_to_numpy(y_pred['postnet_pred_mel'][idx].data.cpu().numpy(), range=mag_range),
+                    iteration, dataformats='HWC')
+                
+                self.add_image(f"{prepend}_{idx}/postnet_mel_pred_prior_Z",
+                    plot_spectrogram_to_numpy(inv_y_pred['postnet_pred_mel'][idx].data.cpu().numpy(), range=mag_range),
+                    iteration, dataformats='HWC')
+            
+            if 'postnet_pred_logf0s' in y_pred:
+                pred_logf0       =     y_pred['postnet_pred_logf0s'][idx, 1].data.cpu().numpy()# -> [T]
+                pred_logf0_prior = inv_y_pred['postnet_pred_logf0s'][idx, 1].data.cpu().numpy()# -> [T]
+                gt_logf0         =          y['gt_frame_logf0s'    ][idx, 1].data.cpu().numpy()# -> [T]
+                pred_logf0      [gt_logf0==0.0] = float('nan')
+                pred_logf0_prior[gt_logf0==0.0] = float('nan')
+                gt_logf0        [gt_logf0==0.0] = float('nan')
+                gt_logf0[-1] = gt_logf0[torch.isfinite(gt_logf0)].mean()# add last f0 back in so the scale is consistent.
+                self.add_image(f"{prepend}_{idx}/postnet_pred_logf0",
+                    plot_time_series_to_numpy(gt_logf0, pred_logf0, pred_logf0_prior, ylabel="Log Hz", xlabel="Frames (Green Target, Red predicted with encoder, Blue predicted with prior)"),
+                    iteration, dataformats='HWC')
+            
+            if 'postnet_pred_voiceds' in y_pred:
+                pred_voiceds       =     y_pred['postnet_pred_voiceds'][idx, 1].data.cpu().numpy()# -> [T]
+                pred_voiceds_prior = inv_y_pred['postnet_pred_voiceds'][idx, 1].data.cpu().numpy()# -> [T]
+                gt_voiceds         =          y['gt_frame_voiceds'    ][idx, 1].data.cpu().numpy()# -> [T]
+                self.add_image(f"{prepend}_{idx}/postnet_pred_voiced",
+                    plot_time_series_to_numpy(gt_voiceds, pred_voiceds, pred_voiceds_prior, ylabel="Voiced State", xlabel="Frames (Green Target, Red predicted with encoder, Blue predicted with prior)"),
+                    iteration, dataformats='HWC')
+            
+            # HiFi-GAN plots
             if 'hifigan_gt_mel' in y and len(y['hifigan_gt_mel']) > idx:
                 self.add_image(f"{prepend}_{idx}/hifi_mel_gt",
                     plot_spectrogram_to_numpy(y['hifigan_gt_mel'][idx].data.cpu().numpy(), range=mag_range),

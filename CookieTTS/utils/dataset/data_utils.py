@@ -53,7 +53,17 @@ def latest_modified_date_filtered(directory, exts=['.wav','.flac','.txt']):
     latest = max(files, key=os.path.getmtime)
     return os.stat(latest).st_mtime
 
-def generate_filelist_from_datasets(DATASET_FOLDER,         DATASET_CONF_FOLDER=None,         METAPATH_APPEND = '',         AUDIO_FILTER  = ['*.wav'],         AUDIO_REJECTS = ['*_Noisy_*','*_Very Noisy_*'],         MIN_DURATION  =   0.73,         MAX_DURATION  =  30.00,         MIN_CHAR_LEN  =   7,         MAX_CHAR_LEN  = 160,         MIN_SPEAKER_DURATION=10.0,         valid_time =2*3600.0,# set to 2 hours (which should be enough time to complete 1 epoch hopefully) # time_after_last_check_before_modifications_invalidate_the_dataset
+def generate_filelist_from_datasets(DATASET_FOLDER,
+         DATASET_CONF_FOLDER=None,
+         METAPATH_APPEND = '',
+         AUDIO_FILTER  = ['*.wav'],
+         AUDIO_REJECTS = ['*_Noisy_*','*_Very Noisy_*'],
+         MIN_DURATION  =   0.73,
+         MAX_DURATION  =  30.00,
+         MIN_CHAR_LEN  =   7,
+         MAX_CHAR_LEN  = 160,
+         MIN_SPEAKER_DURATION=10.0,
+         valid_time =2*3600.0,# set to 2 hours (which should be enough time to complete 1 epoch hopefully) # time_after_last_check_before_modifications_invalidate_the_dataset
         rank=0):
     if DATASET_CONF_FOLDER is None:
         DATASET_CONF_FOLDER = os.path.join(DATASET_FOLDER, 'meta')
@@ -149,12 +159,13 @@ def generate_filelist_from_datasets(DATASET_FOLDER,         DATASET_CONF_FOLDER=
         if 'source_type' not in defaults[dataset] and os.path.exists(os.path.join(DATASET_FOLDER, dataset, 'default_source_type.txt')):
             defaults[dataset]['source_type'] = open(os.path.join(DATASET_FOLDER, dataset, 'default_source_type.txt'), 'r', encoding='utf8').read()
         
+        speaker_default = dataset.split("__")[1] if "__" in dataset else dataset
         if 'speaker' not in defaults[dataset]:
             print(f'default speaker for "{dataset}" dataset is missing.\nPlease enter the name of the default speaker\nExamples: "Nancy", "Littlepip", "Steven"')
-            print(f'Press Enter with no input to use "{dataset}"')
+            print(f'Press Enter with no input to use "{speaker_default}"')
             usr_inp = input('> ')
             if len(usr_inp.strip()) == 0:
-                usr_inp = dataset
+                usr_inp = speaker_default
             defaults[dataset]['speaker'] = usr_inp
             print("")
     
@@ -234,6 +245,7 @@ def generate_filelist_from_datasets(DATASET_FOLDER,         DATASET_CONF_FOLDER=
     bad_paths         = bad_paths         if bad_paths         else {}
     
     total_files = sum(len(clips) for clips in [v for k,v in meta.items() if k in unchecked_datasets])
+    
     #for k, v in meta.items():
     #    if k in unchecked_datasets:
     #        for clip in v:
@@ -245,6 +257,7 @@ def generate_filelist_from_datasets(DATASET_FOLDER,         DATASET_CONF_FOLDER=
         return clip_duration
     from concurrent.futures import ThreadPoolExecutor, as_completed
     
+    failed_files = 0
     clip_durations = {}
     with tqdm(total=total_files) as pbar:
         with ThreadPoolExecutor(max_workers=32) as ex:
@@ -257,6 +270,7 @@ def generate_filelist_from_datasets(DATASET_FOLDER,         DATASET_CONF_FOLDER=
                 except Exception as exc:
                     print('PATH:', path, "\nfailed to read.")
                     print(traceback.format_exc())
+                    failed_files += 1
                     #bad_paths[dataset].append(path)
                     #if input("Delete item? (y/n)\n> ").lower() in ['yes','y','1']:
                     #    os.unlink(path)
@@ -265,7 +279,8 @@ def generate_filelist_from_datasets(DATASET_FOLDER,         DATASET_CONF_FOLDER=
                     #else:
                     #    raise Exception(exc)
                 pbar.update(1)
-
+    print(f'{failed_files} Files failed to read')
+    
     with tqdm(total=total_files) as pbar:
         for dataset in unchecked_datasets:
             bad_paths[dataset] = []
@@ -276,7 +291,12 @@ def generate_filelist_from_datasets(DATASET_FOLDER,         DATASET_CONF_FOLDER=
                 pbar.update()
                 
                 # get duration of file
-                clip_duration = clip_durations[clip['path']]
+                try:
+                    clip_duration = clip_durations[clip['path']]
+                except KeyError as ex:
+                    print(ex)
+                    bad_paths[dataset].append(clip['path'])
+                    continue
                 if clip_duration < MIN_DURATION or clip_duration > MAX_DURATION:
                     bad_paths[dataset].append(clip['path'])
                     continue
@@ -289,6 +309,7 @@ def generate_filelist_from_datasets(DATASET_FOLDER,         DATASET_CONF_FOLDER=
     
     time.sleep(0.1)
     
+    # remove any clips that were found in bad_paths
     total_files = sum(len(clips) for clips in meta.values())
     for key, bad_list in bad_paths.items():
         bad_list_set = set(bad_list)
@@ -315,7 +336,21 @@ def generate_filelist_from_datasets(DATASET_FOLDER,         DATASET_CONF_FOLDER=
     print("Saving 'metadata.pkl' to save all the new data")
     with open(META_PATH, 'wb') as pickle_file:
         out = {
-                  "meta": meta,      "speaker_durations": speaker_durations,         "dataset_lookup": dataset_lookup,              "bad_paths": bad_paths,                "meta_lm": meta_lm,         "DATASET_FOLDER": DATASET_FOLDER,    "DATASET_CONF_FOLDER": DATASET_CONF_FOLDER,           "AUDIO_FILTER": AUDIO_FILTER,          "AUDIO_REJECTS": AUDIO_REJECTS,           "MIN_DURATION": MIN_DURATION,           "MAX_DURATION": MAX_DURATION,           "MIN_CHAR_LEN": MIN_CHAR_LEN,           "MAX_CHAR_LEN": MAX_CHAR_LEN,   "MIN_SPEAKER_DURATION": MIN_SPEAKER_DURATION,         }
+                  "meta": meta,      
+                  "speaker_durations": speaker_durations,         
+                  "dataset_lookup": dataset_lookup,              
+                  "bad_paths": bad_paths,                
+                  "meta_lm": meta_lm,         
+                  "DATASET_FOLDER": DATASET_FOLDER,    
+                  "DATASET_CONF_FOLDER": DATASET_CONF_FOLDER,           
+                  "AUDIO_FILTER": AUDIO_FILTER,          
+                  "AUDIO_REJECTS": AUDIO_REJECTS,           
+                  "MIN_DURATION": MIN_DURATION,           
+                  "MAX_DURATION": MAX_DURATION,           
+                  "MIN_CHAR_LEN": MIN_CHAR_LEN,           
+                  "MAX_CHAR_LEN": MAX_CHAR_LEN,   
+                  "MIN_SPEAKER_DURATION": MIN_SPEAKER_DURATION,
+                  }
         pickle.dump(out, pickle_file, pickle.HIGHEST_PROTOCOL)
     
     print('Done!\n')
@@ -331,13 +366,16 @@ def generate_filelist_from_datasets(DATASET_FOLDER,         DATASET_CONF_FOLDER=
         for speaker_id, speaker_name in enumerate(sorted(speaker_durations.keys())):
             duration = speaker_durations[speaker_name]
             dataset = dataset_lookup[speaker_name]
-            if duration < MIN_SPEAKER_DURATION:
+            if duration <= MIN_SPEAKER_DURATION:
                 continue
             try:
-                clip = next(y for x in list(meta.values()) for y in x if y['speaker'] == speaker_name) # get the first clip with that speaker...
+                clip = next(y for y in meta[dataset] if y['speaker'] == speaker_name)# get the first clip with that speaker...
             except StopIteration as ex:
-                print(speaker_name, duration, speaker_id)
-                raise ex
+                try:
+                    clip = next(y for x in list(meta.values()) for y in x if y['speaker'] == speaker_name)# get the first clip with that speaker...
+                except StopIteration as ex:
+                    print(speaker_name, dataset, duration, speaker_id, [y for x in list(meta.values()) for y in x if y['path'] in bad_paths])
+                    raise ex
             source      = clip['source'     ].replace('\n','') or "Unknown" # and pick up the source...
             source_type = clip['source_type'].replace('\n','') or "Unknown" # and source type that speaker uses.
             assert source, 'Recieved no dataset source'
@@ -369,19 +407,25 @@ def generate_filelist_from_datasets(DATASET_FOLDER,         DATASET_CONF_FOLDER=
     for speaker_id, speaker_name in enumerate(sorted(speaker_durations.keys())):
         duration = speaker_durations[speaker_name]
         dataset = dataset_lookup[speaker_name]
-        if duration < MIN_SPEAKER_DURATION:
+        if duration <= MIN_SPEAKER_DURATION:
             continue
         try:
-            clip = next(y for x in list(meta.values()) for y in x if y['speaker'] == speaker_name) # get the first clip with that speaker...
+            clip = next(y for y in meta[dataset] if y['speaker'] == speaker_name)# get the first clip with that speaker...
         except StopIteration as ex:
-            print(speaker_name, duration, speaker_id)
-            raise ex
+            try:
+                clip = next(y for x in list(meta.values()) for y in x if y['speaker'] == speaker_name)# get the first clip with that speaker...
+            except StopIteration as ex:
+                print(speaker_name, duration, speaker_id)
+                raise ex
         source      = clip['source'] or "Unknown" # and pick up the source...
         source_type = clip['source_type'] or "Unknown" # and source type that speaker uses.
         speakerlist.append((dataset, str(speaker_name), speaker_id, source, source_type, duration/3600.))
     
     outputs = {
-        "filelist": filelist,      "speakerlist": speakerlist,      "speaker_ids": {i:i for i in range(len(dataset_lookup.keys()))},     }
+        "filelist": filelist,      
+        "speakerlist": speakerlist,      
+        "speaker_ids": {i:i for i in range(len(dataset_lookup.keys()))},     
+        }
     return outputs
 
 @torch.jit.script
@@ -468,6 +512,7 @@ class TTSDataset(torch.utils.data.Dataset):
         self.filelist = filelist
         self.args = args
         self.force_load = hparams.force_load
+        self.cache_all = getattr(hparams, 'cache_all', False)
         
         #####################
         ## Text / Phonemes ##
@@ -494,6 +539,8 @@ class TTSDataset(torch.utils.data.Dataset):
                 print(f'Loading model from {PRETRAINED_PATH}.')
                 self.torchmoji_model = torchmoji_feature_encoding(PRETRAINED_PATH)
         
+        self.text_config = [self.text_cleaners, self.p_arpabet, self.start_token, self.stop_token, self.text_repeat_interleave, self.max_chars_length]
+        
         self.emotion_classes = getattr(hparams, "emotion_classes", list())
         self.n_classes       = len(self.emotion_classes)
         
@@ -509,6 +556,7 @@ class TTSDataset(torch.utils.data.Dataset):
                 self.speaker_ids = self.create_speaker_lookup_table(self.filelist, numeric_sort=hparams.numeric_speaker_ids)
         assert len(self.speaker_ids.values()) <= self.n_speakers, f'More speakers found in dataset(s) than set in hparams.py n_speakers\nFound {len(self.speaker_ids.values())} Speakers, Expected {hparams.n_speakers} or Less.'
         
+        self.speaker_config = [self.n_speakers, self.speaker_ids]
         ###################
         ## File Checking ##
         ###################
@@ -541,7 +589,7 @@ class TTSDataset(torch.utils.data.Dataset):
         self.trim_ref           = getattr(hparams, 'trim_ref'          , ['amax']*5               )
         self.trim_emphasis_str  = getattr(hparams, 'trim_emphasis_str' , [0.0 ,0.0 ,0.0 ,0.0 ,0.0 ])
         self.trim_cache_audio   = getattr(hparams, 'trim_cache_audio'  , False)
-        self.trim_enable        = getattr(hparams, 'trim_enable'       , True)
+        self.trim_enable        = getattr(hparams, 'trim_enable'       ,  True)
         self.trim_config = [self.sampling_rate, self.filt_min_freq, self.filt_max_freq, self.filt_order, self.trim_margin_left, self.trim_margin_right, self.trim_top_db, self.trim_window_length, self.trim_hop_length, self.trim_ref, self.trim_emphasis_str]
         
         self.target_lufs = getattr(hparams, 'target_lufs', None)
@@ -561,14 +609,17 @@ class TTSDataset(torch.utils.data.Dataset):
                                       hparams.mel_fmax, clamp_val=hparams.stft_clamp_val)
         
         self.audio_offset = audio_offset
-        self.stft_config = [*self.trim_config, self.audio_offset, self.target_lufs, self.filter_length, self.hop_length, self.win_length,
-                                               self.n_mel_channels, self.mel_fmin, self.mel_fmax, self.stft_clamp_val,]
         
         # Silence Padding
         self.silence_value     = getattr(hparams, 'silence_value'    , -11.5129)
         self.silence_pad_start = getattr(hparams, 'silence_pad_start', 0)# frames to pad the start of each clip
         self.silence_pad_end   = getattr(hparams, 'silence_pad_end'  , 0)# frames to pad the  end  of each clip
         self.context_frames    = getattr(hparams, 'context_frames'   , 1)
+        
+        self.stft_config = [*self.trim_config, self.audio_offset, self.target_lufs, self.filter_length,
+                             self.hop_length, self.win_length, self.n_mel_channels, self.mel_fmin, self.mel_fmax,
+                             self.stft_clamp_val, self.silence_value, self.silence_pad_start, self.silence_pad_end,
+                             self.context_frames]
         
         self.random_segments = getattr(hparams, 'random_segments', False)
         #######################
@@ -578,6 +629,7 @@ class TTSDataset(torch.utils.data.Dataset):
         self.f0_ceil   = getattr(hparams, 'f0_ceil',    1500.)
         self.voiced_sensitivity = getattr(hparams, 'voiced_sensitivity', 0.13)
         
+        self.f0s_conf = [*self.trim_config, self.hop_length, self.f0_floors, self.f0_ceil, self.voiced_sensitivity]
         ################################################
         ## (Optional) Apply weighting to MLP Datasets ##
         ################################################
@@ -586,12 +638,25 @@ class TTSDataset(torch.utils.data.Dataset):
             for i in range(3):
                 self.filelist.extend(duplicated_audiopaths)
         
-        # Shuffle Audiopaths
+        # Set Random Seed
         self.random_seed = hparams.seed
         random.seed(hparams.seed)
-        random.shuffle(self.filelist)
         
         self.deterministic_arpabet = deterministic_arpabet
+        
+        ##########################################
+        ## Get sampling chance for each speaker ##
+        ##########################################
+        # get sampling chance for each speaker (divided by the average chance)
+        # can be used to weight the gradients for the speaker embeddings.
+        self.rank = hparams.rank
+        self.load_durations()
+        self.speaker_duration = {spkr_id: 0. for spkr_id in set(list([x[2] for x in self.filelist]))}
+        for path, _, spkr_id in self.filelist:
+            self.speaker_duration[spkr_id] += self.clip_durations[path]
+        avg_dur = sum(dur for dur in self.speaker_duration.values())/len(self.speaker_duration.keys())
+        self.speaker_id_ext_sampling_chance = {spkr_id: self.speaker_duration[spkr_id]/avg_dur for spkr_id in set(list([x[2] for x in self.filelist]))}
+        
         #####################################################################
         ## PREDICT LENGTH (TBPTT) - Truncated Backpropagation through time ##
         #####################################################################
@@ -601,58 +666,75 @@ class TTSDataset(torch.utils.data.Dataset):
         
         self.use_TBPTT  = getattr(hparams, 'use_TBPTT', False)
         self.batch_size = hparams.batch_size
-        self.rank       = hparams.rank
         self.total_batch_size   = hparams.batch_size * hparams.n_gpus # number of audio files being processed together
         self.max_segment_length = hparams.max_segment_length # frames
         
+        self.misc_item_config = [self.TBPTT, self.use_TBPTT, self.max_segment_length]
+        
         self.update_filelist(self.filelist)
+        self.shuffle_dataset()
     
     def update_filelist(self, filelist):
         self.filelist = filelist
         
         if self.use_TBPTT and self.TBPTT:
-            loaded_durs = False
+            self.load_durations()
+            print('Done.')
+        else:
+            self.audio_lengths = torch.tensor([self.max_segment_length-1 for x in self.filelist], device='cpu') # use dummy lengths
+        self.update_dataloader_indexes()
+    
+    def load_durations(self):
+        loaded_durs = False
+        
+        trim_config = [self.filt_min_freq, self.filt_max_freq, self.filt_order, self.trim_margin_left, self.trim_margin_right, self.trim_top_db, self.trim_window_length, self.trim_hop_length, self.trim_ref, self.trim_emphasis_str]
+        durpath = f'audio_lengths.pt'
+        if (not loaded_durs) and os.path.exists(durpath):
+            try:
+                dict_=torch.load(durpath, map_location='cpu')
+                if dict_['trim_config'] == trim_config:
+                    self.clip_durations = dict_['clip_durations']
+                    loaded_durs = True
+                del dict_
+            except:
+                print(traceback.format_exc())
+        
+        if not loaded_durs:
+            self.clip_durations = {}
+        
+        if torch.distributed.is_initialized() and self.rank != 0:
+            torch.distributed.barrier()
             
-            trim_config = [self.filt_min_freq, self.filt_max_freq, self.filt_order, self.trim_margin_left, self.trim_margin_right, self.trim_top_db, self.trim_window_length, self.trim_hop_length, self.trim_ref, self.trim_emphasis_str]
-            durpath = f'audio_lengths.pt'
-            if (not loaded_durs) and os.path.exists(durpath):
-                try:
-                    dict_=torch.load(durpath, map_location='cpu')
-                    if dict_['trim_config'] == trim_config:
-                        clip_durations = dict_['clip_durations']
-                        loaded_durs = True
-                    del dict_
-                except:
-                    print(traceback.format_exc())
-            
-            if not loaded_durs:
-                clip_durations = {}
-            
+            dict_=torch.load(durpath, map_location='cpu')
+            if dict_['trim_config'] == trim_config:
+                self.clip_durations = dict_['clip_durations']
+                loaded_durs = True
+        
+        if self.rank == 0:
             print('Calculating audio lengths of all files...')
+            from concurrent.futures import ThreadPoolExecutor, as_completed
             
             def get_duration(fpath):
                 audio, sampling_rate = self.get_trimmed_audio(fpath)
                 clip_duration = len(audio)/sampling_rate
                 return clip_duration, fpath
-            from concurrent.futures import ThreadPoolExecutor, as_completed
             
-            _ = get_duration(self.filelist[0][0])
+            _ = get_duration(self.filelist[0][0])# check function is working
             
             with tqdm(total=len(self.filelist)) as pbar:
                 with ThreadPoolExecutor(max_workers=16) as ex:
-                    missing_paths = [x[0] for x in self.filelist if not x[0] in clip_durations]
+                    missing_paths = [x[0] for x in self.filelist if not x[0] in self.clip_durations]
                     futures = [ex.submit(get_duration, x) for x in missing_paths]
                     for future in as_completed(futures):
                         dur, path = future.result()
-                        clip_durations[path] = dur
+                        self.clip_durations[path] = dur
                         pbar.update(1)
-            self.audio_lengths = torch.tensor([(round(clip_durations[x[0]]*self.sampling_rate)//self.hop_length)+1+self.silence_pad_start+self.silence_pad_end for x in tqdm(self.filelist)], device='cpu') # get the length of every file (the long way)
-            if self.rank == 0:
-                torch.save({"clip_durations": clip_durations, "trim_config": trim_config}, durpath)
-            print('Done.')
-        else:
-            self.audio_lengths = torch.tensor([self.max_segment_length-1 for x in self.filelist], device='cpu') # use dummy lengths
-        self.update_dataloader_indexes()
+            self.audio_lengths = torch.tensor([(round(self.clip_durations[x[0]]*self.sampling_rate)//self.hop_length)+1+self.silence_pad_start+self.silence_pad_end for x in tqdm(self.filelist)], device='cpu') # get the length of every file (the long way)
+            
+            torch.save({"clip_durations": self.clip_durations, "trim_config": trim_config}, durpath)
+        
+        if torch.distributed.is_initialized() and self.rank == 0:
+            torch.distributed.barrier()
     
     def shuffle_dataset(self):
         print("Shuffling Dataset")
@@ -768,22 +850,33 @@ class TTSDataset(torch.utils.data.Dataset):
         if (not audio_loaded) and self.trim_enable and self.trim_cache_audio and os.path.exists(trimmed_audiopath):
             try:
                 dict_ = torch.load(trimmed_audiopath, map_location='cpu')
+                audio         = dict_['audio'].float()
+                sampling_rate = dict_['sampling_rate']
+                assert torch.isfinite(audio).all(), 'audio [1] has NaN or Inf elements'
+                assert audio.std() > 1e-6,          'audio [1] has no magnitude'
                 if dict_['trim_config'] == trim_config:
-                    audio         = dict_['audio']
-                    sampling_rate = dict_['sampling_rate']
                     audio_loaded = True
                 del dict_
             except:
                 print(traceback.format_exc())
+                if os.path.exists(trimmed_audiopath):
+                    os.remove(trimmed_audiopath)
         
-        if (not audio_loaded):
-            audio, sampling_rate = self.get_audio(audiopath)
-            if self.trim_enable:
-                audio = self.trim_audio(audio, sampling_rate, file_path=audiopath)
-                if self.trim_cache_audio:
-                    torch.save({'audio': audio.data, 'sampling_rate': sampling_rate, 'trim_config': trim_config}, trimmed_audiopath)
-            audio_loaded = True
-        return audio, sampling_rate
+        try:
+            if (not audio_loaded):
+                audio, sampling_rate = self.get_audio(audiopath)
+                assert torch.isfinite(audio).all(), 'audio [2] has NaN or Inf elements'
+                assert audio.std() > 1e-6,          'audio [2] has no magnitude'
+                if self.trim_enable:
+                    audio = self.trim_audio(audio, sampling_rate, file_path=audiopath)
+                    assert torch.isfinite(audio).all(), 'audio [3] has NaN or Inf elements'
+                    assert audio.std() > 1e-6,          'audio [3] has no magnitude'
+                    if self.trim_cache_audio:
+                        torch.save({'audio': audio.cpu().data.half(), 'sampling_rate': sampling_rate, 'trim_config': trim_config}, trimmed_audiopath)
+                audio_loaded = True
+        except:
+            print(traceback.format_exc())
+        return audio.float(), sampling_rate
     
     def trim_audio(self, audio, sr, file_path=''):
         audio = audio.numpy()
@@ -913,13 +1006,70 @@ class TTSDataset(torch.utils.data.Dataset):
                 print(f"Failed to load '{audiopath}'")
                 print(traceback.format_exc())
     
-    def get_data_from_inputs(self, audiopath, text, speaker_id_ext, pred_mel_T:int=0, mel_offset=0):# get args using get_args() from CookieTTS.utils
+    def process_data_from_inputs_phone_dependant(self, output, audiopath, text, speaker_id_ext, use_phones):
+        args = self.args
+        new_output = {}
+        
+        new_output['arpa'] = use_phones
+        new_output['text_str'] = output['ptext_str'] if use_phones else output['gtext_str']
+        if 'text' in args:
+            new_output['text'] = output['ptext_str'] if use_phones else output['gtext_str']# (randomly) convert to phonemes
+            new_output['text'] = self.get_text(new_output['text'])# convert text into tensor representation
+        
+        # get alignment + char-level features
+        if any([arg in ('gt_char_fesv','alignment','gt_char_f0','gt_char_voiced','gt_char_energy','gt_char_stilt_10','gt_char_stilt_40','gt_char_stilt_80','gt_char_stilt_120') for arg in args]):
+            new_output['alignment'] = alignment = self.get_alignments(audiopath, arpa=use_phones, mel_len=output['gt_mel'].shape[1], txt_len=new_output['text'].shape[0])
+            if 'gt_char_dur' in args:
+                new_output['gt_char_dur'] = alignment.sum(0).float()# [mel_T, txt_T] -> [txt_T]
+                #assert new_output['gt_char_dur'].round().sum() == output['gt_mel'].shape[1], f"got total char_dur of {new_output['gt_char_dur'].round().sum()}, expected {output['gt_mel'].shape[1]}"
+            
+            if 'gt_char_logdur' in args:
+                new_output['gt_char_logdur'] = alignment.sum(0).float().clamp(min=1.).log()# -> [txt_T]
+            
+            if 'gt_char_f0' in args:
+                new_output['gt_char_f0'    ] = self.get_charavg_from_frames(output['gt_frame_f0'    ], alignment, ignore_zeros=1).float()# [txt_T]
+            
+            if 'gt_char_fesv' in args or 'gt_char_energy' in args:
+                new_output['gt_char_energy'] = self.get_charavg_from_frames(output['gt_frame_energy'], alignment, ignore_zeros=1).float()# [txt_T]
+            
+            if 'gt_char_fesv' in args or 'gt_char_voiced' in args:
+                new_output['gt_char_voiced'] = self.get_charavg_from_frames(output['gt_frame_voiced'], alignment, ignore_zeros=0).float()# [txt_T]
+            
+            if 'gt_char_fesv' in args or 'gt_char_logf0'  in args:
+                new_output['gt_char_logf0' ] = self.get_charavg_from_frames(output['gt_frame_logf0' ], alignment, ignore_zeros=1).float()# [txt_T]
+            
+            if 'gt_char_fesv' in args or 'gt_char_stilt_10'  in args:
+                new_output['gt_char_stilt_10' ] = self.get_charavg_from_frames(output['gt_frame_stilt_10' ], alignment).float()# [txt_T]
+            
+            if 'gt_char_fesv' in args or 'gt_char_stilt_40'  in args:
+                new_output['gt_char_stilt_40' ] = self.get_charavg_from_frames(output['gt_frame_stilt_40' ], alignment).float()# [txt_T]
+            
+            if 'gt_char_fesv' in args or 'gt_char_stilt_80'  in args:
+                new_output['gt_char_stilt_80' ] = self.get_charavg_from_frames(output['gt_frame_stilt_80' ], alignment).float()# [txt_T]
+            
+            if 'gt_char_fesv' in args or 'gt_char_stilt_120' in args:
+                new_output['gt_char_stilt_120'] = self.get_charavg_from_frames(output['gt_frame_stilt_120'], alignment).float()# [txt_T]
+        
+        # char-level v/uv + logf0 + energy + 4x spectral tilt
+        if 'gt_char_fesv' in args:
+            new_output['gt_char_fesv'] = torch.cat((
+                new_output['gt_char_voiced'   ][None, :],# [ 1, txt_T]
+                new_output['gt_char_logf0'    ][None, :],# [ 1, txt_T]
+                new_output['gt_char_energy'   ][None, :],# [ 1, txt_T]
+                new_output['gt_char_stilt_10' ][None, :],# [ 1, txt_T]
+                new_output['gt_char_stilt_40' ][None, :],# [ 1, txt_T]
+                new_output['gt_char_stilt_80' ][None, :],# [ 1, txt_T]
+                new_output['gt_char_stilt_120'][None, :],# [ 1, txt_T]
+            ), dim=0)#                                  -> [ 7, txt_T]
+        return new_output
+    
+    def process_data_from_inputs(self, audiopath, text, speaker_id_ext, pred_mel_T:int=0):
         args = self.args
         output = {}
         
-        output['audiopath'     ] = audiopath
+        output['audiopath'] = audiopath
         if text is not None:
-            output['gtext_str' ] = text
+            output['gtext_str'] = text
         output['speaker_id_ext'] = speaker_id_ext
         
         # get audio, resample audio, bandpass audio, trim audio, (optional) save updated audio back to storage.
@@ -930,7 +1080,7 @@ class TTSDataset(torch.utils.data.Dataset):
                 output['gt_audio'] = audio
             if 'sampling_rate' in args:
                 output['sampling_rate'] = torch.tensor(float(load_wav_to_torch(audiopath)[1]))
-        
+            
             # get percieved loudness
             if 'gt_perc_loudness' in args or (self.target_lufs is not None):
                 output['gt_perc_loudness'] = self.get_perc_loudness(audio, sampling_rate, audiopath, max_segment_length_s=6.0)
@@ -1002,21 +1152,9 @@ class TTSDataset(torch.utils.data.Dataset):
             output['gt_sylps'] = gt_sylps.float()
             del gt_sylps
         
-        # get text + arapbet
+        # get arapbet
         if any([arg in ('text', 'gt_sylps', 'alignment','gt_char_f0','gt_char_voiced','gt_char_energy','torchmoji_hdn') for arg in args]):
             output['ptext_str'] = self.arpa.get(text)
-            del text
-            
-            use_phones = random.Random(audiopath).random() < self.p_arpabet if self.deterministic_arpabet else random.random() < self.p_arpabet
-            output['arpa'] = use_phones
-            output['text_str'] = output['ptext_str'] if use_phones else output['gtext_str']
-            if 'text' in args:
-                output['text'] = output['ptext_str'] if use_phones else output['gtext_str']# (randomly) convert to phonemes
-                output['text'] = self.get_text(output['text'])# convert text into tensor representation
-                if self.random_segments is False and (self.use_TBPTT and self.TBPTT) is False:# if not using TBPTT or Random Segments:
-                    output['text'] = output['text'][:self.max_chars_length]                   #   cut of the excess text that 99% won't be used in the first segment of audio.
-                if self.text_repeat_interleave > 1:
-                    output['text'] = output['text'].repeat_interleave(self.text_repeat_interleave, dim=0)
         
         # global speaker id
         if any(arg in ('speaker_id','speaker_id_onehot') for arg in args):
@@ -1052,7 +1190,27 @@ class TTSDataset(torch.utils.data.Dataset):
         
         # frame-level pitch + voice/unvoiced flag
         if any([arg in ('gt_fesvmel','gt_char_fesv','gt_frame_f0','gt_frame_logf0','gt_frame_voiced','gt_char_f0','gt_char_voiced','gt_frame_stilt_10') for arg in args]):
-            f0, voiced_mask = self.get_pitch(output['gt_audio'], self.sampling_rate, self.hop_length)
+            # load pitch (maybe from file)
+            f0_path = os.path.splitext(audiopath)[0]+'.pitch.pt'
+            f0s = []; voiceds = []
+            
+            f0_dict = torch.load(f0_path, map_location='cpu') if self.cache_mel and os.path.exists(f0_path) else {'f0s_conf': self.f0s_conf,}
+            if not (f0_dict['f0s_conf'] == self.f0s_conf):
+                f0_dict = {'f0s_conf': self.f0s_conf,}
+            
+            f0_floor = 56.
+            dict_key = f'f0_{f0_floor}'
+            if self.cache_mel and f0_dict and dict_key in f0_dict:
+                f0 = f0_dict[dict_key].data.cpu().float()
+                voiced_mask = f0>3
+                dict_modified=False
+            else:
+                f0, voiced_mask = self.get_pitch(output['gt_audio'], self.sampling_rate, self.hop_length)
+                f0_dict[dict_key] = f0.data.cpu().half()
+                dict_modified=True
+            if self.cache_mel and dict_modified:
+                torch.save(f0_dict, f0_path)
+            
             output['gt_frame_f0'] = f0.float()# [mel_T]
             output['gt_frame_f0'][~voiced_mask] = 0.0
             output['gt_frame_logf0' ] = f0.log().float()# [mel_T]
@@ -1066,14 +1224,36 @@ class TTSDataset(torch.utils.data.Dataset):
                 assert (not 'gt_mel' in output) or output['gt_frame_voiced'].shape[-1] == output['gt_mel'].shape[-1], f"unexpected output length. got {output['gt_frame_voiced'].shape[-1]}, expected {output['gt_mel'].shape[-1]}"
         
         if any([arg in ('gt_frame_f0s', 'gt_frame_logf0s', 'gt_frame_voiceds') for arg in args]):
+            # load pitches (maybe from file)
+            f0_path = os.path.splitext(audiopath)[0]+'.pitch.pt'
             f0s = []; voiceds = []
+            
+            f0_dict = torch.load(f0_path, map_location='cpu') if self.cache_mel and os.path.exists(f0_path) else {'f0s_conf': self.f0s_conf,}
+            if not (f0_dict['f0s_conf'] == self.f0s_conf):
+                f0_dict = {'f0s_conf': self.f0s_conf,}
+            
+            dict_modified=False; f0s = []; voiceds = []
             for f0_floor in self.f0_floors:
-                f0, voiced = self.get_pitch(output['gt_audio'], self.sampling_rate, self.hop_length, f0_floors=f0_floor, f0_ceil=self.f0_ceil, voiced_sensitivity=self.voiced_sensitivity)
+                dict_key = f'f0s_{f0_floor}'
+                if self.cache_mel and f0_dict and dict_key in f0_dict:
+                    f0 = f0_dict[dict_key].data.cpu().float()
+                    voiced = f0>3
+                else:
+                    f0, voiced = self.get_pitch(output['gt_audio'], self.sampling_rate, self.hop_length, f0_floors=f0_floor, f0_ceil=self.f0_ceil, voiced_sensitivity=self.voiced_sensitivity)
+                    f0_dict[dict_key] = f0.data.cpu().half()
+                    dict_modified=True
                 f0s.append(f0)
                 voiceds.append(voiced)
+            if self.cache_mel and dict_modified:
+                torch.save(f0_dict, f0_path)
+            
             output['gt_frame_f0s']     = torch.stack(f0s, dim=0)    # FloatTensor[n_f0s, mel_T]
             output['gt_frame_voiceds'] = torch.stack(voiceds, dim=0)#  BoolTensor[n_f0s, mel_T]
             output['gt_frame_logf0s']  = torch.where(output['gt_frame_voiceds'], *torch.broadcast_tensors(output['gt_frame_f0s'].log(), torch.tensor(0.0)))# FloatTensor[n_f0s, mel_T]
+            if 'gt_mel' in output:
+                output['gt_frame_f0s'    ] = output['gt_frame_f0s'    ][..., :output['gt_mel'].shape[-1]]# [n_f0s, mel_T]
+                output['gt_frame_logf0s' ] = output['gt_frame_logf0s' ][..., :output['gt_mel'].shape[-1]]# [n_f0s, mel_T]
+                output['gt_frame_voiceds'] = output['gt_frame_voiceds'][..., :output['gt_mel'].shape[-1]]# [n_f0s, mel_T]
         
         # frame-level 'energy'
         if any([arg in ('gt_fesvmel','gt_char_fesv','gt_frame_energy','gt_char_energy') for arg in args]):
@@ -1087,40 +1267,6 @@ class TTSDataset(torch.utils.data.Dataset):
             output['gt_frame_stilt_80' ] = self.get_spectral_tilt( 80, output['gt_mel']).squeeze(0)# [mel_T]
             output['gt_frame_stilt_120'] = self.get_spectral_tilt(120, output['gt_mel']).squeeze(0)# [mel_T]
             assert (not 'gt_mel' in output) or output['gt_frame_stilt_10'].shape[-1] == output['gt_mel'].shape[-1], f"unexpected output length. got {output['gt_frame_stilt_10'].shape[-1]}, expected {output['gt_mel'].shape[-1]}"
-        
-        # get alignment + char-level features
-        if any([arg in ('gt_char_fesv','alignment','gt_char_f0','gt_char_voiced','gt_char_energy','gt_char_stilt_10','gt_char_stilt_40','gt_char_stilt_80','gt_char_stilt_120') for arg in args]):
-            output['alignment'] = alignment = self.get_alignments(audiopath, arpa=use_phones, mel_len=output['gt_mel'].shape[1], txt_len=output['text'].shape[0])
-            if 'gt_char_dur'    in args:
-                output['gt_char_dur'   ] = alignment.sum(0).float()# [mel_T, txt_T] -> [txt_T]
-                assert output['gt_char_dur'].round().sum() == output['gt_mel'].shape[1], f"got total char_dur of {output['gt_char_dur'].round().sum()}, expected {output['gt_mel'].shape[1]}"
-            
-            if 'gt_char_logdur'    in args:
-                output['gt_char_logdur'] = alignment.sum(0).float().clamp(min=1.).log()# -> [txt_T]
-            
-            if 'gt_char_f0'     in args:
-                output['gt_char_f0'    ] = self.get_charavg_from_frames(output['gt_frame_f0'    ], alignment, ignore_zeros=1).float()# [txt_T]
-            
-            if 'gt_char_fesv' in args or 'gt_char_energy' in args:
-                output['gt_char_energy'] = self.get_charavg_from_frames(output['gt_frame_energy'], alignment, ignore_zeros=1).float()# [txt_T]
-            
-            if 'gt_char_fesv' in args or 'gt_char_voiced' in args:
-                output['gt_char_voiced'] = self.get_charavg_from_frames(output['gt_frame_voiced'], alignment, ignore_zeros=0).float()# [txt_T]
-            
-            if 'gt_char_fesv' in args or 'gt_char_logf0'  in args:
-                output['gt_char_logf0' ] = self.get_charavg_from_frames(output['gt_frame_logf0' ], alignment, ignore_zeros=1).float()# [txt_T]
-            
-            if 'gt_char_fesv' in args or 'gt_char_stilt_10'  in args:
-                output['gt_char_stilt_10' ] = self.get_charavg_from_frames(output['gt_frame_stilt_10' ], alignment).float()# [txt_T]
-            
-            if 'gt_char_fesv' in args or 'gt_char_stilt_40'  in args:
-                output['gt_char_stilt_40' ] = self.get_charavg_from_frames(output['gt_frame_stilt_40' ], alignment).float()# [txt_T]
-            
-            if 'gt_char_fesv' in args or 'gt_char_stilt_80'  in args:
-                output['gt_char_stilt_80' ] = self.get_charavg_from_frames(output['gt_frame_stilt_80' ], alignment).float()# [txt_T]
-            
-            if 'gt_char_fesv' in args or 'gt_char_stilt_120' in args:
-                output['gt_char_stilt_120'] = self.get_charavg_from_frames(output['gt_frame_stilt_120'], alignment).float()# [txt_T]
         
         # frame-level v/uv + logf0 + energy + 4x spectral tilt
         if 'gt_fev' in args:
@@ -1149,18 +1295,6 @@ class TTSDataset(torch.utils.data.Dataset):
                 output['gt_mel' ],# [n_mel, mel_T]
             ), dim=0)#           -> [n_mel+7, mel_T]
         
-        # char-level v/uv + logf0 + energy + 4x spectral tilt
-        if 'gt_char_fesv' in args:
-            output['gt_char_fesv'] = torch.cat((
-                output['gt_char_voiced'   ][None, :],# [ 1, txt_T]
-                output['gt_char_logf0'    ][None, :],# [ 1, txt_T]
-                output['gt_char_energy'   ][None, :],# [ 1, txt_T]
-                output['gt_char_stilt_10' ][None, :],# [ 1, txt_T]
-                output['gt_char_stilt_40' ][None, :],# [ 1, txt_T]
-                output['gt_char_stilt_80' ][None, :],# [ 1, txt_T]
-                output['gt_char_stilt_120'][None, :],# [ 1, txt_T]
-            ), dim=0)#                              -> [ 7, txt_T]
-        
         # global diagonality (taken from tacotron2 LSA attention. Needs to be generated in advance)
         if 'diagonality' in args:
             diagonality_path = f'{os.path.splitext(audiopath)[0]}_diag.pt'
@@ -1177,12 +1311,75 @@ class TTSDataset(torch.utils.data.Dataset):
             else:
                 output['avg_prob'] = torch.tensor(0.6).float()
         
+        if 'freq_grad_scalar' in args:
+            speaker_samp_chance = self.speaker_id_ext_sampling_chance[speaker_id_ext]# sampling chance/avg chance # should be 1.0 for a speaker with average amount of audio data. 0.1 for a speaker with 10% of the average amount of audio data.
+            output['freq_grad_scalar'] = torch.tensor(1./speaker_samp_chance)
+        
+        return output
+    
+    def load_data_from_cache(self, config, cachepath, audiopath, text, speaker_id_ext):
+        output = torch.load(cachepath, map_location='cpu')
+        
+        if not (output['config'] == config):# if config was changed since cache was created
+            return None
+        if any(arg not in output['args'] for arg in self.args):# if data cache is missing an arg/data point
+            print(f"Data failed to load: Cache is missing args: {[arg for arg in self.args if arg not in output['args']]}")
+            return None
+        if self.TBPTT and self.use_TBPTT:
+            return None
+        
+        audio_last_modified_time = os.path.getmtime(audiopath)
+        if not (output['audio_last_modified_time'] == audio_last_modified_time):# if audio was modified since the cache was created
+            print(f"Data failed to load: Audio last modified date has changed. Got {audio_last_modified_time}, expected {output['audio_last_modified_time']}. Path '{audiopath}'")
+            return None
+        
+        # convert any half precision tensors to Float
+        output = {k: x.cpu().float() if type(x) is torch.Tensor and x.dtype in [torch.half,] else x for k, x in output.items()}
+        
+        # randomize grapheme <-> phoneme selection
+        use_phones = random.Random(audiopath).random() < self.p_arpabet if self.deterministic_arpabet else random.random() < self.p_arpabet
+        output = {**output, **output['phoneme_keys']} if use_phones else {**output, **output['grapheme_keys']}
+        del output['grapheme_keys'], output['phoneme_keys']
+        return output
+    
+    def save_data_to_cache(self, config, cachepath, output, audiopath, text, speaker_id_ext):
+        output = {k: x.data.cpu().half() if type(x) is torch.Tensor and x.dtype in [torch.float,] else x for k, x in output.items()}
+        output['config'] = config
+        output['args']   = self.args
+        output['audio_last_modified_time'] = os.path.getmtime(audiopath)
+        torch.save(output, cachepath)
+    
+    def get_data_from_inputs(self, audiopath, text, speaker_id_ext, pred_mel_T:int=0, mel_offset=0):# get args using get_args() from CookieTTS.utils
+        args = self.args
+        config = [self.stft_config, self.trim_config, self.text_config, self.speaker_config, self.f0s_conf, self.misc_item_config]
+        
+        # get data from raw source. Audio files + Text Files
+        cachepath = f'{os.path.splitext(audiopath)[0]}_cache.pt'
+        output = None
+        if self.cache_all and os.path.exists(cachepath):
+            output = self.load_data_from_cache(config, cachepath, audiopath, text, speaker_id_ext)
+        # else, get data from cache.
+        
+        if output is None:
+            output = self.process_data_from_inputs(audiopath, text, speaker_id_ext, pred_mel_T)
+            # randomize grapheme <-> phoneme selection
+            use_phones = random.Random(audiopath).random() < self.p_arpabet if self.deterministic_arpabet else random.random() < self.p_arpabet
+            if self.cache_all:
+                output['phoneme_keys']  = self.process_data_from_inputs_phone_dependant(output, audiopath, text, speaker_id_ext, use_phones= True)
+                output['grapheme_keys'] = self.process_data_from_inputs_phone_dependant(output, audiopath, text, speaker_id_ext, use_phones=False)
+                self.save_data_to_cache(config, cachepath, output, audiopath, text, speaker_id_ext)
+                output = {**output, **output['phoneme_keys']} if use_phones else {**output, **output['grapheme_keys']}
+                del output['grapheme_keys'], output['phoneme_keys']
+            else:
+                output_tmp = self.process_data_from_inputs_phone_dependant(output, audiopath, text, speaker_id_ext, use_phones)
+                output = {**output, **output_tmp}
+        
         ########################
         ## Trim into Segments ##
         ########################
         if self.max_segment_length:
             if self.random_segments is True:
-                max_start = mel.shape[-1] - self.max_segment_length
+                max_start = output['gt_mel'].shape[-1] - self.max_segment_length
                 mel_offset = random.randint(0, max_start) if max_start > 0 else 0
             
             if 'gt_frame_f0' in output:
@@ -1254,29 +1451,40 @@ class TTSDataset(torch.utils.data.Dataset):
         try:
             alignpath = os.path.splitext(audiopath)[0]+('_palign.pt' if arpa else '_galign.pt')
             assert os.path.exists(alignpath), f'"{alignpath}" alignment file missing.'
-            alignment = torch.load(alignpath, map_location='cpu').float()
+            alignment = torch.load(alignpath, map_location='cpu').float()# [mel_T, txt_T]
             
-            assert alignment.shape[0]%mel_len==0, f'"{alignpath}" has wrong mel_len'
-            assert alignment.shape[1]%txt_len==0, f'"{alignpath}" has wrong txt_len'
-            if alignment.shape[0] != mel_len:# if a multiple of the required mel_T, just resize the alignment to the required size.
+            if alignment.shape[0]%mel_len!=0 and mel_len-alignment.shape[0]%mel_len <= (alignment.shape[0]//mel_len+1):# Pad any alignments that are off-by-one (too short) due to rounding.
+                alignment = F.pad(alignment.transpose(0, 1).unsqueeze(0), (0, mel_len-alignment.shape[0]%mel_len), mode='replicate').squeeze(0).transpose(0, 1)
+            elif alignment.shape[0]%mel_len!=0 and alignment.shape[0]%mel_len < (alignment.shape[0]//mel_len+1):# Trim any alignments that are off-by-one (too long) due to rounding.
+                alignment = alignment[:-(alignment.shape[0]%mel_len), :]
+            
+            assert alignment.shape[0]%mel_len==0, f'"{alignpath}" has wrong mel_len. Got {alignment.shape[0]}, expected multiple of {mel_len}. alignment.shape = {alignment.shape}'
+            if alignment.shape[0] > mel_len:# if a multiple of the required mel_T, just resize the alignment to the required size.
                 downsample_rate = alignment.shape[0]//mel_len
-                alignment = alignment.unsqueeze(0)# [mel_T*downsample_rate, txt_T] -> [1, mel_T*downsample_rate, txt_T]
-                alignment = F.avg_pool1d(alignment, kernel_size=downsample_rate)# -> [1, mel_T, txt_T]
-                alignment = alignment.squeeze(0)# -> [mel_T, txt_T]
+                if False:
+                    alignment = alignment.unsqueeze(0).transpose(1, 2)# [mel_T*downsample_rate, txt_T] -> [1, txt_T, mel_T*downsample_rate]
+                    alignment = F.avg_pool1d(alignment, kernel_size=downsample_rate)# -> [1, txt_T, mel_T]
+                    alignment = alignment.transpose(1, 2).squeeze(0)# -> [mel_T, txt_T]
+                else:
+                    alignment = alignment[0::downsample_rate]# [mel_T*downsample_rate, txt_T] -> [mel_T, txt_T]
+            assert alignment.shape[0]==mel_len, f'"{alignpath}" has wrong mel_len. Got {alignment.shape[0]}, expected {mel_len}. alignment.shape = {alignment.shape}'
             
-            if alignment.shape[1] != txt_len:# if a multiple of the required txt_T, just resize the alignment to the required size.
+            assert alignment.shape[1]%txt_len==0, f'"{alignpath}" has wrong txt_len. Got {alignment.shape[1]}, expected multiple of {txt_len}. alignment.shape = {alignment.shape}'
+            if alignment.shape[1] > txt_len:# if a multiple of the required txt_T, just resize the alignment to the required size.
                 downsample_rate = alignment.shape[1]//txt_len
-                alignment = alignment.unsqueeze(0).transpose(1, 2)# [mel_T, txt_T*downsample_rate] -> [1, txt_T*downsample_rate, mel_T]
-                alignment = F.avg_pool1d(alignment, kernel_size=downsample_rate)*float(downsample_rate)# -> [1, txt_T, mel_T]
-                alignment = alignment.transpose(1, 2).squeeze(0)# [1, txt_T, mel_T] -> [mel_T, txt_T]
+                alignment = alignment.unsqueeze(0)# [mel_T, txt_T*downsample_rate] -> [1, mel_T, txt_T*downsample_rate]
+                alignment = F.avg_pool1d(alignment, kernel_size=downsample_rate)*downsample_rate# -> [1, mel_T, txt_T]
+                alignment = alignment.squeeze(0)# [1, mel_T, txt_T] -> [mel_T, txt_T]
+            assert alignment.shape[1]==txt_len, f'"{alignpath}" has wrong txt_len. Got {alignment.shape[1]}, expected {txt_len}. alignment.shape = {alignment.shape}'
             
-            alignment += 0.001*self._make_guided_attention(torch.tensor(txt_len), torch.tensor(mel_len))# [mel_T, txt_T]
+            soft_attention = 0.001*self._make_guided_attention(torch.tensor(txt_len), torch.tensor(mel_len))# [mel_T, txt_T]
+            alignment += soft_attention
         except AssertionError as ex:
             print(traceback.format_exc())
             alignment = self._make_guided_attention(torch.tensor(txt_len), torch.tensor(mel_len))# [mel_T, txt_T]
         return alignment
     
-    def get_perc_loudness(self, audio, sampling_rate, audiopath, max_segment_length_s=30.0):
+    def get_perc_loudness(self, audio, sampling_rate, audiopath, max_segment_length_s=10.0):
         max_segment_length = int(max_segment_length_s*sampling_rate)
         meter = pyln.Meter(sampling_rate) # create BS.1770 meter
         try:
@@ -1288,16 +1496,22 @@ class TTSDataset(torch.utils.data.Dataset):
         return gt_perc_loudness# []
     
     def update_loudness(self, audio, sampling_rate, target_lufs, original_lufs=None, max_segment_length_s=30.0):
+        assert torch.isfinite(audio).all(), 'input audio for update_loudness() has non-finite elements.'
+        assert audio.std() > 1e-6, 'input audio [4] has no magnitude'
         max_segment_length = int(max_segment_length_s*sampling_rate)
         if original_lufs is None:
             meter = pyln.Meter(sampling_rate) # create BS.1770 meter
             original_lufs = meter.integrated_loudness(audio[:max_segment_length].numpy()) # measure loudness (in dB)
+            original_lufs = torch.tensor(original_lufs).float()
         
         if type(original_lufs) is torch.Tensor:
             original_lufs = original_lufs.to(audio)
         delta_lufs = target_lufs-original_lufs
+        assert torch.isfinite(original_lufs).all(), f'Original LUFS is non-finite. Got {original_lufs}. Original Audio std = {audio.std().item()}'
         gain = 10.0**(delta_lufs/20.0)
+        assert torch.isfinite(gain).all(), f'gain is non-finite. Got {gain}'
         audio = audio*gain
+        assert torch.isfinite(audio).all(), 'returned audio output for update_loudness() has non-finite elements.'
         if audio.abs().max() > 1.0:
             numel_over_limit = (audio.abs() > 1.0).sum()
             if numel_over_limit > audio.numel()/(sampling_rate/16):# if more than 16 samples per second are over 1.0, do peak normalization. Else just clamp them.
@@ -1417,6 +1631,10 @@ class TTSDataset(torch.utils.data.Dataset):
     
     def get_text(self, text):
         text_norm = torch.IntTensor(text_to_sequence(text, self.text_cleaners))
+        if self.random_segments is False and (self.use_TBPTT and self.TBPTT) is False:# if not using TBPTT or Random Segments:
+            text_norm = text_norm[:self.max_chars_length]                             #   cut of the excess text that 99% won't be used in the first segment of audio.
+        if self.text_repeat_interleave > 1:
+            text_norm = text_norm.repeat_interleave(self.text_repeat_interleave, dim=0)
         return text_norm
     
     def get_item_from_fileline(self, index, filelist_index, mel_offset, audiopath, text, speaker_id_ext):
@@ -1445,12 +1663,14 @@ class TTSDataset(torch.utils.data.Dataset):
                     start_time = time.time()
                     filelist_index, mel_offset = self.dataloader_indexes[index]
                     audiopath, text, speaker_id_ext, *_ = self.filelist[filelist_index]
+                    audiopath      = audiopath.strip()
+                    text           = text.strip()
                     output = self.get_item_from_fileline(index, filelist_index, mel_offset, audiopath, text, speaker_id_ext)
                     elapsed_time = time.time()-start_time
                     
-                    warning_load_time = 12.0 # if file takes longer than 12 seconds to load, print the audiopath for the user to inspect.
+                    warning_load_time = 6.0 # if file takes longer than 6 seconds to load, print the audiopath for the user to inspect.
                     if elapsed_time > warning_load_time:
-                        print(f"File took {elapsed_time:.1f}s to load!\n'{audiopath}'")
+                        print(f"File took {elapsed_time:.1f}s to load!\n'{audiopath}'\n")
                 except Exception as ex:
                     print(f"Failed to load '{audiopath}'")
                     print(traceback.format_exc())
@@ -1582,7 +1802,8 @@ class Collate():
                 out['text_lengths'] = text_lengths
             else:
                 ids_sorted = list(range(B))# elif len_decending sorting is disabled
-        else:   ids_sorted = list(range(B))# else no text, batch can be whatever order it's loaded in
+        else:
+            ids_sorted = list(range(B))# else no text, batch can be whatever order it's loaded in
         
         if all("gt_mel" in item for item in batch):
             out['mel_lengths'] = torch.tensor([batch[ids_sorted[i]]['gt_mel'].shape[-1] for i in range(B)])
@@ -1612,6 +1833,7 @@ class Collate():
         out['speaker_id_ext']    = self.collatek(batch, 'speaker_id_ext',    ids_sorted, dtype=None       )# [int, ...]
         out['speaker_id']        = self.collatek(batch, 'speaker_id',        ids_sorted, dtype=torch.long )# [B]
         out['speaker_id_onehot'] = self.collatek(batch, 'speaker_id_onehot', ids_sorted, dtype=torch.long )# [B]
+        out['freq_grad_scalar']  = self.collatek(batch, 'freq_grad_scalar',  ids_sorted, dtype=torch.float)# [B]
         
         out['gt_emotion_id']     = self.collatek(batch, 'gt_emotion_id',     ids_sorted, dtype=torch.long )# [B]
         out['gt_emotion_onehot'] = self.collatek(batch, 'gt_emotion_onehot', ids_sorted, dtype=torch.long )# [B, n_emotions]

@@ -116,6 +116,12 @@ def get_class_durations(text, alignment, n_symbols):
     char_durs = char_durs.squeeze(1)# [B, 1, n_symbols] -> [B, n_symbols]
     return char_durs
 
+# https://www.desmos.com/calculator/xdzvehg689
+# Squash more negative values together so that mse loss is lower on quieter parts of the spectrogram.
+# at power = 1.0, any mel magnitudes that are at min will have a loss multiplied by 0.0 and values at centre have loss multiplied by 1.0.
+def vol_rescale_mel(mel, power=1.0, centre=0.0, min=-11.55):
+    mel = mel + (power/(abs(min-centre)*2))*((mel-centre)**2)
+    return mel
 
 class VDVAETTSLoss(nn.Module):
     def __init__(self, hparams):
@@ -138,6 +144,10 @@ class VDVAETTSLoss(nn.Module):
         self.HiFiGAN_segment_size = getattr(hparams, 'HiFiGAN_segment_size', 16384)
         self.HiFiGAN_batch_size   = getattr(hparams, 'HiFiGAN_batch_size'  ,     2)
         self.hop_length           = hparams.hop_length
+        
+        self.vol_rescale_power  = hparams.volume_rescale_power
+        self.vol_rescale_centre = hparams.volume_rescale_centre
+        self.vol_rescale_min    = math.log(hparams.stft_clamp_val)
         
         self.HiFiGAN_g_msd_class_weight      = 0.0
         self.HiFiGAN_g_mpd_class_weight      = 0.0
@@ -194,11 +204,12 @@ class VDVAETTSLoss(nn.Module):
         file_losses = {}# dict of {"audiofile": {"spec_MSE": spec_MSE, "avg_prob": avg_prob, ...}, ...}
         
         B, n_mel, mel_T = gt['gt_mel'].shape
-        #tfB = B//(model.decoder.half_inference_mode+1)
-        #for i in range(tfB):
-        #    current_time = time.time()
-        #    if gt['audiopath'][i] not in file_losses:
-        #        file_losses[gt['audiopath'][i]] = {'speaker_id_ext': gt['speaker_id_ext'][i], 'time': current_time}
+        
+        with torch.no_grad():
+            current_time = time.time()
+            for i in range(B):
+                if gt['audiopath'][i] not in file_losses:
+                    file_losses[gt['audiopath'][i]] = {'speaker_id_ext': gt['speaker_id_ext'][i], 'time': current_time}
         
         if 'pred_mel_list' in pred:
             pred_mel_list = pred['pred_mel_list']# [[B, n_mel, mel_T//2**i],]*n_blocks
@@ -206,14 +217,19 @@ class VDVAETTSLoss(nn.Module):
             gt_mel = gt['gt_mel']# [B, n_mel, mel_T]
             B, n_mel, mel_T = gt_mel.shape
             with torch.no_grad():
-                gt_mel = F.pad(gt_mel, (0, model.decoder.downscales[-1]-gt_mel.shape[-1]%model.decoder.downscales[-1]))# pad to multiple of max downscale
+                gt_mel = F.pad(gt_mel, (0, model.decoder.downscales[-1]-gt_mel.shape[-1]%model.decoder.downscales[-1]), value=0.0)# pad to multiple of max downscale
                 gt_mel_list = model.decoder.downsample_to_list(gt_mel)# [[B, n_mel, mel_T//2**i],]*n_blocks
-            
-            with torch.no_grad():
+                
                 mel_mask_list = model.decoder.get_mask_list(gt['mel_lengths'])[1]# [[B, n_mel, mel_T//2**i],]*n_blocks
             
             # fill padded with zeros
             pred_mel_list = [pred_mel.masked_fill(~mel_mask, 0.0) for pred_mel, mel_mask in zip(pred_mel_list, mel_mask_list)]
+            
+            if self.vol_rescale_power:
+                pred_mel_list = [vol_rescale_mel(mel, power=float(self.vol_rescale_power), centre=self.vol_rescale_centre, min=self.vol_rescale_min) for mel in pred_mel_list]
+                if self.vol_rescale_power:
+                    with torch.no_grad():
+                        gt_mel_list = [vol_rescale_mel(gt_mel, power=float(self.vol_rescale_power), centre=self.vol_rescale_centre, min=self.vol_rescale_min) for gt_mel in gt_mel_list]
             
             # get total MSE and total MAE
             total_MSE = sum([F.mse_loss(pred_mel, gt_mel, reduction='sum').float() for pred_mel, gt_mel in zip(pred_mel_list, gt_mel_list)])
@@ -223,6 +239,13 @@ class VDVAETTSLoss(nn.Module):
             # Divide by number of elements to get average MAE and average MSE
             loss_dict['decoder_MAE'] = total_MAE/total_n_elems
             loss_dict['decoder_MSE'] = total_MSE/total_n_elems
+            
+            # Calc MAE for every audio file in the batch. (to be dumped in outdir as a CSV)
+            with torch.no_grad():
+                for i in range(B):
+                    MAE = sum([F.l1_loss(pred_mel[i], gt_mel[i], reduction='sum').float() for pred_mel, gt_mel in zip(pred_mel_list, gt_mel_list)])
+                    n_elems = sum([mel_mask[i].sum()*n_mel for mel_mask in mel_mask_list])
+                    file_losses[gt['audiopath'][i]]['decoder_MAE'] = (MAE/n_elems).item()
         
         if 'dec_kl_list' in pred:
             kl_list = pred['dec_kl_list']
@@ -230,33 +253,41 @@ class VDVAETTSLoss(nn.Module):
             mel_mask_dict[1] = mel_mask_list[0][:, :, :1]
             kl_list = [kl.masked_fill(~mel_mask_dict[kl.shape[2]], 0.0) for kl in kl_list]
             kl_sum = sum([kl.sum(dtype=torch.float) for kl in kl_list])
-            total_n_frames = sum([mel_mask_dict[kl.shape[2]].sum() for kl in kl_list])
+            #total_n_frames = sum([mel_mask_dict[kl.shape[2]].sum() for kl in kl_list])
             total_n_frames = sum([mel_mask.sum()*3 for mel_mask in mel_mask_list]) + 3# using 3 to keep loss consistent with initial test hparams.
             loss_dict['decoder_KLD'] = kl_sum/total_n_frames
+            
+            # Calc KLD for every audio file in the batch. (to be dumped in outdir as a CSV)
+            with torch.no_grad():
+                for i in range(B):
+                    kl_sum = sum([kl[i].sum(dtype=torch.float) for kl in kl_list])
+                    n_frames = sum([mel_mask[i].sum()*3 for mel_mask in mel_mask_list]) + 3# using 3 to keep loss consistent with initial test hparams.
+                    file_losses[gt['audiopath'][i]]['decoder_KLD'] = (kl_sum/n_frames).item()
         
         if 'postnet_pred_mel' in pred:
             gt_mel = gt['gt_mel']# [B, n_mel, mel_T]
             pred_mel = pred['postnet_pred_mel']# [B, n_mel, mel_T]
             kld      = pred['postnet_kld']     # [B, n_mel, mel_T]
-            pred_frame_logf0s  = pred['postnet_pred_logf0s']    # [B, f0s_dim, mel_T]
+            pred_frame_logf0s  = pred['postnet_pred_logf0s'] # [B, f0s_dim, mel_T]
             pred_frame_voiceds = pred['postnet_pred_voiceds']# [B, f0s_dim, mel_T]
-            gt_frame_logf0s  = gt['gt_frame_logf0s']    # [B, f0s_dim, mel_T]
+            gt_frame_logf0s  = gt['gt_frame_logf0s'] # [B, f0s_dim, mel_T]
             gt_frame_voiceds = gt['gt_frame_voiceds']# [B, f0s_dim, mel_T]
             
             mel_mask = get_mask_from_lengths(gt['mel_lengths']).unsqueeze(1)# -> [B, 1, mel_T]
             n_elems = gt['mel_lengths'].sum() * gt_mel.shape[1]
+            pred_mel = pred_mel.masked_fill(~mel_mask, 0.0)
             loss_dict['postnet_MAE'] = F. l1_loss(pred_mel, gt_mel, reduction='sum').float()/n_elems
             loss_dict['postnet_MSE'] = F.mse_loss(pred_mel, gt_mel, reduction='sum').float()/n_elems
             
-            loss_dict['postnet_KLD'] = kld.masked_fill(~mel_mask, 0.0).sum(dtype=torch.float)/(gt['mel_lengths'].sum()*3)
+            loss_dict['postnet_KLD'] = kld.masked_fill(~mel_mask, 0.0).sum(dtype=torch.float)/total_n_frames
             
-            gt_frame_logf0s  .masked_fill(~gt_frame_voiceds.bool(), 0.0)# fill non-voiced audio with pitch 0.0
-            pred_frame_logf0s.masked_fill(~gt_frame_voiceds.bool(), 0.0)# fill non-voiced audio with pitch 0.0
+            gt_frame_logf0s   = gt_frame_logf0s  .masked_fill(~gt_frame_voiceds.bool(), 0.0)# fill non-voiced audio with pitch 0.0
+            pred_frame_logf0s = pred_frame_logf0s.masked_fill(~gt_frame_voiceds.bool(), 0.0)# fill non-voiced audio with pitch 0.0
             loss_dict['postnet_f0_MAE'] = F. l1_loss(pred_frame_logf0s, gt_frame_logf0s, reduction='sum').float()/gt_frame_voiceds.sum()
             loss_dict['postnet_f0_MSE'] = F.mse_loss(pred_frame_logf0s, gt_frame_logf0s, reduction='sum').float()/gt_frame_voiceds.sum()
             
-            loss_dict['postnet_voiced_MAE'] = F.l1_loss             (pred_frame_voiceds, gt_frame_voiceds, reduction='none').masked_fill_(~mel_mask, 0.0).sum()/gt['mel_lengths'].sum()*gt_frame_voiceds.shape[1]
-            loss_dict['postnet_voiced_BCE'] = F.binary_cross_entropy(pred_frame_voiceds, gt_frame_voiceds, reduction='none').masked_fill_(~mel_mask, 0.0).sum()/gt['mel_lengths'].sum()*gt_frame_voiceds.shape[1]
+            loss_dict['postnet_voiced_MAE'] = F.l1_loss             (pred_frame_voiceds, gt_frame_voiceds, reduction='none').masked_fill_(~mel_mask, 0.0).sum()/(gt['mel_lengths'].sum()*gt_frame_voiceds.shape[1])
+            loss_dict['postnet_voiced_BCE'] = F.binary_cross_entropy(pred_frame_voiceds, gt_frame_voiceds, reduction='none').masked_fill_(~mel_mask, 0.0).sum()/(gt['mel_lengths'].sum()*gt_frame_voiceds.shape[1])
         
         if 'pred_sylps' in pred:# Pred Sylps loss
             pred_sylps = pred['pred_sylps'].squeeze(1)# [B, 1] -> [B]

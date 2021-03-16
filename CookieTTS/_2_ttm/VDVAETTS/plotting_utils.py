@@ -48,17 +48,27 @@ def plot_spectrogram_to_numpy(spectrogram, range=None):
     return data
 
 
-def plot_gate_outputs_to_numpy(gate_targets, gate_outputs):
+def plot_time_series_to_numpy(target,# Numpy FloatTensor[T]
+                                pred,# Numpy FloatTensor[T]
+                          pred2=None,# Numpy FloatTensor[T]
+                                xlabel="Frames (Green target, Red predicted)",
+                                ylabel="Gate State",
+                                alpha=0.5):
     fig, ax = plt.subplots(figsize=(12, 3))
-    ax.scatter(range(len(gate_targets)), gate_targets, alpha=0.5,
+    ax.scatter(range(len(target)), target, alpha=alpha,
                color='green', marker='+', s=1, label='target')
-    ax.scatter(range(len(gate_outputs)), gate_outputs, alpha=0.5,
+    ax.scatter(range(len(pred)), pred, alpha=alpha,
                color='red', marker='.', s=1, label='predicted')
-
-    plt.xlabel("Frames (Green target, Red predicted)")
-    plt.ylabel("Gate State")
+    if pred2 is not None:
+        ax.scatter(range(len(pred2)), pred2, alpha=alpha,
+                    color='blue', marker='.', s=1, label='predicted')
+    
+    if xlabel is not None:
+        plt.xlabel(xlabel)
+    if ylabel is not None:
+        plt.ylabel(ylabel)
     plt.tight_layout()
-
+    
     fig.canvas.draw()
     data = save_figure_to_numpy(fig)
     plt.close()

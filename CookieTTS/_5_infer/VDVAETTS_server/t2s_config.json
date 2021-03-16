@@ -22,7 +22,7 @@
             "split_nl"           : "on",
             "split_quo"          : "on",
             "multispeaker_mode"  : "random",
-			"global_sigma"       : 0.66,
+			"global_sigma"       : 0.10,
 			"char_sigma"         : 0.66,
 			"frame_sigma"        : 0.66
         }
@@ -39,10 +39,30 @@
         "output_maxsize_gb": 0.01,
         "dict_path": "../../dict/merged.dict.txt",
         "TTM": {
-            "default_model": "MEL160C | VDVAETTS test_10_0_10xDownsample_KLD0.200 checkpoint_98000",
+            "default_model": "MEL160C | VDVAETTS outdir_u3_14_2textrepeat_loudscaled best_val_model",
             "models": {
+                "MEL160C | VDVAETTS outdir_u3_14_2textrepeat_loudscaled best_val_model": {
+                    "modelpath"       : "/media/cookie/Samsung PM961/TwiBot/CookiePPPTTS/CookieTTS/_2_ttm/VDVAETTS/cps/outdir_u3_14_2textrepeat_loudscaled/best_val_model",
+                    "speaker_ids_file": "I:/TTS/HiFiDatasets/meta/speaker_info.txt",
+                    "use_speaker_ids_file_override": false
+                },
+                "MEL160C | VDVAETTS outdir_u3_14_2textrepeat best_val_model": {
+                    "modelpath"       : "/media/cookie/Samsung PM961/TwiBot/CookiePPPTTS/CookieTTS/_2_ttm/VDVAETTS/cps/outdir_u3_14_2textrepeat/best_val_model",
+                    "speaker_ids_file": "I:/TTS/HiFiDatasets/meta/speaker_info.txt",
+                    "use_speaker_ids_file_override": false
+                },
+                "MEL160C | VDVAETTS outdir_u3_14cont best_val_model": {
+                    "modelpath"       : "/media/cookie/Samsung PM961/TwiBot/CookiePPPTTS/CookieTTS/_2_ttm/VDVAETTS/cps/outdir_u3_14cont_2dl_workers/best_val_model",
+                    "speaker_ids_file": "I:/TTS/HiFiDatasets/meta/speaker_info.txt",
+                    "use_speaker_ids_file_override": false
+                },
                 "Latent94000 | VDVAETTS test_10_0_10xDownsample_KLD0.200 checkpoint_94000": {
                     "modelpath"       : "/media/cookie/Samsung PM961/TwiBot/CookiePPPTTS/CookieTTS/_2_ttm/VDVAETTS/cps/test_10_0_10xDownsample_KLD0.200_latent_hifi/checkpoint_94000",
+                    "speaker_ids_file": "I:/TTS/HiFiDatasets/meta/speaker_info.txt",
+                    "use_speaker_ids_file_override": false
+                },
+                "MEL160C | VDVAETTS test_10_0_10xDownsample_KLD0.200 checkpoint_105000": {
+                    "modelpath"       : "/media/cookie/Samsung PM961/TwiBot/CookiePPPTTS/CookieTTS/_2_ttm/VDVAETTS/cps/test_10_0_10xDownsample_KLD0.200/checkpoint_105000",
                     "speaker_ids_file": "I:/TTS/HiFiDatasets/meta/speaker_info.txt",
                     "use_speaker_ids_file_override": false
                 },

@@ -596,7 +596,7 @@ def train(args, rank, group_name, hparams):
             models.append(hifiGAN.ms_discriminator)
             optimizers.append(hifiGAN.g_optimizer)
             optimizers.append(hifiGAN.d_optimizer)
-        models, optimizers = amp.initialize(models, optimizers, opt_level=f'O{hparams.fp16_run_optlvl}')
+        models, optimizers = amp.initialize(models, optimizers, opt_level=f'O{hparams.fp16_run_optlvl}', max_loss_scale=8192)
         if hparams.HiFiGAN_enable:
             hifiGAN.ms_discriminator = models.pop()
             hifiGAN.mp_discriminator = models.pop()
@@ -667,13 +667,21 @@ def train(args, rank, group_name, hparams):
                 learning_rate = _learning_rate
         checkpoint_iter = iteration
         iteration += 1  # next iteration is iteration + 1
+        
+        if args.reset_rezero:
+            def reset_weight_return_key(key, weight):
+                weight.data.fill_(0.0)
+                return key
+            reset_keys = [reset_weight_return_key(key, weight) for key, weight in model.named_parameters() if any(x in key for x in ['res_weight', 'residual_weight','prior_weight','pos_enc_weight','bias'])]
+            print('Reset the following rezero keys;\n'+'\n'.join(reset_keys)+'\n\n')
+        
         print('Model Loaded')
     
     # define datasets/dataloaders
     dataloader_args = [*get_args(criterion.forward), *model_args]
     if hparams.HiFiGAN_enable:
         dataloader_args.extend(['gt_audio','sampling_rate',])
-    if rank == 0:
+    if False:#rank == 0:# oh god, this is causing issues with multi-GPU data caching.
         dataloader_args.extend(get_args(logger.log_training))
     train_loader, valset, collate_fn, train_sampler, trainset, speakerlist = prepare_dataloaders(hparams, dataloader_args, args, saved_lookup)
     epoch_offset = max(0, int(iteration / len(train_loader)))
@@ -702,8 +710,12 @@ def train(args, rank, group_name, hparams):
                 dataset_len = len(train_loader)
                 
                 start_time = time.time()
+                dataloader_start_time = time.time()
                 # start iterating through the epoch
                 for i, batch in tqdm(enumerate(train_loader), desc="Iter:  ", smoothing=0, total=len(train_loader), position=0, unit="iter"):
+                    if hparams.distributed_run:
+                        torch.distributed.barrier()# wait till all graphics cards reach this point.
+                    dataloader_elapsed_time = time.time() - dataloader_start_time
                     # run external code every epoch or 1000 iters, allows the run to be adjusted without restarts
                     if (i<2 or iteration % param_interval == 0):
                         try:
@@ -831,6 +843,8 @@ def train(args, rank, group_name, hparams):
                         else:
                             grad_norm = torch.nn.utils.clip_grad_norm_(
                                 model.parameters(), grad_clip_thresh)
+                            if not math.isfinite(grad_norm):
+                                print(f'Rank {rank}: NaN Gradnorm(s) from;\n'+'\n'.join([f'- {key} - {torch.norm(p.grad.detach(), 2.0).mean()} - {torch.norm(p.grad.detach(), 2.0).sum()} - {p.grad.detach().mean()} - {p.grad.detach().sum()}' for key, p in model.named_parameters() if p.grad is not None and (not torch.isfinite(torch.norm(p.grad.detach(), 2.0)).all())]))
                     else:
                         grad_norm = 0.0
                     
@@ -872,16 +886,15 @@ def train(args, rank, group_name, hparams):
                         duration = time.time() - start_time
                         if not is_overflow:
                             average_loss = rolling_loss.process(reduced_loss)
-                            dbGANAccStr  = expavg_loss_dict.get('dbGAN_accuracy',  None) or reduced_loss_dict.get('dbGAN_accuracy',  0.5)
-                            InfGANAccStr = expavg_loss_dict.get('InfGAN_accuracy', None) or reduced_loss_dict.get('InfGAN_accuracy', 0.5)
-                            WScoreStr    = expavg_loss_dict.get('weighted_score' , None) or reduced_loss_dict.get('weighted_score' , 0.0)
                             logger.log_training(model, reduced_loss_dict, expavg_loss_dict, best_loss_dict, grad_norm, learning_rate, duration, iteration)
-                        tqdm.write(
-                            f"{iteration} [TrainLoss:{reduced_loss:.3f} Avg:{average_loss:.3f}] "
-                            f"[{grad_norm:03.1f}GradNorm] [{duration:.2f}s/it] "
-                            f"[{(duration/(hparams.batch_size*args.n_gpus)):.3f}s/file] "
-                            f"[{learning_rate:.1e}LR] [{loss_scale:.0f}LS] "
-                            f"[{WScoreStr:.1%}AttSc] [{dbGANAccStr:.1%}dbGANAcc] [{InfGANAccStr:.1%}InfGANAcc]")
+                        
+                        s = (f"{iteration} [TrainLoss:{reduced_loss:.3f} Avg:{average_loss:.3f}] "
+                             f"[{grad_norm:03.1f}GradNorm] [{duration:.2f}s/it] "
+                             f"[{(duration/(hparams.batch_size*args.n_gpus)):.3f}s/file] "
+                             f"[{learning_rate:.1e}LR] [{loss_scale:.0f}LS]")
+                        if dataloader_elapsed_time > duration*0.1:
+                            s += f" [{dataloader_elapsed_time:.2f}IO s/it]"
+                        tqdm.write(s)
                         if is_overflow:
                             tqdm.write("Gradient Overflow, Skipping Step\n")
                         start_time = time.time()
@@ -914,6 +927,7 @@ def train(args, rank, group_name, hparams):
                     
                     del y_pred, y, batch, loss_dict, reduced_loss_dict
                     iteration += 1
+                    dataloader_start_time = time.time()
                     # end of iteration loop
                 
                 # update filelist of training dataloader
@@ -928,9 +942,9 @@ def train(args, rank, group_name, hparams):
         #except Exception as ex: # print Exception and continue from checkpoint. (turns out it takes < 4 seconds to restart like this, fucking awesome)
         except LossExplosion as ex: # print Exception and continue from checkpoint. (turns out it takes < 4 seconds to restart like this, fucking awesome)
             print(ex) # print Loss
-            #checkpoint_path = os.path.join(args.output_directory, "best_val_model")
-            #assert os.path.exists(checkpoint_path), "best_val_model checkpoint must exist for automatic restarts"
-            assert os.path.exists(checkpoint_path), "latest checkpoint must exist for automatic restarts"
+            checkpoint_path = os.path.join(args.output_directory, "best_val_model")
+            assert os.path.exists(checkpoint_path), "best_val_model checkpoint must exist for automatic restarts"
+            #assert os.path.exists(checkpoint_path), "latest checkpoint must exist for automatic restarts"
             
             if hparams.fp16_run:
                 amp._amp_state.loss_scalers[0]._loss_scale = 32768
@@ -968,6 +982,8 @@ if __name__ == '__main__':
                         help='load model weights only, ignore all missing/non-matching layers')
     parser.add_argument('--detect_anomaly', action='store_true',
                         help='detects NaN/Infs in autograd backward pass and gives additional debug info.')
+    parser.add_argument('--reset_rezero', action='store_true',
+                        help='Can help if warm_start causes inf or NaN on the first few iters. Can increase training time slightly compared to normal warm_start.')
     parser.add_argument('--n_gpus', type=int, default=1,
                         required=False, help='number of gpus')
     parser.add_argument('--rank', type=int, default=0,

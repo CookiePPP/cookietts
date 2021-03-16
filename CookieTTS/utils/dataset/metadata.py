@@ -37,10 +37,10 @@ def identify_transcript_storage(directory, audio_files, audio_ext, audio_basenam
     valid_txts = list()
     for txt_file in txt_files:
         if os.stat(txt_file).st_size > 80: # if txt_file has a reasonable size
-            text = open(txt_file, "r").read()
+            text = open(txt_file, "r", encoding='utf-8').read()
             n_pipes = text.count('|')# get number of pipe symbols
             n_nl = text.count('\n')  # get number of newline symbols
-            if n_pipes > 1 and n_nl > 0: # if the text file has more than 2 pipes and a newline symbol
+            if n_pipes > 1 and n_nl > 0: # if the text file has 2 or more pipes and a newline symbol
                 prev_wd_ = os.getcwd()
                 if os.path.split(txt_file)[0]:# move into txt dir (in-case the audio paths are relative)
                     os.chdir(os.path.split(txt_file)[0])
@@ -54,7 +54,7 @@ def identify_transcript_storage(directory, audio_files, audio_ext, audio_basenam
                     print('#'*70)
                     print('\n'.join([os.path.splitext(os.path.split(x)[1])[0] for x in paths if os.path.splitext(os.path.split(x)[1])[0] not in audio_basename_lookup.keys()]))
                     print('#'*70)
-                if n_exists > 4 or (len(paths)-n_exists < 1): # if more than 5 audio files were found
+                if n_exists > 3 or (len(paths)-n_exists < 1): # if more than 3 audio files were found
                     n_valid_txts += 1 # add it as a valid txt file
                     valid_txts.append(txt_file) # and save the txt files path (relative to the dataset root)
                 os.chdir(prev_wd_)
@@ -99,11 +99,16 @@ def filelist_get_transcript(audio_file, filelist, filelist_paths, filelist_names
                 except ValueError as ex:
                     print(f'"{audio_file}" not found in filelists')
                     raise FileNotFoundError(ex)
-        transcript = filelist[path_index][1]
-        if any(x in transcript for x in set('/ʃɫθʊɛ')):
+        try:
+            transcript = filelist[path_index][1]
+        except:
+            print(filelist, path_index, filelist[path_index], end='\n\n')
+            raise
+        if any(x in transcript for x in set('ʃɫθʊɛ')):
             _=filelist.pop(path_index)      # remove problem index
             _=filelist_paths.pop(path_index)# remove problem index
             _=filelist_names.pop(path_index)# remove problem index
+            _=filelist_basenames.pop(path_index)# remove problem index
             continue
         successful = True
     
@@ -137,7 +142,10 @@ def vctk_get_transcript(audio_file, txt_lookup):
     audio_file_basename = os.path.splitext(os.path.split(audio_file)[-1])[0].lower()
     text_filename = audio_file_basename+".txt"
     text_path = txt_lookup[text_filename]
-    transcript = open(text_path, "r").read()
+    try:
+        transcript = open(text_file, "r", encoding="utf-8").read()
+    except UnicodeDecodeError:
+        transcript = open(text_file, "r", encoding="latin-1").read()
     return transcript.strip()
 
 
@@ -282,8 +290,15 @@ def get_dataset_meta(directory, meta=None, default_speaker=None, default_emotion
         valid_txts = _[0]
         filelist = list()
         for txt in valid_txts:
-            text = open(txt, "r").read()
-            text = [x.strip().split("|") for x in text.split("\n") if len(x.strip()) and not '{' in x.split("|")[1]] # `and not '{' in x` <- ignoring provided ARPAbet.
+            try:
+                text = open(txt, "r", encoding="utf-8").read()
+            except UnicodeDecodeError:
+                try:
+                    text = open(txt, "r", encoding="latin-1").read()
+                except:
+                    print(txt)
+                    raise
+            text = [x.strip().split("|") for x in text.split("\n") if len(x.strip()) and ('|' in x) and len(x.split("|")[1].strip()) and not '{' in x.split("|")[1]] # `and not '{' in x` <- ignoring provided ARPAbet.
             filelist.extend(text)
         filelist_paths = [x[0].replace(".npy",".wav").replace("\\","/").replace('  ',' ') for x in filelist]
         filelist_names = [os.path.split(x)[-1] for x in filelist_paths]
@@ -294,6 +309,7 @@ def get_dataset_meta(directory, meta=None, default_speaker=None, default_emotion
     
     files_added=0
     files_skipped=0
+    audio_basepaths_added = []
     for audio_file in audio_files:
         audio_name = os.path.split(audio_file)[-1]
         audio_basename = os.path.splitext(audio_name)[0]
@@ -309,7 +325,7 @@ def get_dataset_meta(directory, meta=None, default_speaker=None, default_emotion
             else:
                 raise NotImplementedError
         except FileNotFoundError as ex:
-            #print(ex, f'Skipping file: "{audio_file}"', sep='\n')
+            print(ex, f'Skipping file: "{audio_file}"', sep='\n')
             files_skipped+=1; continue
         except KeyError as ex:
             print(ex, f'Skipping file: "{audio_file}"', sep='\n')
@@ -317,6 +333,10 @@ def get_dataset_meta(directory, meta=None, default_speaker=None, default_emotion
         if len(transcript) < 2:
             print(f'Skipping file: "{audio_file}"', sep='\n')
             files_skipped+=1; continue
+        if os.path.splitext(audio_file)[0] in audio_basepaths_added:# if same audio with another file extension was added already
+            print(f'Skipping file: "{audio_file}"', sep='\n')
+            files_skipped+=1; continue
+        audio_basepaths_added.append(os.path.splitext(audio_file)[0])
         
         # 2.2.2 - get speaker name, emotion(s), noise level, source, source_type
         voice = default_speaker           # defaults

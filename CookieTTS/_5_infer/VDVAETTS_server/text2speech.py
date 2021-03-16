@@ -23,7 +23,6 @@ from CookieTTS._2_ttm.VDVAETTS.model import load_model
 from CookieTTS._4_mtw.waveglow.denoiser import Denoiser
 from CookieTTS.utils.text import text_to_sequence
 from CookieTTS.utils.dataset.utils import load_filepaths_and_text
-from CookieTTS.utils.model.utils import alignment_metric
 
 def get_mask_from_lengths(lengths, max_len=None):
     if not max_len:
@@ -503,7 +502,7 @@ class T2S:
                 while np.amin(best_score) < target_score:
                     # run VDVAETTS
                     if status_updates: print("..", end='')
-                    outputs = self.VDVAETTS.inference(sequence, text_lengths.repeat_interleave(batch_size_per_text, dim=0), VDVAETTS_speaker_ids, style_input, char_sigma=char_sigma, frame_sigma=frame_sigma)
+                    outputs = self.VDVAETTS.inference(sequence, text_lengths.repeat_interleave(batch_size_per_text, dim=0), VDVAETTS_speaker_ids, style_input, global_sigma=global_sigma, char_sigma=char_sigma, frame_sigma=frame_sigma)
                     batch_pred_mel = outputs['hifigan_inputs'] if self.MTW_conf.uses_latent_input else outputs['pred_mel']
                     
                     # metric for html side

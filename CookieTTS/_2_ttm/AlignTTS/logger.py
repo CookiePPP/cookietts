@@ -1,5 +1,7 @@
 import random
 import torch
+import os
+import json
 from tensorboardX import SummaryWriter
 from plotting_utils import plot_alignment_to_numpy, plot_spectrogram_to_numpy
 from plotting_utils import plot_gate_outputs_to_numpy
@@ -7,6 +9,7 @@ from plotting_utils import plot_gate_outputs_to_numpy
 class AlignTTSLogger(SummaryWriter):
     def __init__(self, logdir, hparams):
         super(AlignTTSLogger, self).__init__(logdir)
+        self.logdir = logdir
         self.n_items = hparams.n_tensorboard_outputs
         self.plotted_targets_val = False# validation/teacher-forcing
         self.plotted_targets_inf = False# infer
@@ -22,7 +25,7 @@ class AlignTTSLogger(SummaryWriter):
             tag = tag.replace('.', '/')
             self.add_histogram(tag, value.data.cpu().numpy(), iteration)
     
-    def log_training(self, model, reduced_loss_dict, expavg_loss_dict, best_loss_dict, grad_norm, learning_rate, duration,
+    def log_training(self, model, y, reduced_loss_dict, expavg_loss_dict, best_loss_dict, grad_norm, learning_rate, duration,
                      iteration):
         # plot distribution of parameters
         if iteration==1 or (iteration%500 == 0 and iteration > 1 and iteration < 4000) or (iteration%5000 == 0 and iteration > 4999 and iteration < 50000) or (iteration%25000 == 0 and iteration > 49999):
@@ -48,9 +51,12 @@ class AlignTTSLogger(SummaryWriter):
             
             self.add_scalar("grad.norm", grad_norm, iteration)
         
+        # write out "iter|loss|grad_norm|['file_1.wav','file_2.wav', ...]\n"
+        open(os.path.join(self.logdir, 'train.txt'), 'a').write(f'{iteration}|{reduced_loss_dict["loss"]}|{grad_norm}|{json.dumps(y["audiopath"])}\n')
+        
         if iteration%100 == 0:
-            self.add_scalar(f"{prepend}.learning_rate",      learning_rate,      iteration)
-            self.add_scalar(f"{prepend}.duration",           duration,           iteration)
+            self.add_scalar(f"{prepend}.learning_rate", learning_rate, iteration)
+            self.add_scalar(f"{prepend}.duration",      duration,      iteration)
     
     def log_validation(self, reduced_loss_dict, reduced_bestval_loss_dict, model, y, y_pred, align, iteration):
         prepend = 'validation'
@@ -64,7 +70,7 @@ class AlignTTSLogger(SummaryWriter):
         
         # get pred_spect
         with torch.no_grad():
-            align = align.transpose(1, 2).float()# [B, txt_T, mel_T] -> [B, mel_T, txt_T]
+            align = align.float()# [B, txt_T, mel_T] -> [B, mel_T, txt_T]
             char_pred_spect = y_pred['mu_logvar'].chunk(2, dim=-1)[0].cpu().float()# [B, txt_T, n_mel]
             pred_mel = align[:n_items] @ char_pred_spect[:n_items]# [B, mel_T, txt_T] @ [B, txt_T, n_mel] -> [B, mel_T, n_mel]
         

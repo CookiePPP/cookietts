@@ -48,12 +48,13 @@ def create_hparams(hparams_string=None, verbose=False):
         #################################
         ## Batch Size / Segment Length ##
         #################################
-        batch_size    =16,# controls num of files processed in parallel per GPU
+        batch_size    =10,# controls num of files processed in parallel per GPU
         val_batch_size=16,# for more precise comparisons between models, constant batch_size is useful
         
         use_TBPTT  =False,# continue processing longer files into the next training iteration
-        max_segment_length=9999,# max mel length till a segment is sliced.
-        max_chars_length  =9999,# max text input till text is sliced. I use segment_length/4.
+        max_segment_length=2*864,# max mel length till a segment is sliced.
+        max_chars_length  =  320,# max text input till text is sliced.
+                                 # text slicing is ignored when using TBPTT
         
         gradient_checkpoint      = False,# Saves forward pass states to recompute the gradients in chunks
                                          # Will reduce VRAM usage significantly at the cost of running parts of the model twice.
@@ -73,7 +74,7 @@ def create_hparams(hparams_string=None, verbose=False):
                                       # Only applies to training dataset.
                                       # Only updates at the end of each epoch.
         
-        num_workers    =8,# (train) Number of threads for dataloading per GPU
+        num_workers    =4,# (train) Number of threads for dataloading per GPU
         val_num_workers=4,# (eval)  Number of threads for dataloading per GPU
         prefetch_factor=8,# NOT IMPLEMENTED - Requires Pytorch 1.7 (so not right now)# Number of samples loaded in advance by each worker.
         
@@ -90,7 +91,7 @@ def create_hparams(hparams_string=None, verbose=False):
         # if data_source is 1:
         dataset_folder = '/media/cookie/WD6TB/TTS/HiFiDatasets',
         dataset_metapath_append = '_VDVAETTS',
-        dataset_audio_filters= ['*.wav','*.flac',],
+        dataset_audio_filters= ['*.wav','*.flac','*.ogg'],
         dataset_audio_rejects= ['*_Noisy_*','*_Very Noisy_*',],
         dataset_p_val = 0.005,# portion of dataset for Validation # default of 0.5% may be too small depending on the size of your dataset.
         dataset_min_duration =  0.9,# minimum duration in seconds for audio files to be added.
@@ -99,6 +100,10 @@ def create_hparams(hparams_string=None, verbose=False):
         dataset_min_chars    =   12,# min number of letters/text that a transcript should have to be added to the audiofiles list.
         dataset_max_chars    =  256,# min number of letters/text that a transcript should have to be added to the audiofiles list.
                                     # use max_chars_length to control how much of text from each audio file can be used to fill VRAM during training.
+        cache_all = False,# will save every datapoint/feature from each audiopath into it's own pt file.
+                         # Will be reset if ANYTHING in the dataloader args or config changes
+                         # each pt file will be reset if the source audiopath or textpath is modified.
+                         # This hparam should not be used by more than 2 model at the same time. For use with many GPU's on a single task or storage devices with low random access speed.
         
         force_load  = True,# if a file fails to load, replace it with a random other file.
         
@@ -138,13 +143,13 @@ def create_hparams(hparams_string=None, verbose=False):
         ## Audio Parameters             ##
         ##################################
         sampling_rate= 44100,
-        target_lufs  = -25.0,# Loudness each file is rescaled to, use None for original file loudness.
+        target_lufs  = -24.0,# Loudness each file is rescaled to, use None for original file loudness.
         
         trim_enable      = True,# set to False to disable trimming completely
         trim_cache_audio = True,# save trimmed audio to disk to load later. Saves CPU usage, uses more disk space.
         filt_min_freq =    60.,# low freq
         filt_max_freq = 18000.,# top freq
-        filt_order    =     6 ,# filter strength/agressiveness/whatever - don't set too high or things will break
+        filt_order    =     3 ,# filter strength/agressiveness/whatever - don't set too high or things will break
         trim_margin_left  = [0.125, 0.05, 0.0375],
         trim_margin_right = [0.125, 0.05, 0.0375],
         trim_ref          = ['amax']*3,
@@ -157,17 +162,17 @@ def create_hparams(hparams_string=None, verbose=False):
         ## Spectrogram Parameters       ##
         ##################################
         filter_length  =  2048,
-        hop_length     =   512,
+        hop_length     =   256,
         win_length     =  2048,
         n_mel_channels =   160,
         mel_fmin       =    20.0,
         mel_fmax       = 11025.0,
-        stft_clamp_val = 1e-5,# 1e-5 = original
+        stft_clamp_val = 1e-4,# 1e-5 = original
         
-        cache_mel=True,# save spectrograms to disk to load later. Saves CPU usage, uses more disk space.
-                        # modifications to params below do not apply to already cached files.
+        cache_mel=False,# save spectrograms to disk to load later. Saves CPU usage, uses more disk space.
+                       # modifications to params below do not apply to already cached files.
         
-        silence_value = -11.5129,# = ln(1e-5)
+        silence_value = -9.2103,# = ln(1e-4)
         silence_pad_start = 0,# frames to pad the start of each spectrogram
         silence_pad_end   = 0,# frames to pad the  end  of each spectrogram
                             # These frames will be added to the loss functions and Tacotron must predict and generate the padded silence.
@@ -202,7 +207,7 @@ def create_hparams(hparams_string=None, verbose=False):
         tt_torchMoji_BatchNorm  = True,
         
         # (Speaker) Speaker embedding
-        n_speakers            = 2048,# maximum number of speakers the model can support.
+        n_speakers            = 4096,# maximum number of speakers the model can support.
         speaker_embedding_dim =  256,# speaker embedding size # 128 baseline
         
         # Attention

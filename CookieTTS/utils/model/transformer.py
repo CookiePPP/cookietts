@@ -22,7 +22,8 @@ class TransformerEncoderLayer(nn.Module):
                  ff_kernel_size=1,
                  dropout=0.1,
                  activation="relu",
-                 rezero=True):
+                 rezero=True,
+                 legacy=False):
         super(TransformerEncoderLayer, self).__init__()
         self.self_attn = nn.MultiheadAttention(d_model, nhead, dropout=dropout)
         self.ff_kernel_size = ff_kernel_size
@@ -35,12 +36,14 @@ class TransformerEncoderLayer(nn.Module):
             self.linear1 = Linear(d_model, dim_feedforward, w_init_gain=activation)
             self.linear2 = Linear(dim_feedforward, d_model)
         
-        if not rezero:
+        if (not rezero) or legacy:
             self.norm1 = nn.LayerNorm(d_model)
             self.norm2 = nn.LayerNorm(d_model)
         
         self.dropout = nn.Dropout(dropout)
-        if rezero:
+        if legacy:
+            self.residual_weight = nn.Parameter(torch.ones(1)*0.01)
+        elif rezero:
             self.residual_weight1 = nn.Parameter(torch.ones(1)*0.01)
             self.residual_weight2 = nn.Parameter(torch.ones(1)*0.01)
     
@@ -52,6 +55,9 @@ class TransformerEncoderLayer(nn.Module):
             src2 = self.dropout(src2)
             if hasattr(self, 'residual_weight1'):
                 src2 = self.residual_weight1*src2
+            
+            if hasattr(self, 'residual_weight'):
+                src2 = self.residual_weight*src2
             
             src = src + src2# [B, in_T, dim]
             if hasattr(self, 'norm1'):

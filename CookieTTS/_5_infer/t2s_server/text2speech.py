@@ -316,6 +316,21 @@ class T2S:
         checkpoint_dict = checkpoint['state_dict'] # get state_dict
         
         model = load_model(checkpoint_hparams) # initialize the model
+        
+        missing_model_keys = [key for key in checkpoint_dict.keys() if key not in model.state_dict()]
+        if len(missing_model_keys):
+            print(f"Missing {len(missing_model_keys)} model state_dict keys!")
+            print(missing_model_keys)
+            print("\n")
+        
+        missing_cp_keys = [key for key in model.state_dict() if key not in checkpoint_dict.keys()]
+        if len(missing_cp_keys):
+            print(f"Missing {len(missing_cp_keys)} checkpoint state_dict keys!")
+            print(missing_cp_keys)
+            print("\n")
+        
+        checkpoint_dict = {k:v for k,v in checkpoint_dict.items() if k in model.state_dict()}
+        checkpoint_dict = {**model.state_dict(), **checkpoint_dict} 
         model.load_state_dict(checkpoint_dict) # load pretrained weights
         _ = model.cuda().eval()#.half()
         print("Done")
@@ -408,13 +423,13 @@ class T2S:
         if zoneout_power is not None:
             zoneout_power = zoneout_power * 0.01
             try:
-                self.tacotron.decoder.attention_rnn.zoneout = zoneout_power
-                self.tacotron.decoder.second_attention_rnn.zoneout = zoneout_power
+                self.tacotron.decoder.attention_rnn.zoneout_rate = zoneout_power
+                self.tacotron.decoder.second_attention_rnn.zoneout_rate = zoneout_power
             except: pass
             try:
-                self.tacotron.decoder.decoder_rnn.zoneout = zoneout_power
-                self.tacotron.decoder.second_decoder_rnn.zoneout = zoneout_power
-                self.tacotron.decoder.third_decoder_rnn.zoneout = zoneout_power
+                self.tacotron.decoder.decoder_rnn.zoneout_rate = zoneout_power
+                self.tacotron.decoder.second_decoder_rnn.zoneout_rate = zoneout_power
+                self.tacotron.decoder.third_decoder_rnn.zoneout_rate = zoneout_power
             except: pass
         
         # time to gen

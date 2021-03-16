@@ -22,12 +22,12 @@ decrease_lr_on_restart = True # Decrease the Learning Rate on a LossExplosionThr
 
 offset = 0
 # Learning Rate / Optimization
-decay_start = 40000
+decay_start = 50000
 A_ = 1.0e-4
-B_ = 20000
+B_ = 30000
 C_ = 0e-5
 min_learning_rate = 1e-8
-grad_clip_thresh  = 100.0
+grad_clip_thresh  = 1.0 if iteration > 10000 else 50.0
 
 warmup_start_lr = 0.0e-4
 warmup_start = checkpoint_iter
@@ -36,12 +36,15 @@ warmup_end   = warmup_start + (A_-warmup_start_lr)*1e4 # warmup will linearly in
 best_model_margin = 0.01 # training loss margin
 
 validation_interval = 1000#125 if iteration < 2000 else (500 if iteration < 8000 else 2000)
-checkpoint_interval = 10000
+checkpoint_interval = 1000
 
 # Tacotron Loss Scalars (set to None to load from hparams.py)
+dur_NLL_weight = 0.25
+dur_MAE_weight = 0.00
+
 save_alignments = False
-if iteration > 40000:
-    save_alignments = True
+#if iteration > 40000:
+#    save_alignments = True
 
 show_gradients = False# print abs().sum() gradients of every param tensor in tacotron model.
 

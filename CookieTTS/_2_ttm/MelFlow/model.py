@@ -62,9 +62,9 @@ class Prenet(nn.Module):
 
 
 class FFT(nn.Module):
-    def __init__(self, hidden_dim, n_heads, ff_dim, n_layers, ff_kernel_size=1, rezero_pos_enc=True, add_position_encoding=False, position_encoding_random_start=False, rezero_transformer=True):
+    def __init__(self, hidden_dim, n_heads, ff_dim, n_layers, ff_kernel_size=1, rezero_pos_enc=True, add_position_encoding=False, position_encoding_random_start=False, rezero_transformer=True, legacy=False):
         super(FFT, self).__init__()
-        self.FFT_layers = nn.ModuleList( [TransformerEncoderLayer(d_model=hidden_dim, nhead=n_heads, dim_feedforward=ff_dim, ff_kernel_size=ff_kernel_size, rezero=rezero_transformer) for _ in range(n_layers)] )
+        self.FFT_layers = nn.ModuleList( [TransformerEncoderLayer(d_model=hidden_dim, nhead=n_heads, dim_feedforward=ff_dim, ff_kernel_size=ff_kernel_size, rezero=rezero_transformer, legacy=legacy) for _ in range(n_layers)] )
         
         self.add_position_encoding = add_position_encoding
         self.position_encoding_random_start = position_encoding_random_start
@@ -73,7 +73,8 @@ class FFT(nn.Module):
             if self.rezero_pos_enc:
                 self.pos_enc_weight = nn.Parameter(torch.ones(1)*1.0)
             self.register_buffer('pe', PositionalEncoding(hidden_dim).pe)
-            #self.norm = nn.LayerNorm(hidden_dim)
+            if legacy:
+                self.norm = nn.LayerNorm(hidden_dim)
     
     def forward(self, x, lengths, save_alignments=False):# [B, L, D], [B]
         if self.add_position_encoding:
@@ -86,7 +87,8 @@ class FFT(nn.Module):
                 pos_enc = pos_enc*self.pos_enc_weight
             pos_enc = pos_enc.unsqueeze(0)# [L, D] -> [B, L, D]
             x = x + pos_enc# [B, L, D] + [B, L, D] -> [B, L, D]
-            #x = self.norm(x)
+            if hasattr(self, 'norm'):
+                x = self.norm(x)
         
         x = x * get_mask_from_lengths(lengths).unsqueeze(-1)# [B, L, D] * [B, L, 1]
         

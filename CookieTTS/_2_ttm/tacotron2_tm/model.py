@@ -61,7 +61,7 @@ class MDN(nn.Module):
         self.register_buffer('pe', PositionalEncoding(memory_dim).pe)
         
         from CookieTTS._2_ttm.MelFlow.model import FFT
-        self.lower  = FFT(memory_dim, hparams.mdn_n_heads, hparams.mdn_ff_dim, hparams.mdn_n_layers)
+        self.lower  = FFT(memory_dim, hparams.mdn_n_heads, hparams.mdn_ff_dim, hparams.mdn_n_layers, legacy=True)
         self.higher = nn.Sequential(nn.Linear(memory_dim, memory_dim),
                            nn.LayerNorm(memory_dim),
                            nn.ReLU(),
@@ -72,7 +72,7 @@ class MDN(nn.Module):
         self.mel_enc = MelEncoder(hparams, hp_prepend='mdn_', output_dim=memory_dim)
         
         # duration predictors
-        self.dp_lower  = FFT(memory_dim, hparams.durpred_n_heads, hparams.durpred_ff_dim, hparams.durpred_n_layers)
+        self.dp_lower  = FFT(memory_dim, hparams.durpred_n_heads, hparams.durpred_ff_dim, hparams.durpred_n_layers, legacy=True)
         self.dp_higher = nn.Linear(memory_dim, 1)
     
     @torch.no_grad()
@@ -1656,7 +1656,7 @@ class Tacotron2(nn.Module):
                 from CookieTTS._2_ttm.MelFlow.model import FFT
                 self.attention_fft = FFT(mem_dim, hparams.align_fft_n_heads,
                         hparams.align_fft_ff_dim, hparams.align_fft_n_layers,
-                        add_position_encoding=True, position_encoding_random_start=True)
+                        add_position_encoding=True, position_encoding_random_start=True, legacy=True)
         
         self.decoder = Decoder(hparams, mem_dim)
         

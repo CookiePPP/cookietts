@@ -27,51 +27,52 @@ show_gradients = False# print abs().sum() gradients of every param tensor in tac
 # Learning Rate / Optimization
 decay_start = 350000
 A_ = 1.0e-4
-B_ = 20000
+B_ = 30000
 C_ = 0e-5
 min_learning_rate = 1e-11
-grad_clip_thresh  = 10.0 if iteration > 12500 else 40.0
+grad_clip_thresh  = 1.2 if iteration > 12500 else 40.0
 warmup_start_lr = 0.0e-4
 warmup_start = checkpoint_iter
-warmup_end   = warmup_start + (A_-warmup_start_lr)*1e6 # warmup will linearly increase LR by 1e-5 each iter till LR hits A_
+warmup_end   = warmup_start + (A_-warmup_start_lr)*5e6 # warmup will linearly increase LR by 1e-5 each iter till LR hits A_
+
 
 best_model_margin = 0.01 # training loss margin
 
 validation_interval =  125 if iteration < 2000 else (500 if iteration < 8000 else 500)
-checkpoint_interval = 1000
+checkpoint_interval = 2500
 
 # Loss Scalars (set to None to load from hparams.py)
 decoder_MAE_weight = 0.00
-decoder_MSE_weight = 0.50
-decoder_KLD_weight = 0.12
+decoder_MSE_weight = 1.00
+decoder_KLD_weight = 0.10
 
 margin = 0#param_interval
 about_to_val = (iteration-1)%validation_interval >= validation_interval-margin-1
 kld_iteration = iteration
-if iteration < 50000 and not about_to_val:
-    decoder_KLD_weight *= min(kld_iteration%5000, 2000)/2000# cyclic annealing. (at 0 iters KLD_scale==0.0), (at 2000 iters KLD_scale==1.0), (at 5000 iters KLD_scale=1.0)
-                                                      # see https://www.microsoft.com/en-us/research/uploads/prod/2019/04/Annealing-with-the-monotonic-schedule.png
+if iteration < 1 and not about_to_val:
+    decoder_KLD_weight *= min(kld_iteration%5000, 500)/500# cyclic annealing. (at 0 iters KLD_scale==0.0), (at 2000 iters KLD_scale==1.0), (at 5000 iters KLD_scale=1.0)
+                                                            # see https://www.microsoft.com/en-us/research/uploads/prod/2019/04/Annealing-with-the-monotonic-schedule.png
 
 # Pitch Postnet
-postnet_f0_MAE_weight     = 0.00# prior outputs
-postnet_f0_MSE_weight     = 0.25# prior outputs
-postnet_voiced_MAE_weight = 0.00# prior outputs
-postnet_voiced_BCE_weight = 0.25# prior outputs
+postnet_f0_MAE_weight     = 0.00# decoder/prior outputs
+postnet_f0_MSE_weight     = 0.25# decoder/prior outputs
+postnet_voiced_MAE_weight = 0.00# decoder/prior outputs
+postnet_voiced_BCE_weight = 0.25# decoder/prior outputs
 
-postnet_MAE_weight        = 0.00# decoder outputs
-postnet_MSE_weight        = 1.00# decoder outputs
+postnet_MAE_weight        = 0.00# postnet_decoder outputs
+postnet_MSE_weight        = 0.50# postnet_decoder outputs
 
-postnet_KLD_weight        = 0.10# [prior <-> encoder] similarity/link
-if iteration < 50000 and not about_to_val:
-    postnet_KLD_weight *= min(kld_iteration%5000, 2000)/2000# cyclic annealing. (at 0 iters KLD_scale==0.0), (at 2000 iters KLD_scale==1.0), (at 5000 iters KLD_scale=1.0)
-                                                            # see https://www.microsoft.com/en-us/research/uploads/prod/2019/04/Annealing-with-the-monotonic-schedule.png
+postnet_KLD_weight        = decoder_KLD_weight#0.001#decoder_KLD_weight# [decoder <-> postnet_encoder] similarity/link
+#if iteration < 1 and not about_to_val:
+#    postnet_KLD_weight *= min(kld_iteration%5000, 2000)/2000# cyclic annealing. (at 0 iters KLD_scale==0.0), (at 2000 iters KLD_scale==1.0), (at 5000 iters KLD_scale=1.0)
+#                                                            # see https://www.microsoft.com/en-us/research/uploads/prod/2019/04/Annealing-with-the-monotonic-schedule.png
 
 # Varpred (Variance Predictor)
 varpred_MAE_weight = 0.00
 varpred_MSE_weight = 1.00
-varpred_KLD_weight = 1.00
-if iteration < 50000 and not about_to_val:
-    varpred_KLD_weight *= min(kld_iteration%5000, 2000)/2000# cyclic annealing. at 0 iters, KLD_scale==0.0. at 2500 iters, KLD_scale==1.0, at 2000 iters, KLD_scale=1.0
+varpred_KLD_weight = 0.10
+if iteration < 1 and not about_to_val:
+    varpred_KLD_weight *= min(kld_iteration%5000, 500)/500# cyclic annealing. at 0 iters, KLD_scale==0.0. at 2500 iters, KLD_scale==1.0, at 2000 iters, KLD_scale=1.0
                                                             # see https://www.microsoft.com/en-us/research/uploads/prod/2019/04/Annealing-with-the-monotonic-schedule.png
 
 # MDN (Mixture Density Network)

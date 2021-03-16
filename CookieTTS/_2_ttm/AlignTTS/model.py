@@ -29,11 +29,22 @@ def load_model(hparams):
         model = model.cuda()
     return model
 
+class ScaleGrad():
+    def __init__(self):
+        pass
+    
+    def __call__(self, x, grad_scalar):# [B, ...], [B]
+        while len(x.shape) > len(grad_scalar.shape):
+            grad_scalar = grad_scalar.unsqueeze(-1)
+        scaled_x = x*grad_scalar
+        x = scaled_x + (-scaled_x + x).detach()# detach gradient fuckery so the output is "x" with the gradients of "scaled_x"
+        return x
 
 class Prenet(nn.Module):
     def __init__(self, hp):
         super(Prenet, self).__init__()
         self.speaker_embedding = nn.Embedding(hp.n_speakers, hp.speaker_embedding_dim)
+        self.scalegrad = ScaleGrad()
         self.speaker_linear = nn.Linear(hp.speaker_embedding_dim, hp.symbols_embedding_dim)
         self.speaker_linear.weight.data *= 0.1
         
@@ -44,12 +55,16 @@ class Prenet(nn.Module):
         self.pos_enc_weight = nn.Parameter(torch.ones(1)*0.5)
         self.norm = nn.LayerNorm(hp.hidden_dim)
     
-    def forward(self, text, speaker_ids):
+    def forward(self, text, speaker_ids, freq_grad_scalar=None):
         B, L = text.size(0), text.size(1)# [B, txt_T]
         x = self.Embedding(text).transpose(0,1)# -> [txt_T, B, embed]
         assert not (torch.isinf(x) | torch.isnan(x)).any()
-        embed = self.speaker_embedding(speaker_ids).expand(x.shape[0], -1, -1)# [txt_T, B, spkr_embed]
-        embed = self.speaker_linear(embed)# [txt_T, B, embed]
+        
+        embed = self.speaker_embedding(speaker_ids)# -> [B, spkr_embed]
+        if freq_grad_scalar is not None:
+            embed = self.scalegrad(embed, freq_grad_scalar.clamp(min=0.05, max=20.0))# increase the gradients for speakers that are less common
+        embed = self.speaker_linear(embed.expand(x.shape[0], -1, -1))# -> [txt_T, B, embed]
+        
         x += self.pos_enc_weight*self.pe[:L].unsqueeze(1)# [txt_T, 1, d_model] +[txt_T, B, embed] -> [txt_T, B, embed]
         x += embed
         x = self.dropout(x)# [txt_T, B, embed]
@@ -122,6 +137,8 @@ class AlignTTS(nn.Module):
                                  nn.Dropout(0.1),
                                  Linear(hparams.hidden_dim, 2*(hparams.n_mel_channels//hparams.mel_downsize)))
         
+        self.dur_pred = FFT(hparams.hidden_dim, hparams.n_heads, hparams.ff_dim, getattr(hparams, 'durpred_n_layers', 2))
+        self.dur_pred_post = Linear(hparams.hidden_dim, 2)
         self.tm_linear = nn.Linear(hparams.tt_torchMoji_attDim, hparams.tt_torchMoji_crushedDim)
         if hparams.tt_torchMoji_BatchNorm:
             self.tm_bn = MaskedBatchNorm1d(hparams.tt_torchMoji_attDim, eval_only_momentum=False, momentum=0.2)
@@ -130,18 +147,20 @@ class AlignTTS(nn.Module):
         batch = {k: v.to(device) if type(v) == torch.Tensor else v for k,v in batch.items()}
         return batch
     
-    def forward(self, text, text_lengths, gt_mel, mel_lengths, speaker_id, torchmoji_hdn, save_alignments=False, log_viterbi=False, cpu_viterbi=False):
+    def forward(self, text, text_lengths, gt_mel, mel_lengths, speaker_id, torchmoji_hdn, freq_grad_scalar, save_alignments=False, log_viterbi=False, cpu_viterbi=False):
         global_cond = self.MelEnc(gt_mel)
         
-        encoder_input = self.Prenet(text, speaker_id)
+        encoder_input = self.Prenet(text, speaker_id, freq_grad_scalar)
         B, embed_dim = global_cond.shape
         encoder_input = encoder_input+global_cond.unsqueeze(1).expand(B, encoder_input.shape[1], embed_dim)# [B, txt_T, embed]+[B, 1, embed]
         hidden_states, _ = self.FFT_lower(encoder_input, text_lengths)
         mu_logvar = self.MDN(hidden_states)
+        dur_logmuvar = self.dur_pred_post(self.dur_pred(hidden_states, text_lengths)[0])# -> [B, txt_T, 2]
         
         # package into dict for output
         outputs = {
-                   "mu_logvar": mu_logvar,# [B, txt_T, 2*n_mel]
+                   "mu_logvar": mu_logvar,   # [B, txt_T, 2*n_mel]
+                "dur_logmuvar": dur_logmuvar,# [B, txt_T, 2]
         }
         return outputs
     
