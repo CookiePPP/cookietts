@@ -595,9 +595,9 @@ class T2S:
                     
                     diagonality_batch   = atd['diagonalitys']
                     avg_prob_batch      = atd['avg_prob']
-                    enc_max_dur_batch   = atd['encoder_max_focus']
-                    enc_min_dur_batch   = atd['encoder_min_focus']
-                    enc_avg_dur_batch   = atd['encoder_avg_focus']
+                    enc_max_dur_batch   = atd['encoder_max_dur']
+                    enc_min_dur_batch   = atd['encoder_min_dur']
+                    enc_avg_dur_batch   = atd['encoder_avg_dur']
                     p_missing_enc_batch = atd['p_missing_enc']
                     
                     # split batch into items
@@ -657,7 +657,6 @@ class T2S:
             except StopIteration:
                 del batch
                 if status_updates: print(f"\nDone in {time.time()-tt_start:.2f}s")
-                pass
             
             assert not any([x == 0 for x in best_generations]), 'Tacotron Failed to generate one of the texts after multiple attempts.'
             

@@ -140,7 +140,7 @@ def prepare_dataloaders(hparams, dataloader_args, args, speaker_ids, audio_offse
     trainset = TTSDataset(training_filelist, hparams, dataloader_args, check_files=hparams.check_files, shuffle=False,
                            deterministic_arpabet=False, speaker_ids=speaker_ids,          audio_offset=audio_offset)
     valset = TTSDataset(validation_filelist, hparams, dataloader_args, check_files=hparams.check_files, shuffle=False,
-                           deterministic_arpabet=True,  speaker_ids=trainset.speaker_ids, audio_offset=audio_offset)
+                           deterministic_arpabet=True,  speaker_ids=getattr(trainset, 'speaker_ids', None), audio_offset=audio_offset)
     collate_fn = Collate(hparams)
     
     #use_shuffle = False if hparams.use_TBPTT else True# can't shuffle with TBPTT

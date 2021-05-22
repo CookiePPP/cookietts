@@ -67,46 +67,40 @@ class FFT(nn.Module):
         self.FFT_layers = nn.ModuleList( [TransformerEncoderLayer(d_model=hidden_dim, nhead=n_heads, dim_feedforward=ff_dim, ff_kernel_size=ff_kernel_size, rezero=rezero_transformer, legacy=legacy) for _ in range(n_layers)] )
         
         self.add_position_encoding = add_position_encoding
-        self.position_encoding_random_start = position_encoding_random_start
-        self.rezero_pos_enc = rezero_pos_enc
         if self.add_position_encoding:
+            self.register_buffer('pe', PositionalEncoding(hidden_dim).pe)
+            self.position_encoding_random_start = position_encoding_random_start
+            self.rezero_pos_enc = rezero_pos_enc
             if self.rezero_pos_enc:
                 self.pos_enc_weight = nn.Parameter(torch.ones(1)*1.0)
-            self.register_buffer('pe', PositionalEncoding(hidden_dim).pe)
             if legacy:
                 self.norm = nn.LayerNorm(hidden_dim)
     
-    def forward(self, x, lengths, save_alignments=False):# [B, L, D], [B]
+    def forward(self, x, lengths, return_alignments=False):# [B, L, D], [B]
         if self.add_position_encoding:
+            pos_enc = self.pe# [max_len, D]
             if self.position_encoding_random_start:
-                pos_enc = self.pe.roll(random.randint(0, 4999), 0)# [max_len, D]
-            else:
-                pos_enc = self.pe# [max_len, D]
+                pos_enc = pos_enc.roll(random.randint(0, 4999), 0)# [max_len, D]
             pos_enc = pos_enc[:x.shape[1]]# [max_len, D] -> [L, D]
             if self.rezero_pos_enc:
                 pos_enc = pos_enc*self.pos_enc_weight
-            pos_enc = pos_enc.unsqueeze(0)# [L, D] -> [B, L, D]
-            x = x + pos_enc# [B, L, D] + [B, L, D] -> [B, L, D]
+            x = x + pos_enc.unsqueeze(0)# [B, L, D] + [B, L, D] -> [B, L, D]
             if hasattr(self, 'norm'):
                 x = self.norm(x)
         
-        x = x * get_mask_from_lengths(lengths).unsqueeze(-1)# [B, L, D] * [B, L, 1]
+        x = x.masked_fill_(~get_mask_from_lengths(lengths).unsqueeze(-1), 0.0)# [B, L, D] * [B, L, 1]
         
         alignments = []
         x = x.transpose(0,1)# [B, L, D] -> [L, B, D]
-        #assert not (torch.isinf(x) | torch.isnan(x)).any()
         mask = ~get_mask_from_lengths(lengths)# -> [B, L]
         for layer in self.FFT_layers:
             x, align = layer(x, src_key_padding_mask=mask)# -> [L, B, D], ???
-            if save_alignments:
-                alignments.append(align.unsqueeze(1))
-        if save_alignments:
-            alignments = torch.cat(alignments, 1)# [L, B, n_layers, L]
-        else:
-            alignments = align
+            if save_alignments: alignments.append(align.unsqueeze(1))
         
-        #assert not (torch.isinf(x) | torch.isnan(x)).any()
-        return x.transpose(0,1), alignments# [B, L, D], [L, B, n_layers, L]
+        if return_alignments:
+            return x.transpose(0,1), torch.cat(alignments, 1)# [B, L, D], [L, B, n_layers, L]
+        else:
+            return x.transpose(0,1)# [B, L, D]
 
 
 class MelEncoder(nn.Module):

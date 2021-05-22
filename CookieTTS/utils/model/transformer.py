@@ -134,8 +134,8 @@ class PositionalEncoding(nn.Module):
     def __init__(self, d_model, max_len=5000):
         super(PositionalEncoding, self).__init__()
         self.register_buffer('pe', self._get_pe_matrix(d_model, max_len))
-
-    def forward(self, x):
+    
+    def forward(self, x):# [L, B, D]
         return x + self.pe[:x.size(0)].unsqueeze(1)
     
     def _get_pe_matrix(self, d_model, max_len):

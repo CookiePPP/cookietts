@@ -1,16 +1,24 @@
 import types
 
-def get_args(*func):
+def get_args(*func, kwargs=False):
     args = list()
     if type(func) in [list, tuple]:
         for f in func:
             args.extend(f.__code__.co_varnames[:f.__code__.co_argcount])
+            if kwargs:
+                args.extend(f.__code__.co_varnames[f.__code__.co_argcount:f.__code__.co_kwonlyargcount])
     elif isinstance(func, types.ClassType):
         args.extend(func.__call__.__code__.co_varnames[:func.__call__.__code__.co_argcount])
+        if kwargs:
+            args.extend(func.__call__.__code__.co_varnames[func.__call__.__code__.co_argcount:func.__call__.__code__.co_kwonlyargcount])
     elif isinstance(func, types.FunctionType):
         args.extend(func.__code__.co_varnames[:func.__code__.co_argcount])
+        if kwargs:
+            args.extend(func.__code__.co_varnames[func.__code__.co_argcount:func.__code__.co_kwonlyargcount])
     elif isinstance(func, types.CodeType):
         args.extend(func.co_varnames[:func.co_argcount])
+        if kwargs:
+            args.extend(func.co_varnames[func.co_argcount:func.co_kwonlyargcount])
     args = tuple(set(args))
     return args
 
@@ -31,5 +39,5 @@ def force(func, valid_kwargs=None, *args, **kwargs):
     if valid_kwargs is True:
         return func(*args, **kwargs)
     elif valid_kwargs is None:
-        valid_kwargs = get_args(func)
+        valid_kwargs = get_args(func, kwargs=True)
     return func(*args, **{k:v for k,v in kwargs.items() if k in valid_kwargs})

@@ -518,16 +518,14 @@ class Encoder(nn.Module):
         if text_lengths is not None:
             # pytorch tensor are not reversible, hence the conversion
             text_lengths = text_lengths.cpu().numpy()
-            text = nn.utils.rnn.pack_padded_sequence(
-                text, text_lengths, batch_first=True, enforce_sorted=False)
+            text = nn.utils.rnn.pack_padded_sequence(text, text_lengths, batch_first=True, enforce_sorted=False)
         
         self.lstm.flatten_parameters()
         outputs, (hidden_state, _) = self.lstm(text)
         assert not (torch.isnan(hidden_state).any() or torch.isinf(hidden_state).any())
         
         if text_lengths is not None:
-            outputs, _ = nn.utils.rnn.pad_packed_sequence(
-                outputs, batch_first=True)
+            outputs, _ = nn.utils.rnn.pad_packed_sequence(outputs, batch_first=True)
         assert not (torch.isnan(outputs).any() or torch.isinf(outputs).any())
         
         hidden_state = hidden_state.transpose(0, 1)# [2*lstm_n_layers, B, h_dim] -> [B, 2*lstm_n_layers, h_dim]

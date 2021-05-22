@@ -303,7 +303,7 @@ class Decoder(nn.Module):
 class MaskedBatchNorm1d(nn.BatchNorm1d):
     def __init__(self, *args, eval_only_momentum=True, **kwargs):
         super(MaskedBatchNorm1d, self).__init__(*args, **kwargs)
-        self.iters_ = torch.tensor(0).long()
+        self.register_buffer('iters_', torch.tensor(0).long())
         self.eval_only_momentum = eval_only_momentum # use momentum only for eval (set to True for hidden layers)
         self.momentum_eps = max(self.momentum, 0.01)
     
@@ -316,44 +316,39 @@ class MaskedBatchNorm1d(nn.BatchNorm1d):
         return vec
     
     def forward(self,
-            x:               Tensor      ,# [B, C, T]
+            x:               Tensor      ,# [B, C, T] or [B, C]
             x_mask: Optional[Tensor]=None,# [B, T]
             ):
+        training = self.training
         x_dims = len(x.shape)
         assert x_dims in [2, 3], 'input must have 2/3 dims of shape [B, C] or [B, C, T]'
-        assert x_mask is None or len(x_mask.shape) == 2, 'input must have 3 dims of shape [B, T]'
+        assert x_mask is None or len(x_mask.shape) == 2, 'x_mask must have shape [B, T]'
         
         if x_mask is not None and x_dims == 3:# must be [B, C, T] and have mask
             x.masked_fill_(~x_mask.unsqueeze(1), 0.0)
-            x_masked_permuted = x.transpose(1, 2)[x_mask]# [B, C, T] -> [B*T, C]
+            x_masked_permuted = x.transpose(1, 2)[x_mask]# [B, C, T] -> [B, T, C] -> [B*T, C]
             
             masked_y = super(MaskedBatchNorm1d, self).forward(x_masked_permuted)# [B*T, C] -> [B*T, C]
             
             y = x.transpose(1, 2)# [B, C, T] -> [B, T, C]
             
-            if not self.eval_only_momentum and ( self.iters_ > 2.0/self.momentum_eps ):
-                masked_y = (x_masked_permuted-self.running_mean.detach())/self.running_var.detach().sqrt()
-                
-                if hasattr(self, 'weight') and self.weight is not None and hasattr(self, 'bias') and self.bias is not None:
-                    masked_y = (masked_y-self.bias.unsqueeze(0))/self.weight.unsqueeze(0)
+            if not self.eval_only_momentum and self.training and ( self.iters_ > 2.0/self.momentum_eps ):
+                self.eval()
+                masked_y = super(MaskedBatchNorm1d, self).forward(x_masked_permuted)# [B*T, C] -> [B*T, C]
+                self.train()
             
             y[x_mask] = masked_y # [B *T, C]
             y = y.transpose(1, 2)# [B, T, C] -> [B, C, T]
         else:
-            y = super(MaskedBatchNorm1d, self).forward(x)# [B, C, T] -> [B*T, C] -> [B, C, T]
-            if not self.eval_only_momentum and ( self.iters_ > 2.0/self.momentum_eps ):
-                mean = self.running_mean.detach().squeeze()
-                std  = self.running_var .detach().squeeze().sqrt()
-                mean = self.expand_vector(x, mean)
-                std  = self.expand_vector(x, std)
-                y = (x-mean)/std # ([B, C, T]-[1, C, 1])/[1, C, 1]
-                if hasattr(self, 'weight') and self.weight is not None and hasattr(self, 'bias') and self.bias is not None:
-                    bias   = self.expand_vector(x, self.bias)
-                    weight = self.expand_vector(x, self.weight)
-                    y = (y-bias)/weight
+            y = super(MaskedBatchNorm1d, self).forward(x)
+            if not self.eval_only_momentum and self.training and ( self.iters_ > 2.0/self.momentum_eps ):
+                self.eval()
+                y = super(MaskedBatchNorm1d, self).forward(x)
+                self.train()
+        
         with torch.no_grad():
             self.iters_ += 1
-        return y# [B, C, T] or [B, C]
+        return y.to(x)# [B, C, T] or [B, C]
     
     def inverse(self,
             y:               Tensor      ,# [B, C, T]

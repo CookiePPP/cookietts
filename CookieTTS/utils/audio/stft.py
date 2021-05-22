@@ -82,7 +82,8 @@ class STFT(torch.nn.Module):
                       forward_basis: torch.Tensor,
                       filter_length: int,
                       hop_length: int,
-                      return_phase: bool
+                      return_phase: bool,
+                      filter_pad: bool
                       ):
         # input audio samples [B, T]
         input_data_shape = input_data.size()
@@ -91,9 +92,10 @@ class STFT(torch.nn.Module):
         
         # similar to librosa, reflect-pad the input
         input_data = input_data.view(num_batches, 1, num_samples) # [B, T] -> [B, 1, T]
+        pad_len = (filter_length if filter_pad else (filter_length-hop_length))//2
         input_data = torch.nn.functional.pad(
             input_data.unsqueeze(1), # [B, 1, 1, T]
-            (int(filter_length / 2), int(filter_length / 2), 0, 0), # padding half filterlen to each side
+            (pad_len, pad_len, 0, 0), # padding half filterlen to each side
             mode='reflect')
         input_data = input_data.squeeze(1) # [B, 1, 1, T] -> [B, 1, T+filter_length]
         
@@ -111,8 +113,8 @@ class STFT(torch.nn.Module):
         phase = torch.atan2(imag_part, real_part) if return_phase else None
         return magnitude, phase
     
-    def transform(self, input_data, return_phase=True):
-        magnitude, phase = self.transform_jit(input_data, self.forward_basis, self.filter_length, self.hop_length, return_phase)
+    def transform(self, input_data, return_phase=True, filter_pad=True):
+        magnitude, phase = self.transform_jit(input_data, self.forward_basis, self.filter_length, self.hop_length, return_phase, filter_pad)
         return magnitude, phase
     
     # below is a clone of transform_jit and transform
@@ -124,7 +126,8 @@ class STFT(torch.nn.Module):
                       forward_basis: torch.Tensor,
                       filter_length: int,
                       hop_length: int,
-                      return_phase: bool
+                      return_phase: bool,
+                      filter_pad: bool
                       ):
         # input audio samples [B, T]
         input_data_shape = input_data.size()
@@ -133,9 +136,10 @@ class STFT(torch.nn.Module):
         
         # similar to librosa, reflect-pad the input
         input_data = input_data.view(num_batches, 1, num_samples) # [B, T] -> [B, 1, T]
+        pad_len = (filter_length if filter_pad else (filter_length-hop_length))//2
         input_data = torch.nn.functional.pad(
             input_data.unsqueeze(1), # [B, 1, 1, T]
-            (int(filter_length / 2), int(filter_length / 2), 0, 0), # padding half filterlen to each side
+            (pad_len, pad_len, 0, 0), # padding half filterlen to each side
             mode='reflect')
         input_data = input_data.squeeze(1) # [B, 1, 1, T] -> [B, 1, T+filter_length]
         
@@ -153,8 +157,8 @@ class STFT(torch.nn.Module):
         phase = torch.atan2(imag_part, real_part) if return_phase else None
         return magnitude, phase
     
-    def transform_gpu(self, input_data, return_phase=True):
-        magnitude, phase = self.transform_nonjit(input_data, self.forward_basis, self.filter_length, self.hop_length, return_phase)
+    def transform_gpu(self, input_data, return_phase=True, filter_pad=True):
+        magnitude, phase = self.transform_nonjit(input_data, self.forward_basis, self.filter_length, self.hop_length, return_phase, filter_pad)
         return magnitude, phase
     
     def inverse(self, magnitude, phase):
@@ -221,18 +225,18 @@ class TacotronSTFT(torch.nn.Module):
         audio = load_wav_to_torch(audiopath, target_sr=self.sampling_rate)[0]
         return self.mel_spectrogram(audio.to(self.mel_basis.device).unsqueeze(0))
     
-    def forward(self, y):
+    def forward(self, y, filter_pad=True):
         assert(torch.min(y) >= -1.), f'Tensor.min() of {torch.min(y).item()} is less than -1.0'
         assert(torch.max(y) <=  1.), f'Tensor.max() of {torch.max(y).item()} is greater than 1.0'
         
         if y.device != 'cpu':# done for compatibility, if this jit function is called with CUDA (even from different Objects on different threads on difference devices!), it will attempt to initialize CUDA on every call to this function.
-            magnitudes = self.stft_fn.transform_gpu(y, return_phase=False)[0] # get magnitudes at each (overlapped) window [B, T] ->  # [B, filter_len, T//hop_length+1]
+            magnitudes = self.stft_fn.transform_gpu(y, return_phase=False, filter_pad=filter_pad)[0] # get magnitudes at each (overlapped) window [B, T] ->  # [B, filter_len, T//hop_length+1]
         else:
-            magnitudes = self.stft_fn.transform(y, return_phase=False)[0] # get magnitudes at each (overlapped) window [B, T] ->  # [B, filter_len, T//hop_length+1]
+            magnitudes = self.stft_fn.transform(y, return_phase=False, filter_pad=filter_pad)[0] # get magnitudes at each (overlapped) window [B, T] ->  # [B, filter_len, T//hop_length+1]
         return magnitudes
     
     @torch.no_grad()
-    def mel_spectrogram(self, *args):
+    def mel_spectrogram(self, *args, **kwargs):
         """Computes mel-spectrograms from a batch of waves
         PARAMS
         ------
@@ -242,9 +246,9 @@ class TacotronSTFT(torch.nn.Module):
         -------
         mel_output: torch.FloatTensor of shape (B, n_mel_channels, T)
         """
-        return self.mel_spectrogram_with_grad(*args)
+        return self.mel_spectrogram_with_grad(*args, **kwargs)
     
-    def mel_spectrogram_with_grad(self, y):
+    def mel_spectrogram_with_grad(self, y, filter_pad=True):
         """Computes mel-spectrograms from a batch of waves
         PARAMS
         ------
@@ -254,7 +258,7 @@ class TacotronSTFT(torch.nn.Module):
         -------
         mel_output: torch.FloatTensor of shape (B, n_mel_channels, T)
         """
-        magnitudes = self(y)# get spectrogram magnitudes
+        magnitudes = self(y, filter_pad=filter_pad)# get spectrogram magnitudes
         
         B, filter_len, mel_T = magnitudes.shape# [B, filter_len, T//hop_length+1]
         if False:#mag_shape[0] == 1:# do sparse op if possible. Pytorch 1.6 required for sparse with batches.

@@ -207,7 +207,7 @@ def remove_ending_periods(directory):
         os.rename(src, dst)
 
 
-def get_dataset_meta(directory, meta=None, default_speaker=None, default_emotion=None, default_noise_level=None, default_source=None, default_source_type='audiobook', audio_ext=["*.wav",], audio_rejects=[], naming_system=None):
+def get_dataset_meta(directory, meta=None, default_speaker=None, default_emotion=None, default_noise_level=None, default_source=None, default_source_type='audiobook', audio_ext=["*.wav",], audio_rejects=[], naming_system=None, skip_empty=False):
     """
     Looks for
      - audio paths
@@ -267,12 +267,16 @@ def get_dataset_meta(directory, meta=None, default_speaker=None, default_emotion
     banned_files = set(banned_files)
     
     audio_files = sorted([x for x in list(set(audio_files)) if not x in banned_files])
+    if not len(audio_files) and skip_empty:
+        os.chdir(prev_wd); return None
     assert len(audio_files), f'no audio files found for "{directory}" dataset.'
     print(f'Found {len(audio_files)} audio files.')
     
     audio_basename_lookup = {os.path.splitext(os.path.split(x)[1])[0].lower(): os.path.abspath(x) for x in audio_files}
     txt_files = sorted([os.path.abspath(x) for x in [*glob("**/*.txt", recursive=True), *glob("**/*.csv", recursive=True)] if os.path.exists(x)])
     txt_files = [x for x in txt_files if not any([y in x for y in ['default_speaker.txt','default_emotion.txt','default_noise_level.txt','default_source.txt','default_source_type.txt',]])]
+    if not len(txt_files) and skip_empty:
+        os.chdir(prev_wd); return None
     assert all([os.path.exists(x) for x in txt_files])
     assert len(txt_files), f'no text files found for "{directory}" dataset.'
     print(f'Found {len(txt_files)} text files.')
@@ -334,7 +338,7 @@ def get_dataset_meta(directory, meta=None, default_speaker=None, default_emotion
             print(f'Skipping file: "{audio_file}"', sep='\n')
             files_skipped+=1; continue
         if os.path.splitext(audio_file)[0] in audio_basepaths_added:# if same audio with another file extension was added already
-            print(f'Skipping file: "{audio_file}"', sep='\n')
+            print(f'Skipping file: "{audio_file}". An audio file with this basename has already been added.', sep='\n')
             files_skipped+=1; continue
         audio_basepaths_added.append(os.path.splitext(audio_file)[0])
         

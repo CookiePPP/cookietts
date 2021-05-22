@@ -39,7 +39,7 @@ def create_hparams(hparams_string=None, verbose=False):
         #################################
         ## Logging / Verbosity         ##
         #################################
-        n_tensorboard_outputs=8,# number of items from validation so show in Tensorboard
+        n_tensorboard_outputs=8,# number of items from validation to show in Tensorboard
         
         #################################
         ## Batch Size / Segment Length ##

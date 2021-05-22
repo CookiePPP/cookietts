@@ -12,13 +12,13 @@ def load_wav_to_torch(full_path, target_sr=None, min_sr=None, remove_dc_offset=T
         print(f"'{full_path}' failed to load.\nException:")
         if return_empty_on_exception:
             print(ex)
-            return [], sampling_rate or target_sr or 48000
+            return [], sampling_rate or target_sr or 1
         else:
             raise ex
     
     if min_sr is not None:
         if return_empty_on_exception and not (min_sr < sampling_rate):
-            return [], sampling_rate or target_sr or 48000
+            return [], sampling_rate or target_sr or 1
         assert min_sr < sampling_rate, f'Expected sampling_rate greater than or equal to {min_sr:.0f}, got {sampling_rate:.0f}.\nPath = "{full_path}"'
     
     if len(data.shape) > 1: # if audio has more than 1 channels,
@@ -42,13 +42,13 @@ def load_wav_to_torch(full_path, target_sr=None, min_sr=None, remove_dc_offset=T
     data = torch.FloatTensor(data.astype(np.float32))
     
     if (torch.isinf(data) | torch.isnan(data)).any() and return_empty_on_exception:# check for Nan/Inf in audio files
-        return [], sampling_rate or target_sr or 48000
+        return [], sampling_rate or target_sr or 1
     assert not (torch.isinf(data) | torch.isnan(data)).any(), f'Inf or NaN found in audio file\n"{full_path}"'
     
     if target_sr is not None and sampling_rate != target_sr:
         data = torch.from_numpy(librosa.core.resample(data.numpy(), sampling_rate, target_sr))
         if (torch.isinf(data) | torch.isnan(data)).any() and return_empty_on_exception:# resample will crash with inf/NaN inputs. return_empty_on_exception will return empty arr instead of except
-            return [], sampling_rate or target_sr or 48000
+            return [], sampling_rate or target_sr or 1
         assert not (torch.isinf(data) | torch.isnan(data)).any(), f'Inf or NaN found after resampling audio\n"{full_path}"'
         
         sampling_rate = target_sr
@@ -67,7 +67,7 @@ def load_wav_to_torch(full_path, target_sr=None, min_sr=None, remove_dc_offset=T
 
 def load_filepaths_and_text(filename, split="|"):
     with open(filename, encoding='utf-8') as f:
-        filepaths_and_text = [line_strip.split(split) for line_strip in (line.strip() for line in f) if line_strip and line_strip[0] is not ";"]
+        filepaths_and_text = [line_strip.split(split) for line_strip in (line.strip() for line in f) if line_strip and line_strip[0] != ";"]
     return filepaths_and_text
 
 

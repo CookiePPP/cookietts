@@ -329,7 +329,7 @@ class LSTMCellWithZoneout(nn.LSTMCell):# taken from https://espnet.github.io/esp
                 [self._zoneout(h[i], next_h[i], prob[i]) for i in range(num_h)]
             )
 
-        if self.training:
+        if self.training and prob > 0.0:
             mask = h.new(*h.size()).bernoulli_(prob)
             return mask * h + (1 - mask) * next_h
         else:
@@ -584,20 +584,24 @@ class LinearNorm(torch.nn.Module):
 
 class ConvNorm(torch.nn.Module):
     def __init__(self, in_channels, out_channels, kernel_size=1, stride=1,
-                 padding=None, dilation=1, bias=True, w_init_gain='linear', dropout=0., causal=False):
+                 padding=None, dilation=1, bias=True, w_init_gain='linear', dropout=0., causal=False, separable=False):
         super(ConvNorm, self).__init__()
         if padding is None:
             assert(kernel_size % 2 == 1)
             padding = int(dilation * (kernel_size - 1) / 2)
         
+        self.separable = (separable and in_channels==out_channels)
         self.dropout = dropout
         
         self.conv = torch.nn.Conv1d(in_channels, out_channels,
                                     kernel_size=kernel_size, stride=stride,
                                     padding=0 if causal else padding,
-                                    dilation=dilation, bias=bias)
+                                    dilation=dilation, bias=bias, groups=out_channels if self.separable else 1)
         torch.nn.init.xavier_uniform_(
             self.conv.weight, gain=torch.nn.init.calculate_gain(w_init_gain))
+        if self.separable:
+            self.conv_d = torch.nn.Conv1d(out_channels, out_channels, kernel_size=1, bias=bias)
+        
         self.causal_pad = (kernel_size-1)*dilation if causal else 0
     
     def maybe_pad(self, signal, pad_right=False):
@@ -612,25 +616,32 @@ class ConvNorm(torch.nn.Module):
         conv_signal = self.conv(self.maybe_pad(signal))
         if self.training and self.dropout > 0.:
             conv_signal = F.dropout(conv_signal, p=self.dropout)
+        if self.separable:
+            conv_signal = self.conv_d(conv_signal)
         return conv_signal
 
 
 class ConvNorm2D(torch.nn.Module):
     def __init__(self, in_channels, out_channels, kernel_size=1, stride=1,
-                 padding=None, dilation=1, bias=True, w_init_gain='linear', dropout=0.):
+                 padding=None, dilation=1, bias=True, w_init_gain='linear', dropout=0., separable=False):
         super(ConvNorm2D, self).__init__()
+        self.separable = (separable and in_channels==out_channels)
         self.dropout = dropout
         self.conv = torch.nn.Conv2d(in_channels=in_channels, out_channels=out_channels,
                                     kernel_size=kernel_size, stride=stride,
                                     padding=padding, dilation=dilation,
-                                    groups=1, bias=bias)
+                                    bias=bias, groups=out_channels if self.separable else 1)
         torch.nn.init.xavier_uniform_(
             self.conv.weight, gain=torch.nn.init.calculate_gain(w_init_gain))
+        if self.separable:
+            self.conv_d = torch.nn.Conv1d(out_channels, out_channels, kernel_size=1, bias=bias)
 
     def forward(self, signal):
         conv_signal = self.conv(signal)
         if self.training and self.dropout > 0.:
             conv_signal = F.dropout(conv_signal, p=self.dropout)
+        if self.separable:
+            conv_signal = self.conv_d(conv_signal)
         return conv_signal
 
 

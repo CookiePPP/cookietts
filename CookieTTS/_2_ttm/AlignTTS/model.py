@@ -82,17 +82,13 @@ class FFT(nn.Module):
         )
     
     def forward(self, x, lengths):# [B, L, D], [B]
-        
         alignments = []
         x = x.transpose(0,1)# [B, L, D] -> [L, B, D]
-        assert not (torch.isinf(x) | torch.isnan(x)).any()
         mask = ~get_mask_from_lengths(lengths)# -> [B, L]
         for layer in self.FFT_layers:
             x, align = layer(x, src_key_padding_mask=mask)# -> [L, B, D], ???
             alignments.append(align.unsqueeze(1))
         alignments = torch.cat(alignments, 1)# [L, B, n_layers, L]
-        
-        assert not (torch.isinf(x) | torch.isnan(x)).any()
         return x.transpose(0,1), alignments# [B, L, D], [L, B, n_layers, L]
 
 

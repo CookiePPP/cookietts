@@ -41,7 +41,7 @@ def create_hparams(hparams_string=None, verbose=False):
         #################################
         ## Logging / Verbosity         ##
         #################################
-        n_tensorboard_outputs=8,# number of items from validation so show in Tensorboard
+        n_tensorboard_outputs=8,# number of items from validation to show in Tensorboard
         n_tensorboard_outputs_highloss=5, # NOT IMPLEMENTED # top X tacotron outputs with worst validation loss.
         n_tensorboard_outputs_badavgatt=5,# NOT IMPLEMENTED # top X tacotron outputs with weakest average attention.
         
